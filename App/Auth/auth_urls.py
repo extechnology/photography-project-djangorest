@@ -1,0 +1,36 @@
+from django.urls import path
+from .auth_views import (
+    CheckUsernameView,
+    CheckIdentifierView,
+    RegisterView,
+    ResendOTPView,
+    VerifyOTPView,
+    LoginView,
+    LogoutView,
+    RefreshTokenView,
+    CheckLoginView,
+    DirectResetPasswordView,
+    ResetPasswordOTPView,
+    ResendResetPasswordOTPView,
+    VerifyResetPasswordOTPView,
+    ChangePasswordView,
+    GoogleAuthView,
+)
+
+urlpatterns = [
+    path('check-username/', CheckUsernameView.as_view(), name='check-username'),
+    path('check-identifier/', CheckIdentifierView.as_view(), name='check-identifier'),
+    path('register/', RegisterView.as_view(), name='register'),
+    path('resend-otp/', ResendOTPView.as_view(), name='resend-otp'),
+    path('verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
+    path('login/', LoginView.as_view(), name='login'),
+    path('logout/', LogoutView.as_view(), name='logout'),
+    path('token/refresh/', RefreshTokenView.as_view(), name='token-refresh'),
+    path('check-login/', CheckLoginView.as_view(), name='check-login'),
+    path('reset-password/direct/', DirectResetPasswordView.as_view(), name='direct-reset-password'),
+    path('reset-password/otp/', ResetPasswordOTPView.as_view(), name='reset-password-otp'),
+    path('reset-password/resend-otp/', ResendResetPasswordOTPView.as_view(), name='resend-reset-password-otp'),
+    path('reset-password/verify-otp/', VerifyResetPasswordOTPView.as_view(), name='verify-reset-password-otp'),
+    path('change-password/', ChangePasswordView.as_view(), name='change-password'),
+    path('google/', GoogleAuthView.as_view(), name='google-auth'),
+]
