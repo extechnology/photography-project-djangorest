@@ -57,7 +57,8 @@ class User(AbstractBaseUser, PermissionsMixin):
         ADMIN = "admin", "Admin"
         STAFF = "staff", "Staff"
         USER = "user", "User"
-
+        PHOTOGRAPHER = "photographer", "Photographer"
+       
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     id = models.AutoField(primary_key=True)
 

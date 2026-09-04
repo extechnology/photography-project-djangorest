@@ -544,4 +544,3 @@ class GoogleAuthView(APIView):
         except ValueError as e:
             return Response({"message": f"Invalid token: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
-# Google Authentication Views can be added here in future

@@ -8,20 +8,16 @@ def get_user_from_request(request):
 
     access_token = None
 
-    # 1️⃣ Check Authorization header (Bearer <token>)
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         access_token = auth_header.split(' ')[1]
 
-    # 2️⃣ Fallback: check cookie
     if not access_token:
         access_token = request.COOKIES.get('access_token')
 
-    # 3️⃣ If still not found
     if not access_token:
         raise AuthenticationFailed("No access token provided.")
 
-    # 4️⃣ Validate token
     try:
         token = AccessToken(access_token)
         user_id = token['user_id']
