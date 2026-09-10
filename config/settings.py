@@ -141,8 +141,28 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
-
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '200/minute',
+        'user': '1000/minute',
+        'face_search': '15/minute',
+        'upload': '60/minute',
+        'download': '120/minute',
+        'bulk_download': '5/minute',
+        'share_access': '150/minute',
+    },
 }
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'photography-ratelimit-cache',
+    }
+}
+
 
 CORS_ALLOW_ALL_ORIGINS = True
 

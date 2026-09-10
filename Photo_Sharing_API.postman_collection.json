@@ -1,0 +1,712 @@
+{
+	"info": {
+		"_postman_id": "9b1f7c8a-4d2e-4b6a-9123-enterprise-gallery-api",
+		"name": "Enterprise Gallery, Face Discovery, & Storage Quota API",
+		"description": "Postman Collection for testing production-ready photographer media delivery, client galleries, face search, S3/R2 direct uploads, secure downloads, and subscription storage limits.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://127.0.0.1:8000",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "gallery_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "share_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "reservation_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "storage_key",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "media_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "bulk_job_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "gallery_password",
+			"value": "wedding2026",
+			"type": "string"
+		},
+		{
+			"key": "event_id",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "access_code",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "photo_id",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "event_pin",
+			"value": "1234",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "0. Authentication",
+			"item": [
+				{
+					"name": "Photographer Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.access_token) {",
+									"    pm.collectionVariables.set('token', jsonData.access_token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/json"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"identifier\": \"photographer@example.com\",\n    \"password\": \"your_password_here\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/auth/login/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "auth", "login", ""]
+						},
+						"description": "Authenticates photographer. Automatically captures JWT token into `{{token}}` collection variable."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "1. Enterprise - Galleries & Sharing",
+			"item": [
+				{
+					"name": "1. Create Gallery",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.id) { pm.collectionVariables.set('gallery_id', res.id); }",
+									"if (res.share_token) { pm.collectionVariables.set('share_token', res.share_token); }"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Rahul & Priya Grand Wedding 2026\",\n    \"description\": \"Ceremony & Reception high-res deliverables\",\n    \"visibility\": \"public\",\n    \"downloads_enabled\": true,\n    \"face_search_enabled\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/galleries/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", ""]
+						},
+						"description": "Creates gallery and automatically sets `{{gallery_id}}` and `{{share_token}}` variables."
+					},
+					"response": []
+				},
+				{
+					"name": "2. List Photographer's Galleries",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3. Get Gallery Details & Photos",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4. Update Gallery Settings (Set Password & Toggles)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "PATCH",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"password\": \"{{gallery_password}}\",\n    \"downloads_enabled\": true,\n    \"face_search_enabled\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5. Generate or Rotate Share Link",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.share_token) { pm.collectionVariables.set('share_token', res.share_token); }"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/share/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", "share", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "6. Revoke Share Link",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/share/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", "share", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "7. Access Shared Gallery (Public / Guest)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/shared-galleries/{{share_token}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "shared-galleries", "{{share_token}}", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "8. Access Shared Gallery (With Password)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{"key": "X-Gallery-Password", "value": "{{gallery_password}}", "type": "text"}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/shared-galleries/{{share_token}}/?password={{gallery_password}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "shared-galleries", "{{share_token}}", ""],
+							"query": [
+								{"key": "password", "value": "{{gallery_password}}"}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "9. Verify Gallery Password",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"password\": \"{{gallery_password}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/shared-galleries/{{share_token}}/verify-password/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "shared-galleries", "{{share_token}}", "verify-password", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "10. Delete / Archive Gallery",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", ""]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "2. Enterprise - Direct Uploads & Media Management",
+			"item": [
+				{
+					"name": "1. Direct Upload Init (Checks & Reserves Quota)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.reservation_id) { pm.collectionVariables.set('reservation_id', res.reservation_id); }",
+									"if (res.storage_key) { pm.collectionVariables.set('storage_key', res.storage_key); }"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"original_filename\": \"wedding_shot_01.jpg\",\n    \"file_size\": 10485760,\n    \"mime_type\": \"image/jpeg\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/upload-init/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", "upload-init", ""]
+						},
+						"description": "Reserves storage quota atomically and returns pre-signed upload URL. Auto-sets `{{reservation_id}}` and `{{storage_key}}` variables."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Direct Upload Confirm (Commits Quota & Queues Faces)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.media && res.media.id) { pm.collectionVariables.set('media_id', res.media.id); }"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"reservation_id\": \"{{reservation_id}}\",\n    \"storage_key\": \"{{storage_key}}\",\n    \"original_filename\": \"wedding_shot_01.jpg\",\n    \"file_size\": 10485760,\n    \"mime_type\": \"image/jpeg\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/upload-confirm/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", "upload-confirm", ""]
+						},
+						"description": "Verifies upload in storage, shifts bytes from reserved to used storage, creates Media record, and triggers background processing."
+					},
+					"response": []
+				},
+				{
+					"name": "3. Standard Multi-File Upload",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.media && res.media.length > 0) {",
+									"    pm.collectionVariables.set('media_id', res.media[0].id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{"key": "photos", "type": "file", "src": [], "description": "Select multiple image files"}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/upload/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", "upload", ""]
+						},
+						"description": "Direct multi-file upload through Django view with quota checks."
+					},
+					"response": []
+				},
+				{
+					"name": "4. Delete Media (Reclaims Quota & Derivatives)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/media/{{media_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "media", "{{media_id}}", ""]
+						},
+						"description": "Deletes media, prunes storage derivatives, cleans face embeddings, and reclaims subscription quota."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "3. Enterprise - Secure Downloads",
+			"item": [
+				{
+					"name": "1. Single Photo Signed Download URL",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/media/{{media_id}}/download/?password={{gallery_password}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "media", "{{media_id}}", "download", ""],
+							"query": [
+								{"key": "password", "value": "{{gallery_password}}"}
+							]
+						},
+						"description": "Verifies downloads_enabled and gallery password, increments download count, and returns signed download URL or attachment."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Request Async Bulk ZIP Download",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.job && res.job.id) { pm.collectionVariables.set('bulk_job_id', res.job.id); }"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"photo_ids\": [],\n    \"password\": \"{{gallery_password}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/bulk-download/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", "bulk-download", ""]
+						},
+						"description": "Queues background ZIP compilation. Returns 202 Accepted and sets `{{bulk_job_id}}`."
+					},
+					"response": []
+				},
+				{
+					"name": "3. Poll Bulk Download Job Status",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/galleries/bulk-download-jobs/{{bulk_job_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "bulk-download-jobs", "{{bulk_job_id}}", ""]
+						},
+						"description": "Returns archive status ('processing' -> 'ready') with signed ZIP download URL."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "4. Enterprise - Face-Based Photo Discovery",
+			"item": [
+				{
+					"name": "Search Gallery Photos by Face Selfie",
+					"request": {
+						"method": "POST",
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{"key": "selfie", "type": "file", "src": [], "description": "Upload a selfie containing a face"},
+								{"key": "password", "value": "{{gallery_password}}", "type": "text"}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/galleries/{{gallery_id}}/face-search/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "galleries", "{{gallery_id}}", "face-search", ""]
+						},
+						"description": "Strictly isolated to target gallery. Returns matched photos ranked by similarity without exposing biometric embeddings."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "5. Enterprise - Subscription Storage Quota",
+			"item": [
+				{
+					"name": "Get Storage Quota & Usage",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/account/storage/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "account", "storage", ""]
+						},
+						"description": "Returns authoritative storage used, reserved in-flight bytes, subscription limit, and remaining bytes."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "6. Event Photo Sharing (Marriage Functions - Backward Compatible)",
+			"item": [
+				{
+					"name": "1. Create Event Album",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.data) {",
+									"    if (res.data.id) { pm.collectionVariables.set('event_id', res.data.id); }",
+									"    if (res.data.access_code) { pm.collectionVariables.set('access_code', res.data.access_code); }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Marriage Ceremony\",\n    \"event_type\": \"wedding\",\n    \"pin_code\": \"{{event_pin}}\",\n    \"allow_downloads\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/storage/events/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "storage", "events", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2. Bulk Multi-File Upload to Event",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var res = pm.response.json();",
+									"if (res.photos && res.photos.length > 0) {",
+									"    pm.collectionVariables.set('photo_id', res.photos[0].id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{"key": "photos", "type": "file", "src": []},
+								{"key": "category_tag", "value": "Ceremony", "type": "text"}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/storage/events/{{event_id}}/upload/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "storage", "events", "{{event_id}}", "upload", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3. Bulk Upload ZIP to Event",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]
+						},
+						"method": "POST",
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{"key": "zip_file", "type": "file", "src": []}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/storage/events/{{event_id}}/upload-zip/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "storage", "events", "{{event_id}}", "upload-zip", ""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4. Public Event Gallery View",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/storage/share/{{access_code}}/?pin={{event_pin}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "storage", "share", "{{access_code}}", ""],
+							"query": [
+								{"key": "pin", "value": "{{event_pin}}"}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5. Single Photo Instant Download",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/storage/photos/{{photo_id}}/download/?pin={{event_pin}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "storage", "photos", "{{photo_id}}", "download", ""],
+							"query": [
+								{"key": "pin", "value": "{{event_pin}}"}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "6. Public Event Download All ZIP",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/storage/share/{{access_code}}/download-all/?pin={{event_pin}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "storage", "share", "{{access_code}}", "download-all", ""],
+							"query": [
+								{"key": "pin", "value": "{{event_pin}}"}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "7. Get Event QR Code",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/storage/share/{{access_code}}/qr/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "storage", "share", "{{access_code}}", "qr", ""]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
