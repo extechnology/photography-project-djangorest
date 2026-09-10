@@ -1,0 +1,699 @@
+===============================================================================
+PHOTOGRAPHY BACKEND API DOCUMENTATION
+===============================================================================
+Base URL: http://<host>:<port>/api/
+Authentication: Bearer Token (JWT / Authorization: Bearer <access_token>)
+Date Generated: September 2026
+
+TABLE OF CONTENTS
+-------------------------------------------------------------------------------
+1. AUTHENTICATION & USER MANAGEMENT
+2. PHOTOGRAPHER PROFILES, CATEGORIES & POSTS
+3. EVENT-BASED PHOTO SHARING (WEDDING / BULK GUEST SHARING)
+4. ENTERPRISE CLIENT GALLERIES & MEDIA DELIVERY
+5. DIRECT-TO-CLOUD STORAGE & UPLOAD SYSTEM
+6. CLIENT DOWNLOADS & ASYNCHRONOUS BULK ZIP
+7. AI FACE-BASED PHOTO DISCOVERY
+8. STORAGE QUOTA & ACCOUNT USAGE
+9. RATE LIMITING & ABUSE PREVENTION
+10. ERROR RESPONSES & STATUS CODES
+
+===============================================================================
+1. AUTHENTICATION & USER MANAGEMENT (/api/auth/)
+===============================================================================
+
+1.1 Check Username Availability
+    Method: POST
+    Endpoint: /api/auth/check-username/
+    Auth: None
+    Body (JSON):
+      { "username": "john_doe" }
+    Response (200 OK):
+      { "status": "success", "available": true, "message": "Username is available" }
+
+1.2 Check Identifier (Email/Phone)
+    Method: POST
+    Endpoint: /api/auth/check-identifier/
+    Auth: None
+    Body (JSON):
+      { "identifier": "user@example.com" }
+    Response (200 OK):
+      { "status": "success", "available": true }
+
+1.3 Register User
+    Method: POST
+    Endpoint: /api/auth/register/
+    Auth: None
+    Body (JSON):
+      {
+        "username": "photographer1",
+        "email": "photo@example.com",
+        "phone": "+1234567890",
+        "password": "SecurePassword123!",
+        "role": "PHOTOGRAPHER"   // "USER", "PHOTOGRAPHER", "STAFF"
+      }
+    Response (201 Created):
+      { "status": "success", "message": "Registration successful. OTP sent." }
+
+1.4 Verify Registration OTP
+    Method: POST
+    Endpoint: /api/auth/verify-otp/
+    Auth: None
+    Body (JSON):
+      { "email": "photo@example.com", "otp": "123456" }
+    Response (200 OK):
+      { "status": "success", "message": "Account verified successfully" }
+
+1.5 Resend Registration OTP
+    Method: POST
+    Endpoint: /api/auth/resend-otp/
+    Auth: None
+    Body (JSON):
+      { "email": "photo@example.com" }
+    Response (200 OK):
+      { "status": "success", "message": "OTP resent" }
+
+1.6 User Login
+    Method: POST
+    Endpoint: /api/auth/login/
+    Auth: None
+    Body (JSON):
+      { "username": "photo@example.com", "password": "SecurePassword123!" }
+    Response (200 OK):
+      {
+        "status": "success",
+        "tokens": {
+          "access": "<jwt_access_token>",
+          "refresh": "<jwt_refresh_token>"
+        },
+        "user": {
+          "id": 1,
+          "username": "photographer1",
+          "email": "photo@example.com",
+          "role": "PHOTOGRAPHER"
+        }
+      }
+
+1.7 Refresh JWT Token
+    Method: POST
+    Endpoint: /api/auth/token/refresh/
+    Auth: None
+    Body (JSON):
+      { "refresh": "<jwt_refresh_token>" }
+    Response (200 OK):
+      { "access": "<new_jwt_access_token>" }
+
+1.8 Logout
+    Method: POST
+    Endpoint: /api/auth/logout/
+    Auth: Bearer Token
+    Body (JSON):
+      { "refresh": "<jwt_refresh_token>" }
+    Response (200 OK):
+      { "status": "success", "message": "Logged out successfully" }
+
+1.9 Check Login State
+    Method: GET
+    Endpoint: /api/auth/check-login/
+    Auth: Bearer Token
+    Response (200 OK):
+      { "is_authenticated": true, "user_id": 1, "role": "PHOTOGRAPHER" }
+
+1.10 Password Reset & Change
+    - POST /api/auth/reset-password/otp/        (Request reset OTP via email)
+    - POST /api/auth/reset-password/verify-otp/ (Verify OTP)
+    - POST /api/auth/reset-password/direct/     (Set new password with verified token)
+    - POST /api/auth/change-password/           (Authenticated password update)
+
+1.11 Google OAuth Sign-in
+    Method: POST
+    Endpoint: /api/auth/google/
+    Auth: None
+    Body (JSON):
+      { "token": "<google_id_token>" }
+
+
+===============================================================================
+2. PHOTOGRAPHER PROFILES, CATEGORIES & POSTS (/api/photographers/)
+===============================================================================
+
+2.1 Photo Categories
+    - GET    /api/photographers/categories/list/             (List categories)
+    - POST   /api/photographers/categories/create/           (Create category - Admin/Staff)
+    - GET    /api/photographers/categories/<id>/detail/      (Category detail)
+    - PUT    /api/photographers/categories/<id>/update/      (Update category)
+    - PATCH  /api/photographers/categories/<id>/patch/       (Partial update)
+    - DELETE /api/photographers/categories/<id>/delete/      (Delete category)
+
+2.2 Photographer Profiles
+    - GET    /api/photographers/profiles/list/               (Public list of photographers)
+    - POST   /api/photographers/profiles/create/             (Create profile)
+    - GET    /api/photographers/profiles/me/                 (Get current photographer profile)
+    - PUT    /api/photographers/profiles/me/update/          (Update current profile)
+    - PATCH  /api/photographers/profiles/me/patch/           (Partial update current profile)
+
+2.3 Portfolio Posts & Feeds
+    - GET    /api/photographers/posts/list/                  (Public feed of posts)
+    - POST   /api/photographers/posts/create/                (Create portfolio post)
+    - GET    /api/photographers/posts/me/                    (My portfolio posts)
+    - GET    /api/photographers/posts/<id>/detail/           (Post detail)
+    - PUT    /api/photographers/posts/<id>/update/           (Update post)
+    - PATCH  /api/photographers/posts/<id>/patch/            (Patch post)
+    - DELETE /api/photographers/posts/<id>/delete/           (Delete post)
+
+2.4 Post Images
+    - GET    /api/photographers/posts/<post_id>/images/list/   (List images for post)
+    - POST   /api/photographers/posts/<post_id>/images/upload/ (Upload portfolio image)
+    - GET    /api/photographers/images/<id>/detail/            (Image details)
+    - DELETE /api/photographers/images/<id>/delete/            (Delete image)
+
+2.5 Feedbacks & Reviews
+    - GET    /api/photographers/posts/<post_id>/feedbacks/list/   (List feedbacks)
+    - POST   /api/photographers/posts/<post_id>/feedbacks/create/ (Post review)
+    - GET    /api/photographers/feedbacks/<id>/detail/            (Feedback detail)
+    - DELETE /api/photographers/feedbacks/<id>/delete/            (Delete feedback)
+
+2.6 Notifications
+    - GET    /api/photographers/notifications/list/          (List user notifications)
+    - POST   /api/photographers/notifications/read-all/      (Mark all read)
+    - GET    /api/photographers/notifications/<id>/detail/   (View notification)
+    - POST   /api/photographers/notifications/<id>/read/     (Mark single read)
+    - DELETE /api/photographers/notifications/<id>/delete/   (Delete notification)
+
+
+===============================================================================
+3. EVENT PHOTO SHARING (MARRIAGE / EVENT BULK UPLOAD & GUEST DOWNLOAD)
+===============================================================================
+
+Designed for events where a photographer uploads hundreds of event photos at
+once (via multipart or ZIP archive) and guests scan a QR code or click a link
+to immediately view and download all photos as a ZIP or individually.
+
+3.1 Create Shared Event
+    Method: POST
+    Endpoint: /api/events/
+    Auth: Bearer Token (Photographer)
+    Body (JSON):
+      {
+        "title": "Sarah & Alex Wedding",
+        "event_type": "Wedding",
+        "description": "Reception and ceremony photos",
+        "event_date": "2026-10-15",
+        "location": "Grand Palace Hotel",
+        "is_password_protected": false,
+        "pin_code": "1234",             // Optional PIN protection
+        "allow_bulk_download": true,
+        "expires_at": "2026-11-15T23:59:59Z"
+      }
+    Response (201 Created):
+      {
+        "id": 1,
+        "title": "Sarah & Alex Wedding",
+        "access_code": "SAW-789X",
+        "shareable_url": "http://example.com/share/SAW-789X/",
+        "qr_code_url": "/api/share/SAW-789X/qr/",
+        "photo_count": 0
+      }
+
+3.2 List Photographer's Events
+    Method: GET
+    Endpoint: /api/events/
+    Auth: Bearer Token (Photographer)
+
+3.3 Bulk Photo Upload (Multipart)
+    Method: POST
+    Endpoint: /api/events/<event_id>/upload/
+    Auth: Bearer Token (Photographer)
+    Content-Type: multipart/form-data
+    Body:
+      photos: [file1.jpg, file2.jpg, file3.jpg, ...]
+      caption: "Reception" (optional)
+    Response (201 Created):
+      {
+        "message": "Uploaded 25 photos successfully.",
+        "uploaded_count": 25,
+        "failed_count": 0
+      }
+
+3.4 Bulk Photo Upload (ZIP File Extraction)
+    Method: POST
+    Endpoint: /api/events/<event_id>/upload-zip/
+    Auth: Bearer Token (Photographer)
+    Content-Type: multipart/form-data
+    Body:
+      zip_file: <wedding_photos.zip>
+    Response (201 Created):
+      {
+        "message": "ZIP extracted. 150 photos imported successfully.",
+        "imported_count": 150
+      }
+
+3.5 Public Event Gallery (Guests / Attendees)
+    Method: GET
+    Endpoint: /api/share/<access_code>/
+    Auth: None (Public)
+    Headers:
+      X-Event-PIN: "1234" (required if event is PIN-protected)
+    Response (200 OK):
+      {
+        "id": 1,
+        "title": "Sarah & Alex Wedding",
+        "event_type": "Wedding",
+        "access_code": "SAW-789X",
+        "photo_count": 150,
+        "allow_bulk_download": true,
+        "photos": [
+          {
+            "id": 101,
+            "image": "http://.../photo1.jpg",
+            "thumbnail": "http://.../thumb_photo1.jpg",
+            "download_url": "/api/photos/101/download/"
+          }
+        ]
+      }
+
+3.6 Instant Download All Photos as ZIP (Streamed)
+    Method: GET
+    Endpoint: /api/share/<access_code>/download-all/
+    Auth: None (Public)
+    Headers:
+      X-Event-PIN: "1234" (if PIN-protected)
+    Response (200 OK):
+      Content-Type: application/zip
+      Content-Disposition: attachment; filename="Sarah_Alex_Wedding_photos.zip"
+      (Streamed binary zip stream containing original photos)
+
+3.7 Single Photo Direct Download
+    Method: GET
+    Endpoint: /api/photos/<photo_id>/download/
+    Auth: None (Public)
+    Response:
+      Redirect (302) or Binary stream with Content-Disposition: attachment
+
+3.8 Event QR Code Image
+    Method: GET
+    Endpoint: /api/share/<access_code>/qr/
+    Auth: None (Public)
+    Response (200 OK):
+      Content-Type: image/png (Scannable QR code pointing to gallery link)
+
+
+===============================================================================
+4. ENTERPRISE CLIENT GALLERIES & MEDIA DELIVERY (/api/galleries/)
+===============================================================================
+
+4.1 Create Client Gallery
+    Method: POST
+    Endpoint: /api/galleries/
+    Auth: Bearer Token (Photographer)
+    Body (JSON):
+      {
+        "title": "Corporate Gala 2026",
+        "description": "Annual enterprise celebration",
+        "event_date": "2026-11-20",
+        "visibility": "unlisted",        // "public", "private", "unlisted", "password_protected"
+        "password": "ClientPassword99",  // Optional password protection
+        "downloads_enabled": true,
+        "face_search_enabled": true,
+        "expires_at": "2026-12-31T23:59:59Z"
+      }
+    Response (201 Created):
+      {
+        "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "title": "Corporate Gala 2026",
+        "status": "published",
+        "visibility": "unlisted",
+        "share_token": "a1b2c3d4e5f6g7h8...",
+        "share_url": "http://example.com/api/shared-galleries/a1b2c3d4e5f6g7h8.../",
+        "downloads_enabled": true,
+        "face_search_enabled": true,
+        "total_photos": 0,
+        "total_size_bytes": 0
+      }
+
+4.2 List Galleries (Owner/Photographer)
+    Method: GET
+    Endpoint: /api/galleries/
+    Auth: Bearer Token (Photographer)
+    Query Parameters:
+      - status: "published", "draft", "archived"
+      - search: filter by title
+
+4.3 Get Gallery Details & Media Items
+    Method: GET
+    Endpoint: /api/galleries/<uuid:gallery_id>/
+    Auth: Bearer Token (Owner / Permitted Staff)
+    Response (200 OK):
+      Includes full gallery metadata, active media list, thumbnails, preview CDN
+      URLs, dimensions, upload statuses, and storage metrics.
+
+4.4 Update Gallery Settings
+    Method: PATCH
+    Endpoint: /api/galleries/<uuid:gallery_id>/
+    Auth: Bearer Token (Owner)
+    Body (JSON):
+      {
+        "downloads_enabled": false,
+        "face_search_enabled": true,
+        "visibility": "password_protected",
+        "password": "NewSecretPassword"
+      }
+
+4.5 Delete / Archive Gallery
+    Method: DELETE
+    Endpoint: /api/galleries/<uuid:gallery_id>/
+    Auth: Bearer Token (Owner)
+    Response (204 No Content)
+
+4.6 Generate / Rotate Secure Share Link
+    Method: POST
+    Endpoint: /api/galleries/<uuid:gallery_id>/share/
+    Auth: Bearer Token (Owner)
+    Body (JSON):
+      { "expires_in_days": 30 }
+    Response (200 OK):
+      Returns new cryptographically random 48-character URL-safe token.
+
+4.7 Revoke Share Link
+    Method: DELETE
+    Endpoint: /api/galleries/<uuid:gallery_id>/share/
+    Auth: Bearer Token (Owner)
+    Response (200 OK):
+      { "detail": "Share token revoked successfully." }
+
+4.8 Access Shared Client Gallery (Client / Guest)
+    Method: GET
+    Endpoint: /api/shared-galleries/<str:share_token>/
+    Auth: None (Public / Client)
+    Headers:
+      X-Gallery-Password: "ClientPassword99" (required if password protected)
+    Rate Limit: 150 requests / minute
+    Response (200 OK):
+      {
+        "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "title": "Corporate Gala 2026",
+        "description": "...",
+        "photographer_name": "Studio Lens",
+        "downloads_enabled": true,
+        "face_search_enabled": true,
+        "media": [
+          {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "thumbnail_url": "https://cdn.example.com/thumbnails/...",
+            "preview_url": "https://cdn.example.com/previews/...",
+            "download_url": "/api/galleries/media/550e8400-e29b-41d4-a716-446655440000/download/",
+            "width": 1920,
+            "height": 1080
+          }
+        ]
+      }
+
+4.9 Verify Gallery Password
+    Method: POST
+    Endpoint: /api/shared-galleries/<str:share_token>/verify-password/
+    Auth: None (Public)
+    Body (JSON):
+      { "password": "ClientPassword99" }
+    Response (200 OK):
+      { "valid": true, "message": "Password verified successfully." }
+
+
+===============================================================================
+5. DIRECT-TO-CLOUD STORAGE & UPLOAD SYSTEM
+===============================================================================
+
+Supports two upload mechanisms:
+A) Standard Multipart Upload (API handles upload and quota check directly)
+B) Direct-to-Storage / Two-Phase Quota Reservation (Presigned S3/R2 upload)
+
+5.1 Standard Multipart Upload
+    Method: POST
+    Endpoint: /api/galleries/<uuid:gallery_id>/upload/
+    Auth: Bearer Token (Owner)
+    Rate Limit: 60 requests / minute
+    Content-Type: multipart/form-data
+    Body:
+      files: [photo1.jpg, photo2.jpg, ...]
+    Response (201 Created):
+      [
+        {
+          "id": "550e8400-e29b-41d4-a716-446655440000",
+          "storage_key": "galleries/3fa85f64.../media/...",
+          "file_size": 4200500,
+          "processing_status": "ready"
+        }
+      ]
+    Error (413 Payload Too Large):
+      {
+        "code": "STORAGE_LIMIT_EXCEEDED",
+        "detail": "Upload exceeds photographer storage quota."
+      }
+
+5.2 Direct S3/R2 Upload Step 1: Quota Reservation & Presigned URL
+    Method: POST
+    Endpoint: /api/galleries/<uuid:gallery_id>/upload-init/
+    Auth: Bearer Token (Owner)
+    Rate Limit: 60 requests / minute
+    Body (JSON):
+      {
+        "filename": "DSC_001.JPG",
+        "file_size": 18450000,           // File size in bytes
+        "mime_type": "image/jpeg"
+      }
+    Workflow:
+      - Validates photographer quota: (used + reserved + file_size) <= limit.
+      - Places lock on photographer profile to prevent race conditions.
+      - Reserves quota for 30 minutes in `storage_reserved_bytes`.
+      - Returns presigned direct upload URL.
+    Response (200 OK):
+      {
+        "reservation_id": "89b91e92-e7f0-4fa8-a1b7-...",
+        "storage_key": "galleries/3fa85f64.../media/DSC_001.JPG",
+        "upload_url": "https://bucket.s3.amazonaws.com/galleries/...&X-Amz-Signature=...",
+        "http_method": "PUT",
+        "headers": { "Content-Type": "image/jpeg" },
+        "expires_in": 1800
+      }
+
+5.3 Direct S3/R2 Upload Step 2: Confirm Upload & Commit Quota
+    Method: POST
+    Endpoint: /api/galleries/<uuid:gallery_id>/upload-confirm/
+    Auth: Bearer Token (Owner)
+    Body (JSON):
+      {
+        "reservation_id": "89b91e92-e7f0-4fa8-a1b7-...",
+        "actual_file_size": 18450000
+      }
+    Workflow:
+      - Atomically transfers reserved bytes to `storage_used_bytes`.
+      - Creates verified `Media` record.
+      - Dispatches background thumbnail generation & face indexing.
+    Response (201 Created):
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "status": "processing",
+        "message": "Media upload confirmed and indexed."
+      }
+
+5.4 Delete Media Item
+    Method: DELETE
+    Endpoint: /api/galleries/media/<uuid:media_id>/
+    Auth: Bearer Token (Owner)
+    Workflow:
+      - Permanently deletes original file from object storage / disk.
+      - Deletes preview, thumbnail derivatives, and face embeddings.
+      - Atomically subtracts `file_size` from photographer's `storage_used_bytes`.
+    Response (204 No Content)
+
+
+===============================================================================
+6. CLIENT DOWNLOADS & ASYNCHRONOUS BULK ZIP
+===============================================================================
+
+6.1 Single Media Download (Signed CDN / Cloud Link)
+    Method: GET
+    Endpoint: /api/galleries/media/<uuid:media_id>/download/
+    Auth: None (Public if gallery open or share_token valid)
+    Query Parameters:
+      - share_token: "<token>" (if accessing via share link)
+    Rate Limit: 120 requests / minute
+    Response (200 OK):
+      {
+        "download_url": "https://cdn.example.com/galleries/.../original.jpg?signature=...",
+        "filename": "DSC_001.JPG",
+        "file_size": 18450000,
+        "expires_in": 3600
+      }
+
+6.2 Request Asynchronous Bulk ZIP Download
+    Method: POST
+    Endpoint: /api/galleries/<uuid:gallery_id>/bulk-download/
+    Auth: None (Public with share_token) or Authenticated User
+    Rate Limit: 5 requests / minute
+    Body (JSON):
+      {
+        "share_token": "<token>",
+        "media_ids": [                   // Optional: subset of photos
+          "550e8400-e29b-41d4-a716-446655440000",
+          "882f8400-e29b-41d4-a716-446655440111"
+        ]
+      }
+    Response (202 Accepted):
+      {
+        "job_id": "991e8400-e29b-41d4-a716-446655440999",
+        "status": "pending",
+        "poll_url": "/api/galleries/bulk-download-jobs/991e8400-e29b-41d4-a716-446655440999/",
+        "message": "Archive creation queued. Poll the status URL for readiness."
+      }
+
+6.3 Poll Bulk Download Job Status
+    Method: GET
+    Endpoint: /api/galleries/bulk-download-jobs/<uuid:job_id>/
+    Auth: None (or matching share_token / user)
+    Response (When in progress - 200 OK):
+      {
+        "id": "991e8400-e29b-41d4-a716-446655440999",
+        "status": "processing",
+        "download_url": null
+      }
+    Response (When completed - 200 OK):
+      {
+        "id": "991e8400-e29b-41d4-a716-446655440999",
+        "status": "ready",
+        "download_url": "https://bucket.s3.amazonaws.com/archives/gallery_photos.zip?X-Amz-Signature=...",
+        "expires_at": "2026-09-10T12:00:00Z"
+      }
+
+
+===============================================================================
+7. AI FACE-BASED PHOTO DISCOVERY
+===============================================================================
+
+Allows clients or guests to upload a selfie to instantly find all gallery photos
+containing their face.
+
+Key Security Guarantees:
+- Strictly Gallery-Isolated: Never searches across other galleries or photographers.
+- Biometric Privacy: Selfies are processed in memory and never persisted. Face
+  vectors are never exposed in REST responses.
+- Permission Guard: Rejects request if `face_search_enabled` is disabled on
+  the gallery or the photographer's subscription plan.
+
+7.1 Search Gallery by Face Selfie
+    Method: POST
+    Endpoint: /api/galleries/<uuid:gallery_id>/face-search/
+    Auth: None (Public with share_token) or Authenticated Client
+    Rate Limit: 15 requests / minute
+    Content-Type: multipart/form-data
+    Body:
+      selfie: <selfie_photo.jpg>
+      share_token: "<token>" (required if private/unlisted gallery)
+    Response (200 OK):
+      {
+        "total_matches": 8,
+        "matches": [
+          {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "thumbnail_url": "https://cdn.example.com/thumbnails/photo1.jpg",
+            "preview_url": "https://cdn.example.com/previews/photo1.jpg",
+            "download_url": "/api/galleries/media/550e8400-e29b-41d4-a716-446655440000/download/",
+            "confidence": 0.88,
+            "width": 4000,
+            "height": 3000
+          }
+        ]
+      }
+    Error (403 Forbidden):
+      {
+        "code": "FACE_SEARCH_DISABLED",
+        "detail": "Face recognition search is not enabled for this gallery."
+      }
+
+
+===============================================================================
+8. STORAGE QUOTA & ACCOUNT USAGE
+===============================================================================
+
+8.1 Get Photographer Storage Metrics
+    Method: GET
+    Endpoint: /api/account/storage/
+    Auth: Bearer Token (Photographer)
+    Response (200 OK):
+      {
+        "storage_limit_bytes": 53687091200,      // 50 GB
+        "storage_used_bytes": 12884901888,       // ~12 GB used
+        "storage_reserved_bytes": 104857600,     // 100 MB in-flight uploads
+        "storage_remaining_bytes": 40697331712,  // ~37.9 GB remaining
+        "usage_percentage": 24.19,
+        "total_galleries": 8,
+        "max_galleries": 50,
+        "plan_name": "Professional Plan",
+        "face_search_enabled": true
+      }
+
+8.2 Storage Audit & Reconciliation Command (CLI)
+    To recalculate and synchronize exact disk usage with the database:
+      python manage.py reconcile_storage_usage
+      python manage.py reconcile_storage_usage --photographer-id 1
+
+
+===============================================================================
+9. RATE LIMITING & ABUSE PREVENTION
+===============================================================================
+
+All sensitive endpoints enforce rate limits using `django-ratelimit` and DRF
+throttles. Reverse-proxy headers (`HTTP_X_FORWARDED_FOR`) are inspected for
+accurate client IP resolution.
+
+Rate Limit Matrix:
+-------------------------------------------------------------------------------
+Scope            Limit           Target Endpoints
+-------------------------------------------------------------------------------
+face_search      15 / minute     POST /api/galleries/<id>/face-search/
+bulk_download    5 / minute      POST /api/galleries/<id>/bulk-download/
+upload           60 / minute     POST /api/galleries/<id>/upload-init/, /upload/
+download         120 / minute    GET  /api/galleries/media/<id>/download/
+share_access     150 / minute    GET  /api/shared-galleries/<token>/
+user             2000 / hour     Standard authenticated requests
+anon             300 / hour      Standard unauthenticated requests
+-------------------------------------------------------------------------------
+
+When rate limits are exceeded, the API returns HTTP 429:
+    Status: 429 Too Many Requests
+    Headers: Retry-After: <seconds>
+    Body (JSON):
+      {
+        "code": "RATE_LIMIT_EXCEEDED",
+        "detail": "Too many requests. Please slow down."
+      }
+
+
+===============================================================================
+10. ERROR RESPONSES & STATUS CODES
+===============================================================================
+
+Standard error codes returned by the backend:
+
+- HTTP 400 Bad Request
+  { "code": "VALIDATION_ERROR", "detail": "Missing required field: file_size" }
+
+- HTTP 401 Unauthorized
+  { "code": "AUTHENTICATION_REQUIRED", "detail": "Authentication credentials were not provided." }
+
+- HTTP 403 Forbidden
+  { "code": "GALLERY_ACCESS_DENIED", "detail": "You do not have permission to view this gallery." }
+  { "code": "DOWNLOAD_DISABLED", "detail": "Downloads are disabled for this gallery." }
+  { "code": "FACE_SEARCH_DISABLED", "detail": "Face recognition is disabled for this gallery." }
+
+- HTTP 404 Not Found
+  { "code": "NOT_FOUND", "detail": "Gallery or media not found." }
+
+- HTTP 410 Gone
+  { "code": "LINK_EXPIRED", "detail": "This share link has expired." }
+
+- HTTP 413 Payload Too Large
+  { "code": "STORAGE_LIMIT_EXCEEDED", "detail": "Upload exceeds photographer storage quota." }
+
+- HTTP 429 Too Many Requests
+  { "code": "RATE_LIMIT_EXCEEDED", "detail": "Too many requests. Please slow down." }
+===============================================================================

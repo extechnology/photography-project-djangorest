@@ -32,9 +32,35 @@ class PhotographerProfile(models.Model):
     phone = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)
     address = models.CharField(max_length=255, blank=True)
+    storage_used_bytes = models.BigIntegerField(
+        default=0,
+        help_text="Current total storage used across all galleries in bytes"
+    )
+    storage_reserved_bytes = models.BigIntegerField(
+        default=0,
+        help_text="Storage temporarily reserved during in-flight uploads in bytes"
+    )
+
+    def get_storage_limit(self):
+        """Returns effective storage limit in bytes based on plan or default."""
+        if self.plan and self.plan.storage_limit_bytes:
+            return self.plan.storage_limit_bytes
+        return 10737418240  # Default 10 GB for accounts without explicit plan
+
+    def get_storage_remaining(self):
+        """Returns remaining available storage in bytes."""
+        limit = self.get_storage_limit()
+        used_total = self.storage_used_bytes + self.storage_reserved_bytes
+        return max(0, limit - used_total)
+
+    def can_allocate_storage(self, bytes_needed):
+        """Checks if the required bytes can be accommodated within the quota."""
+        limit = self.get_storage_limit()
+        return (self.storage_used_bytes + self.storage_reserved_bytes + bytes_needed) <= limit
 
     def __str__(self):
         return self.name
+
 
 
 class PhotographerPost(models.Model):
