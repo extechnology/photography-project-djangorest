@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, render
 from django.db.models import Q
 
 from .photo_models import (
@@ -13,14 +13,18 @@ from .photo_models import (
     PostImage,
     PostFeedback,
     Notification,
+    NotificationPreference,
 )
 from .photo_serializers import (
     PhotoCategorySerializer,
     PhotographerProfileSerializer,
+    WatermarkConfigSerializer,
+    NotificationPreferenceSerializer,
     PostImageSerializer,
     PostFeedbackSerializer,
     PhotographerPostSerializer,
     NotificationSerializer,
+    OnboardingSetupSerializer,
 )
 from App.Auth.auth_utils import get_user_from_request
 
@@ -211,6 +215,24 @@ class PhotographerProfileCreateView(APIView):
 
 
 class MyPhotographerProfileGetView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get_or_create_profile(self, user):
+        profile, created = PhotographerProfile.objects.get_or_create(
+            user=user,
+            defaults={
+                "name": user.fullname or user.username or "Studio Owner",
+                "email": user.email or "",
+                "phone": user.phone or "",
+                "studio_name": "",
+                "occupation": "",
+                "is_onboarded": False,
+                "onboarding_step": 1,
+                "default_template": "editorial",
+            }
+        )
+        return profile
+
     def get(self, request):
         user = get_current_user(request)
         if not user:
@@ -219,20 +241,9 @@ class MyPhotographerProfileGetView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        try:
-            profile = PhotographerProfile.objects.get(user=user)
-        except PhotographerProfile.DoesNotExist:
-            return Response(
-                {"message": "No photographer profile found for current user."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        profile = self._get_or_create_profile(user)
         serializer = PhotographerProfileSerializer(profile)
         return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-class MyPhotographerProfileUpdateView(APIView):
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def put(self, request):
         user = get_current_user(request)
@@ -242,14 +253,7 @@ class MyPhotographerProfileUpdateView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        try:
-            profile = PhotographerProfile.objects.get(user=user)
-        except PhotographerProfile.DoesNotExist:
-            return Response(
-                {"message": "No photographer profile found for current user."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        profile = self._get_or_create_profile(user)
         serializer = PhotographerProfileSerializer(profile, data=request.data)
         if serializer.is_valid():
             updated_profile = serializer.save()
@@ -265,10 +269,6 @@ class MyPhotographerProfileUpdateView(APIView):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-
-class MyPhotographerProfilePartialUpdateView(APIView):
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
-
     def patch(self, request):
         user = get_current_user(request)
         if not user:
@@ -277,14 +277,7 @@ class MyPhotographerProfilePartialUpdateView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        try:
-            profile = PhotographerProfile.objects.get(user=user)
-        except PhotographerProfile.DoesNotExist:
-            return Response(
-                {"message": "No photographer profile found for current user."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        profile = self._get_or_create_profile(user)
         serializer = PhotographerProfileSerializer(profile, data=request.data, partial=True)
         if serializer.is_valid():
             updated_profile = serializer.save()
@@ -299,6 +292,343 @@ class MyPhotographerProfilePartialUpdateView(APIView):
             {"message": "Failed to update profile", "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST
         )
+
+
+class MyPhotographerProfileUpdateView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def put(self, request):
+        view = MyPhotographerProfileGetView()
+        view.request = request
+        view.format_kwarg = None
+        return view.put(request)
+
+    def patch(self, request):
+        view = MyPhotographerProfileGetView()
+        view.request = request
+        view.format_kwarg = None
+        return view.patch(request)
+
+
+class MyPhotographerProfilePartialUpdateView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def patch(self, request):
+        view = MyPhotographerProfileGetView()
+        view.request = request
+        view.format_kwarg = None
+        return view.patch(request)
+
+
+class MyPhotographerAvatarUploadView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            return Response(
+                {"message": "Photographer profile not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        avatar_file = request.FILES.get('avatar') or request.FILES.get('profile_image')
+        if not avatar_file:
+            return Response(
+                {"message": "No image file provided in 'avatar' field."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        profile.avatar = avatar_file
+        profile.profile_image = avatar_file
+        profile.avatar_url = ""
+        profile.save(update_fields=['avatar', 'profile_image', 'avatar_url'])
+
+        return Response({
+            "message": "Avatar uploaded successfully",
+            "avatar_url": profile.get_avatar_url(),
+            "data": PhotographerProfileSerializer(profile).data
+        }, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            return Response(
+                {"message": "Photographer profile not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if profile.avatar:
+            try:
+                profile.avatar.delete(save=False)
+            except Exception:
+                pass
+            profile.avatar = None
+
+        if profile.profile_image:
+            try:
+                profile.profile_image.delete(save=False)
+            except Exception:
+                pass
+            profile.profile_image = None
+
+        profile.avatar_url = ""
+        profile.save(update_fields=['avatar', 'profile_image', 'avatar_url'])
+
+        return Response({
+            "message": "Profile photo removed successfully",
+            "avatar_url": "",
+            "data": PhotographerProfileSerializer(profile).data
+        }, status=status.HTTP_200_OK)
+
+
+class ProfilePreviewView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return render(request, 'profile_preview.html')
+
+
+class MyPhotographerWatermarkView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            return Response(
+                {"message": "Photographer profile not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = WatermarkConfigSerializer(profile)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            return Response(
+                {"message": "Photographer profile not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = WatermarkConfigSerializer(profile, data=request.data, partial=True)
+        if serializer.is_valid():
+            profile = serializer.save()
+            return Response({
+                "message": "Watermark configuration updated successfully",
+                "data": WatermarkConfigSerializer(profile).data
+            }, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class OnboardingCompleteView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            return Response(
+                {"message": "Photographer profile not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "status": "success",
+            "is_onboarded": profile.is_onboarded,
+            "onboarding_step": profile.onboarding_step,
+            "name": profile.name or user.fullname or "",
+            "phone": profile.phone or user.phone or "",
+            "occupation": profile.occupation or "",
+            "location": profile.location or "",
+            "studio_name": profile.studio_name,
+            "avatar_url": profile.get_avatar_url(),
+            "profile": PhotographerProfileSerializer(profile).data
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            # Auto-create profile if missing
+            profile = PhotographerProfile.objects.create(
+                user=user,
+                name=user.fullname or user.username or "Studio Owner",
+                email=user.email or "",
+                studio_name="",
+                is_onboarded=False,
+                onboarding_step=1
+            )
+
+        serializer = OnboardingSetupSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"status": "error", "message": "Validation failed.", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        data = serializer.validated_data
+        name = data.get('name', '').strip()
+        phone = data.get('phone', '').strip()
+        occupation = data.get('occupation', '').strip()
+        studio_name = data.get('studio_name', '').strip()
+        location = data.get('location', '').strip()
+        avatar_file = request.FILES.get('avatar') or request.FILES.get('profile_image')
+        avatar_url = data.get('avatar_url', '').strip()
+
+        # Update Name (Your Name)
+        if name:
+            profile.name = name
+            user.fullname = name
+            user.save(update_fields=['fullname'])
+
+        # Update Phone Number (optional)
+        if phone:
+            profile.phone = phone
+            if not user.phone:
+                user.phone = phone
+                user.save(update_fields=['phone'])
+
+        # Update Occupation (e.g. Wedding Photographer)
+        if occupation:
+            profile.occupation = occupation
+
+        # Update Studio Name / Location if provided
+        if studio_name:
+            profile.studio_name = studio_name
+            if not profile.watermark_text or profile.watermark_text == '© Ex Studio':
+                profile.watermark_text = f"© {studio_name}"
+
+        if location:
+            profile.location = location
+
+        # Custom Profile Image (Avatar) - Optional
+        if avatar_file:
+            profile.avatar = avatar_file
+        elif avatar_url:
+            profile.avatar_url = avatar_url
+
+        # Mark onboarding complete
+        profile.is_onboarded = True
+        profile.onboarding_step = int(data.get('onboarding_step') or 3)
+        profile.save()
+
+        return Response({
+            "status": "success",
+            "message": "Studio setup and onboarding completed successfully.",
+            "is_onboarded": profile.is_onboarded,
+            "onboarding_step": profile.onboarding_step,
+            "profile": PhotographerProfileSerializer(profile).data,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "fullname": user.fullname,
+                "phone": user.phone
+            }
+        }, status=status.HTTP_200_OK)
+
+
+PhotographerOnboardingView = OnboardingCompleteView
+
+
+
+class NotificationPreferenceView(APIView):
+    def get(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            return Response(
+                {"message": "Photographer profile not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        prefs, _ = NotificationPreference.objects.get_or_create(photographer=profile)
+        serializer = NotificationPreferenceSerializer(prefs)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        return self.patch(request)
+
+    def patch(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response(
+                {"message": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            profile = PhotographerProfile.objects.get(user=user)
+        except PhotographerProfile.DoesNotExist:
+            return Response(
+                {"message": "Photographer profile not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        prefs, _ = NotificationPreference.objects.get_or_create(photographer=profile)
+        serializer = NotificationPreferenceSerializer(prefs, data=request.data, partial=True)
+        if serializer.is_valid():
+            prefs = serializer.save()
+            return Response({
+                "message": "Notification preferences updated successfully",
+                "data": NotificationPreferenceSerializer(prefs).data
+            }, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # =============================================================================
@@ -794,7 +1124,12 @@ class NotificationListView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        notifications = Notification.objects.filter(user=user).order_by('-created_at')
+        profile = getattr(user, 'photographer_profile', None)
+        query = Q(user=user)
+        if profile:
+            query = query | Q(photographer=profile)
+
+        notifications = Notification.objects.filter(query).order_by('-created_at')
         serializer = NotificationSerializer(notifications, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

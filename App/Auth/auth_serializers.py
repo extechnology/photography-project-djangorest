@@ -226,12 +226,35 @@ class VerifyResetPasswordSerializer(serializers.Serializer):
         return data
     
     def create(self, validated_data):
-        
         identifier = validated_data.get("identifier")
-        
         otp_instance = ResetPasswordOTP.objects.get(identifier=identifier)
         
         otp_instance.is_verified = True
         otp_instance.save()
         
         return {'message': 'OTP verified successfully'}
+
+
+class PasswordlessSendOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+
+class PasswordlessVerifyOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    otp = serializers.CharField(max_length=6, required=True)
+    fullname = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    role = serializers.ChoiceField(
+        choices=User.Role.choices,
+        default=User.Role.PHOTOGRAPHER,
+        required=False
+    )
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+    def validate_otp(self, value):
+        return value.strip()
+

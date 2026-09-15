@@ -1,0 +1,278 @@
+===============================================================================
+PHOTOGRAPHER PROFILE SECTION - REST API SPECIFICATION
+===============================================================================
+Base URL: http://<domain-or-ip>:8000/api/photographers/
+Authentication: HTTP Bearer Token (Authorization: Bearer <access_token>)
+Content-Type: application/json (or multipart/form-data for image uploads)
+Date Updated: September 2026
+
+-------------------------------------------------------------------------------
+TABLE OF CONTENTS
+-------------------------------------------------------------------------------
+1. Get Current Photographer Profile & Metrics
+2. Update Personal Information (Save Changes)
+3. Upload Profile Photo
+4. Remove Profile Photo
+5. Live HTML/CSS UI Preview Route
+
+===============================================================================
+1. GET CURRENT PHOTOGRAPHER PROFILE & METRICS
+===============================================================================
+Endpoint: GET /api/photographers/profiles/me/
+Auth Required: Yes (Photographer Bearer Token)
+
+Description:
+  Retrieves the authenticated photographer's profile details, including
+  Personal Information, Profile Photo, Quick Info statistics, and active
+  Subscription Plan details. If a profile doesn't exist yet, it is 
+  automatically initialized.
+
+Request Headers:
+  Authorization: Bearer <access_token>
+  Accept: application/json
+
+Response (200 OK):
+{
+  "id": 8,
+  "user": 11,
+  "user_username": "sarangsaru445",
+  "user_email": "sarangsaru445@gmail.com",
+  "name": "Sarang A",
+  "phone": "+918129886279",
+  "email": "sarangsaru445@gmail.com",
+  "occupation": "Wedding & Editorial Photographer",
+  "studio_name": "Lumière Studio",
+  "bio": "Editorial wedding and portrait photographer.",
+  "location": "Milan & Lake Como, Italy",
+  "website_url": "https://lumierestudio.com",
+  "instagram_handle": "lumiere.studio",
+  "avatar": "http://127.0.0.1:8000/media/photographer_profiles/avatar.jpg",
+  "avatar_url": "http://127.0.0.1:8000/media/photographer_profiles/avatar.jpg",
+  "profile_image": "http://127.0.0.1:8000/media/photographer_profiles/avatar.jpg",
+  "default_template": "editorial",
+  "enable_watermark": false,
+  "watermark_text": "© Lumière Studio",
+  "watermark_image": null,
+  "watermark_opacity": 0.45,
+  "watermark_position": "bottom_right",
+  "is_onboarded": true,
+  "onboarding_step": 3,
+  "storage_used_bytes": 30816829440,
+  "storage_reserved_bytes": 0,
+  "storage_limit_bytes": 128849018880,
+  "storage_remaining_bytes": 98032189440,
+  "quick_info": {
+    "member_since": "Aug 14, 2026",
+    "member_since_iso": "2026-08-14T10:32:36.856984+00:00",
+    "galleries_created": 5,
+    "total_photos": 1240,
+    "total_videos": 48,
+    "storage_used_bytes": 30816829440,
+    "storage_limit_bytes": 128849018880,
+    "storage_used_formatted": "28.7 GB",
+    "storage_limit_formatted": "120 GB",
+    "storage_display": "28.7 GB / 120 GB"
+  },
+  "plan_details": {
+    "name": "Pro Studio Annual",
+    "tier": "pro",
+    "billing_cycle": "annual",
+    "headline": "You're on Pro Studio Annual",
+    "description": "Unlock more storage and premium features."
+  },
+  "created_at": "2026-08-14T10:32:36.864653Z",
+  "updated_at": "2026-09-15T15:35:59.215840Z"
+}
+
+Error Responses:
+  - 401 Unauthorized:
+    { "message": "Authentication required." }
+
+
+===============================================================================
+2. UPDATE PERSONAL INFORMATION (SAVE CHANGES)
+===============================================================================
+Endpoint: PATCH /api/photographers/profiles/me/
+Alternative Aliases:
+  - PUT   /api/photographers/profiles/me/
+  - PATCH /api/photographers/profiles/me/patch/
+  - PUT   /api/photographers/profiles/me/update/
+Auth Required: Yes (Photographer Bearer Token)
+Content-Type: application/json
+
+Description:
+  Updates personal details displayed in the "Personal Information" card.
+  * Note on Automatic User Synchronization:
+    - Updating 'name' updates PhotographerProfile.name AND User.fullname.
+    - Updating 'phone' updates PhotographerProfile.phone AND User.phone.
+    - Updating 'email' updates PhotographerProfile.email AND User.email.
+
+Request Body (JSON):
+{
+  "name": "Sarang A",
+  "phone": "+918129886279",
+  "email": "sarangsaru445@gmail.com",
+  "occupation": "Wedding & Editorial Photographer"
+}
+
+Response (200 OK):
+{
+  "message": "Profile updated successfully",
+  "data": {
+    "id": 8,
+    "user": 11,
+    "user_username": "sarangsaru445",
+    "user_email": "sarangsaru445@gmail.com",
+    "name": "Sarang A",
+    "phone": "+918129886279",
+    "email": "sarangsaru445@gmail.com",
+    "occupation": "Wedding & Editorial Photographer",
+    "avatar_url": "http://127.0.0.1:8000/media/photographer_profiles/avatar.jpg",
+    "quick_info": {
+      "member_since": "Aug 14, 2026",
+      "galleries_created": 5,
+      "total_photos": 1240,
+      "total_videos": 48,
+      "storage_display": "28.7 GB / 120 GB"
+    },
+    "plan_details": {
+      "name": "Pro Studio Annual",
+      "headline": "You're on Pro Studio Annual",
+      "description": "Unlock more storage and premium features."
+    }
+  }
+}
+
+Error Responses:
+  - 400 Bad Request:
+    { "message": "Failed to update profile", "errors": { ... } }
+  - 401 Unauthorized:
+    { "message": "Authentication required." }
+
+
+===============================================================================
+3. UPLOAD / UPDATE PROFILE PHOTO (AVATAR)
+===============================================================================
+Endpoint: POST /api/photographers/profiles/me/avatar/
+Auth Required: Yes (Photographer Bearer Token)
+Content-Type: multipart/form-data
+
+Description:
+  Uploads a new profile image. Powers the "Upload Image" button.
+  Recommended: Square image, at least 500x500px (JPEG, PNG, WebP).
+
+Request Body (Form-Data):
+  avatar: <binary image file>
+
+Response (200 OK):
+{
+  "message": "Avatar uploaded successfully",
+  "avatar_url": "http://127.0.0.1:8000/media/photographer_profiles/avatar.jpg",
+  "data": {
+    "id": 8,
+    "name": "Sarang A",
+    "avatar_url": "http://127.0.0.1:8000/media/photographer_profiles/avatar.jpg"
+  }
+}
+
+Error Responses:
+  - 400 Bad Request:
+    { "message": "No image file provided in 'avatar' field." }
+  - 401 Unauthorized:
+    { "message": "Authentication required." }
+
+
+===============================================================================
+4. REMOVE PROFILE PHOTO
+===============================================================================
+Endpoint: DELETE /api/photographers/profiles/me/avatar/
+Auth Required: Yes (Photographer Bearer Token)
+
+Description:
+  Deletes the current profile photo and resets avatar fields.
+  Powers the "Remove" button in the Profile Photo card.
+
+Request Headers:
+  Authorization: Bearer <access_token>
+
+Response (200 OK):
+{
+  "message": "Profile photo removed successfully",
+  "avatar_url": "",
+  "data": {
+    "id": 8,
+    "name": "Sarang A",
+    "avatar": null,
+    "avatar_url": "",
+    "profile_image": null
+  }
+}
+
+Error Responses:
+  - 401 Unauthorized:
+    { "message": "Authentication required." }
+  - 404 Not Found:
+    { "message": "Photographer profile not found." }
+
+
+===============================================================================
+5. STANDALONE UI PREVIEW ROUTE
+===============================================================================
+Endpoint: GET /api/photographers/profiles/preview/
+Auth Required: No (Public / Development Preview)
+Content-Type: text/html
+
+Description:
+  Renders the interactive pixel-perfect dark theme UI preview matching the
+  design with active tab navigation, Personal Information form, Profile Photo
+  uploader/remover, Quick Info stats, and Pro Studio Annual card.
+
+
+===============================================================================
+FRONTEND INTEGRATION EXAMPLES (JAVASCRIPT / AXIOS)
+===============================================================================
+
+// 1. Fetch Profile Data
+const fetchProfile = async () => {
+  const response = await axios.get('/api/photographers/profiles/me/', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const profile = response.data;
+  console.log('Quick Info:', profile.quick_info);
+  console.log('Plan:', profile.plan_details);
+};
+
+// 2. Save Personal Information
+const savePersonalInformation = async (formData) => {
+  const response = await axios.patch('/api/photographers/profiles/me/', {
+    name: formData.name,
+    phone: formData.phone,
+    email: formData.email,
+    occupation: formData.occupation
+  }, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return response.data;
+};
+
+// 3. Upload Avatar
+const uploadAvatar = async (file) => {
+  const formData = new FormData();
+  formData.append('avatar', file);
+  const response = await axios.post('/api/photographers/profiles/me/avatar/', formData, {
+    headers: { 
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'multipart/form-data'
+    }
+  });
+  return response.data.avatar_url;
+};
+
+// 4. Remove Avatar
+const removeAvatar = async () => {
+  const response = await axios.delete('/api/photographers/profiles/me/avatar/', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return response.data;
+};
+===============================================================================

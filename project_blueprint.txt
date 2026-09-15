@@ -1,0 +1,816 @@
+===============================================================================
+PHOTOGRAPHY SAAS & DIGITAL ASSET MANAGEMENT (DAM) PLATFORM
+UPDATED SYSTEM ARCHITECTURAL BLUEPRINT (VERSION 2.0)
+===============================================================================
+Project Root: d:\Exmedia Backend\photography-project-djangorest
+Framework: Django 6.0.7 | Django REST Framework 3.17.1
+Async Engine: Celery 5.6.3 | Redis 5.2.1
+Frontend Target: React 19 + TypeScript + Vite (Atelier / Lumière Studio DAM)
+Target Database: SQLite (Dev) / PostgreSQL 16+ (Production)
+Object Storage: Local Object Store / AWS S3 + CloudFront CDN
+Date Generated: September 2026
+
+===============================================================================
+TABLE OF CONTENTS
+===============================================================================
+1. EXECUTIVE SYSTEM OVERVIEW & NEW CAPABILITIES
+2. HIGH-LEVEL ARCHITECTURE & COMPONENT TOPOLOGY
+3. COMPLETE MODULE & DIRECTORY BREAKDOWN
+4. ENTITY RELATIONSHIP (ER) DATA MODEL & SCHEMAS
+5. DIRECT-TO-CLOUD STORAGE & UPLOAD PIPELINE (PHOTOS & VIDEOS)
+6. ASYNCHRONOUS DERIVATIVE, WATERMARKING & MEDIA PIPELINE
+7. CLIENT PROOFING, FAVORITES & SELECTION WORKFLOW
+8. AI BIOMETRIC FACE RECOGNITION & DISCOVERY ENGINE
+9. SECURITY, AUTHENTICATION & ACCESS CONTROL ARCHITECTURE
+10. RATE LIMITING & ABUSE PREVENTION SPECIFICATION
+11. COMPLETE REST API ENDPOINT ROUTING BLUEPRINT
+12. DATABASE MIGRATION & BACKWARD COMPATIBILITY STRATEGY
+13. PRODUCTION INFRASTRUCTURE & SCALABILITY ROADMAP
+
+
+===============================================================================
+1. EXECUTIVE SYSTEM OVERVIEW & NEW CAPABILITIES
+===============================================================================
+The platform is a multi-tenant photography studio hub, client media delivery
+system, and digital asset management engine engineered for high concurrency,
+large image/video processing, and secure media sharing.
+
+Key Additions in Version 2.0 (Synchronized with Frontend Atelier UI):
+1. Editorial Multi-Template System:
+   - Dynamic layout switching across 4 bespoke templates:
+     * 'editorial': Fine-art storytelling with hero spreads and dual-column layouts
+     * 'masonry': High-density balanced dynamic column grid
+     * 'cinematic': High-contrast darkroom display with widescreen ratios
+     * 'minimal': Clean whitespace-focused gallery for portraits & luxury fashion
+   - Template selection persisted per gallery with live client preview switching.
+
+2. Full Video Asset Support:
+   - Seamless coexistence of high-resolution stills and video media items.
+   - Embeddable 4K videos (Vimeo/YouTube/Custom HLS CDN) with duration tags.
+   - Video thumbnail generation and aspect-ratio metadata extraction.
+
+3. Client Proofing, Favorites & Selective Downloads:
+   - Client favorite tagging (hearting items in lightbox and grid).
+   - Multi-selection toolbar: "Select All", individual select, count tracking.
+   - Selective Bulk ZIP generation: Download only selected media subsets on demand.
+   - Client Proofing Submission: Clients submit their selections with notes to the studio.
+
+4. Studio Branding & Automated Watermark Pipeline:
+   - Studio profile branding: Studio Name, Bio, Location, Website, Instagram handle.
+   - Watermark engine: Configurable watermark text or PNG stamp automatically
+     burned onto client-facing previews and web derivatives via Celery/Pillow.
+   - Onboarding state tracking for new photographer setups.
+
+5. Tiered Subscription & Billing Quota Engine:
+   - Multi-tier subscriptions: 'starter' (50GB), 'pro' (120GB), 'studio' (500GB),
+     and 'master' (1TB+).
+   - Billing cycle support: Monthly vs. Annual discounting.
+   - Real-time committed storage vs. in-flight reserved upload tracking.
+   - Feature gating: Layout templates, 4K video, face search, and custom domains.
+
+6. Event Notifications System:
+   - Dedicated notification triggers for 5 critical studio milestones:
+     * Client visited gallery
+     * Photos downloaded (single or ZIP archive)
+     * Client favorites / proofing selection submitted
+     * Storage quota warning (80% / 90% threshold)
+     * Platform updates & studio reports.
+
+
+===============================================================================
+2. HIGH-LEVEL ARCHITECTURE & COMPONENT TOPOLOGY
+===============================================================================
+
+Clients (Photographers / Couples / Event Guests / Web & Mobile Apps)
+       │
+       ▼
+[Edge / NGINX / Cloudflare CDN]
+  │── CORS Headers Middleware (Frontend Origin Whitelist)
+  │── Scoped Rate Limiting (Uploads, Face Search, Bulk Downloads, PIN Attempts)
+  │── JWT Authentication & Cryptographic Share Token Filter
+       │
+       ▼
+[Django 6 Core REST Application]
+  ├── App.Auth           (JWT, multi-identifier login, OTP verification, Google OAuth)
+  ├── App.Photographers  (Studio profile, branding, social showcase, notifications)
+  ├── App.Subscriptions  (Tiers, billing cycles, quotas, feature flag enforcement)
+  └── App.Storage        (Galleries, media items, proofing, direct uploads, audit logs)
+       │
+       ├──────────────────────────────┬─────────────────────────────┐
+       ▼                              ▼                             ▼
+[Relational Database]        [Redis Message Broker]      [Storage Provider Interface]
+- User Accounts & Roles      - Port: 6379                - BaseStorageProvider
+- Galleries, Templates & Slugs- Celery Task Queue        - LocalStorageProvider (Dev)
+- Media (Photos & Videos)    - Rate Limit Caches         - S3StorageProvider (Prod)
+- Client Proofing Selections - Realtime Stats                   │
+- Face Embeddings (Vectors)           │                         ▼
+- Audit & Access Logs                 │                  [Object Storage]
+                                      ▼                  - Raw Originals (Protected)
+                            [Celery Worker Nodes]        - Watermarked Previews
+                            - Thumbnail & Preview Gen    - Fast Web Thumbnails
+                            - Watermark Text/Logo Stamp  - Video Poster Frames
+                            - Face Biometric Extraction  - Temporary Bulk ZIPs
+                            - Async Selective Bulk ZIP
+
+
+===============================================================================
+3. COMPLETE MODULE & DIRECTORY BREAKDOWN
+===============================================================================
+
+photography-project-djangorest/
+│
+├── config/
+│   ├── settings.py           # Django 6, DRF, JWT, Celery, Throttles, CDN, S3 settings
+│   ├── urls.py               # Master URL routing (/admin/, /api/)
+│   ├── wsgi.py / asgi.py     # Production WSGI/ASGI entrypoints
+│   └── celery.py             # Celery broker & autodiscover tasks configuration
+│
+├── App/
+│   ├── models.py             # Consolidated re-exports of all app models
+│   ├── urls.py               # Master API router (/auth/, /photographers/, /storage/, etc.)
+│   ├── admin.py              # Consolidated admin site registrations
+│   │
+│   ├── Auth/                 # Authentication & Identity Subsystem
+│   │   ├── auth_models.py    # User (Custom), RegistrationOTP, ResetPasswordOTP
+│   │   ├── auth_backend.py   # UsernameEmailPhoneBackend (multi-identifier auth)
+│   │   ├── auth_serializers.py # JWT, login, registration, OTP, password reset serializers
+│   │   ├── auth_views.py     # Login, register, OTP verification, Google OAuth endpoints
+│   │   ├── auth_emails.py    # Transactional email dispatcher (HTML/text templates)
+│   │   └── auth_urls.py      # /api/auth/* routes
+│   │
+│   ├── Photographers/        # Studio Branding, Social Feed & Notifications
+│   │   ├── photo_models.py   # PhotographerProfile (studio details, watermark, onboarding),
+│   │   │                     # PhotoCategory, PhotographerPost, PostImage, PostFeedback,
+│   │   │                     # Notification, NotificationPreference
+│   │   ├── photo_serializers.py # Profile, branding, post, feedback, notification serializers
+│   │   ├── photo_views.py    # Profile CRUD, watermark config, showcase feeds, notifications
+│   │   └── photo_urls.py     # /api/photographers/* routes
+│   │
+│   ├── Subscriptions/        # Tiering, Quotas & Billing Engine
+│   │   ├── sub_models.py     # SubscriptionPlans (starter, pro, studio, master),
+│   │   │                     # PhotographerSubscription (active subscription instance)
+│   │   ├── sub_serializers.py # Plan definition and current subscription status serializers
+│   │   ├── sub_views.py      # Plan list, upgrade negotiation, billing status endpoints
+│   │   └── sub_urls.py       # /api/subscriptions/* routes
+│   │
+│   └── Storage/              # DAM, Galleries, Media, Proofing & Processing
+│       ├── storage_models.py # Gallery (slug, templates, PIN, passwords, feature flags),
+│       │                     # Media (photo & video, aspect ratio, duration, order),
+│       │                     # GalleryClientSelection (proofing & client favorites),
+│       │                     # GalleryClientAccess, FaceEmbedding,
+│       │                     # UploadReservation, BulkDownloadJob, StorageAuditLog,
+│       │                     # SharedEvent, EventPhoto (backward compatible)
+│       ├── storage_serializers.py # Enterprise gallery, media, proofing, ZIP job serializers
+│       ├── storage_views.py  # Gallery CRUD, template switcher, media reordering,
+│       │                     # direct upload negotiation, proofing submission, downloads
+│       ├── storage_urls.py   # /api/storage/* and /api/events/* routes
+│       ├── tasks.py          # Celery async tasks:
+│       │                     # - process_media_derivatives_and_faces_task
+│       │                     # - apply_watermark_to_preview_task
+│       │                     # - generate_selective_bulk_zip_task
+│       │                     # - cleanup_expired_reservations_task
+│       ├── permissions.py    # Gallery ownership, client access, token permissions
+│       ├── throttling.py     # Scoped throttles (FaceSearch, Upload, Download, BulkZip)
+│       └── services/
+│           ├── storage_service.py # Decoupled Storage Provider (Local / S3 / CloudFront)
+│           ├── quota_service.py   # Atomic storage quota reservations & releases
+│           ├── face_service.py    # 128-D vector extraction & cosine similarity
+│           ├── watermark_service.py # Dynamic text & PNG watermark rendering
+│           └── zip_service.py     # Streaming & async archive compilation
+│
+├── api docs.txt              # Detailed REST API specification document
+├── project_blueprint.txt     # System architectural blueprint (this document)
+├── requirements.txt          # Python dependencies
+└── manage.py                 # Django administrative entry point
+
+
+===============================================================================
+4. ENTITY RELATIONSHIP (ER) DATA MODEL & SCHEMAS
+===============================================================================
+
+-------------------------------------------------------------------------------
+1. App.Auth.User (Custom User Model)
+-------------------------------------------------------------------------------
+   - id: AutoField (PK)
+   - unique_id: UUIDField (default=uuid.uuid4, unique=True, editable=False)
+   - username: CharField(150, unique=True, null=True, blank=True)
+   - email: EmailField(unique=True, null=True, blank=True)
+   - phone: CharField(20, unique=True, null=True, blank=True)
+   - role: CharField(choices=['admin', 'staff', 'user', 'photographer'], default='photographer')
+   - fullname: CharField(255)
+   - is_email_verified: BooleanField(default=False)
+   - is_phone_verified: BooleanField(default=False)
+   - is_active: BooleanField(default=True)
+   - is_staff: BooleanField(default=False)
+   - is_superuser: BooleanField(default=False)
+   - created_at: DateTimeField(auto_now_add=True)
+   - updated_at: DateTimeField(auto_now=True)
+
+-------------------------------------------------------------------------------
+2. App.Subscriptions.SubscriptionPlans & PhotographerSubscription
+-------------------------------------------------------------------------------
+   SubscriptionPlans:
+   - id: AutoField (PK)
+   - name: CharField(255)                  # e.g., "Pro Studio Annual"
+   - tier: CharField(choices=['starter', 'pro', 'studio', 'master'], default='pro')
+   - billing_cycle: CharField(choices=['monthly', 'annual'], default='annual')
+   - price_monthly: DecimalField(10, 2)    # e.g., 39.00
+   - storage_limit_bytes: BigIntegerField  # e.g., 128,849,018,880 (120 GB)
+   - max_galleries: PositiveIntegerField   # e.g., 0 for unlimited, or 10 for starter
+   - allowed_templates: JSONField          # e.g., ["editorial", "masonry", "cinematic", "minimal"]
+   - video_delivery_enabled: BooleanField(default=True)
+   - face_search_enabled: BooleanField(default=True)
+   - watermark_customization: BooleanField(default=True)
+   - features_list: JSONField              # Display feature bullet points for UI
+
+   PhotographerSubscription:
+   - id: UUIDField (PK)
+   - photographer: OneToOneField(PhotographerProfile, related_name='subscription')
+   - plan: ForeignKey(SubscriptionPlans, on_delete=models.PROTECT)
+   - status: CharField(choices=['active', 'trial', 'past_due', 'cancelled'], default='active')
+   - started_at: DateTimeField(auto_now_add=True)
+   - expires_at: DateTimeField()
+   - auto_renew: BooleanField(default=True)
+   - payment_gateway_ref: CharField(255, blank=True)
+
+-------------------------------------------------------------------------------
+3. App.Photographers.PhotographerProfile
+-------------------------------------------------------------------------------
+   - id: AutoField (PK)
+   - user: OneToOneField(User, related_name='photographer_profile')
+   - studio_name: CharField(255, default='LUMIÈRE STUDIO & ATELIER')
+   - name: CharField(255)                  # Full contact name (e.g., Sarang Varma)
+   - avatar: ImageField(upload_to='photographer_profiles/', blank=True, null=True)
+   - bio: TextField(blank=True)
+   - phone: CharField(20, blank=True)
+   - email: EmailField(blank=True)
+   - location: CharField(255, blank=True)  # e.g., "Milan & San Francisco"
+   - website_url: URLField(blank=True)
+   - instagram_handle: CharField(100, blank=True)
+   - default_template: CharField(choices=['editorial', 'masonry', 'cinematic', 'minimal'], default='editorial')
+   
+   # Watermark Suite
+   - enable_watermark: BooleanField(default=False)
+   - watermark_text: CharField(255, default='© Ex Studio')
+   - watermark_image: ImageField(upload_to='watermarks/', null=True, blank=True)
+   - watermark_opacity: FloatField(default=0.45)
+   - watermark_position: CharField(choices=['center', 'bottom_right', 'bottom_left', 'repeated'], default='bottom_right')
+
+   # Onboarding & Quota Tracking
+   - is_onboarded: BooleanField(default=False)
+   - onboarding_step: PositiveIntegerField(default=1)
+   - storage_used_bytes: BigIntegerField(default=0)
+   - storage_reserved_bytes: BigIntegerField(default=0)
+
+-------------------------------------------------------------------------------
+4. App.Photographers.NotificationPreference & Notification
+-------------------------------------------------------------------------------
+   NotificationPreference:
+   - photographer: OneToOneField(PhotographerProfile, related_name='notification_preferences')
+   - notify_client_visited: BooleanField(default=True)
+   - notify_photos_downloaded: BooleanField(default=True)
+   - notify_favorites_selected: BooleanField(default=True)
+   - notify_storage_alerts: BooleanField(default=True)
+   - notify_marketing_updates: BooleanField(default=False)
+
+   Notification:
+   - id: AutoField (PK)
+   - photographer: ForeignKey(PhotographerProfile, related_name='notifications')
+   - title: CharField(255)
+   - message: TextField()
+   - event_type: CharField(choices=['client_visit', 'download', 'proofing_submitted', 'storage_warning', 'system'])
+   - related_gallery_id: UUIDField(null=True, blank=True)
+   - is_read: BooleanField(default=False)
+   - created_at: DateTimeField(auto_now_add=True)
+
+-------------------------------------------------------------------------------
+5. App.Storage.Gallery (Enterprise Client Galleries)
+-------------------------------------------------------------------------------
+   - id: UUIDField (PK, default=uuid.uuid4, editable=False)
+   - photographer: ForeignKey(PhotographerProfile, related_name='galleries')
+   - title: CharField(255)                 # e.g., "Amalfi Coast Editorial & Villa Romance"
+   - slug: SlugField(max_length=255, unique=True, db_index=True)
+   - client_name: CharField(255)           # e.g., "Elena & Matteo Rossi"
+   - client_email: EmailField(blank=True, null=True)
+   - event_date: DateField(null=True, blank=True)
+   - description: TextField(blank=True)
+   - template_id: CharField(choices=['editorial', 'masonry', 'cinematic', 'minimal'], default='editorial')
+   - status: CharField(choices=['active', 'delivered', 'draft', 'archived'], default='active')
+   - visibility: CharField(choices=['public', 'private', 'password_protected'], default='public')
+   
+   # Cover Media Link
+   - cover_media: ForeignKey('Media', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+   - cover_image_url: CharField(512, blank=True) # Direct fallback URL
+
+   # Security & Sharing
+   - share_token: CharField(64, unique=True, db_index=True)
+   - is_password_protected: BooleanField(default=False)
+   - password: CharField(128, blank=True, null=True) # Hashed via make_password
+   - expires_at: DateTimeField(null=True, blank=True)
+
+   # Feature Toggles
+   - allow_downloads: BooleanField(default=True)
+   - allow_favorites: BooleanField(default=True)
+   - face_search_enabled: BooleanField(default=True)
+
+   # Engagement Metrics
+   - views_count: PositiveIntegerField(default=0)
+   - downloads_count: PositiveIntegerField(default=0)
+   - favorites_count: PositiveIntegerField(default=0)
+
+   - created_at: DateTimeField(auto_now_add=True)
+   - updated_at: DateTimeField(auto_now=True)
+
+-------------------------------------------------------------------------------
+6. App.Storage.Media (Photos and Videos)
+-------------------------------------------------------------------------------
+   - id: UUIDField (PK, default=uuid.uuid4, editable=False)
+   - photographer: ForeignKey(PhotographerProfile, related_name='media_items')
+   - gallery: ForeignKey(Gallery, related_name='media_items')
+   - media_type: CharField(choices=['photo', 'video'], default='photo')
+   - title: CharField(255, blank=True)
+   - caption: TextField(blank=True)
+   - original_filename: CharField(255)
+
+   # Storage Keys (Decoupled Provider)
+   - storage_key: CharField(512, db_index=True)
+   - original_storage_key: CharField(512, blank=True, null=True)
+   - preview_storage_key: CharField(512, blank=True, null=True)     # 1200px preview / watermarked
+   - thumbnail_storage_key: CharField(512, blank=True, null=True)   # 300px thumbnail
+   
+   # Video Specific Attributes
+   - duration: CharField(max_length=50, blank=True, null=True)      # e.g., "02:45"
+   - video_embed_url: URLField(blank=True, null=True)
+   - video_stream_key: CharField(512, blank=True, null=True)
+
+   # Dimensions & Technical Metadata
+   - mime_type: CharField(100, default='image/jpeg')
+   - file_extension: CharField(20, default='.jpg')
+   - file_size: BigIntegerField(default=0)                          # Bytes
+   - width: PositiveIntegerField(null=True, blank=True)
+   - height: PositiveIntegerField(null=True, blank=True)
+   - aspect_ratio: FloatField(null=True, blank=True)                # width / height
+
+   # Visual Hierarchy & Organization
+   - display_order: PositiveIntegerField(default=0, db_index=True)  # Sequence ordering
+   - is_cover: BooleanField(default=False)
+   - is_favorite: BooleanField(default=False)                       # Studio starred flag
+
+   # Status & Lifecycles
+   - processing_status: CharField(choices=['pending', 'processing', 'ready', 'failed'], default='ready')
+   - upload_status: CharField(choices=['reserved', 'uploading', 'completed', 'failed'], default='completed')
+   - downloads_count: PositiveIntegerField(default=0)
+   - deleted_at: DateTimeField(null=True, blank=True)               # Soft delete
+   - created_at: DateTimeField(auto_now_add=True)
+   - updated_at: DateTimeField(auto_now=True)
+
+-------------------------------------------------------------------------------
+7. App.Storage.GalleryClientSelection (Client Proofing & Selection)
+-------------------------------------------------------------------------------
+   - id: UUIDField (PK, default=uuid.uuid4, editable=False)
+   - gallery: ForeignKey(Gallery, related_name='client_selections')
+   - client_email: EmailField()
+   - client_name: CharField(255, blank=True)
+   - status: CharField(choices=['draft', 'submitted', 'reviewed', 'approved'], default='draft')
+   - selected_media: ManyToManyField(Media, related_name='client_selections')
+   - selected_count: PositiveIntegerField(default=0)
+   - client_notes: TextField(blank=True)
+   - submitted_at: DateTimeField(null=True, blank=True)
+   - created_at: DateTimeField(auto_now_add=True)
+   - updated_at: DateTimeField(auto_now=True)
+
+-------------------------------------------------------------------------------
+8. App.Storage.FaceEmbedding (Biometric Discovery)
+-------------------------------------------------------------------------------
+   - id: UUIDField (PK, default=uuid.uuid4, editable=False)
+   - media: ForeignKey(Media, related_name='face_embeddings')
+   - gallery: ForeignKey(Gallery, related_name='face_embeddings')
+   - embedding: JSONField()  # 128-D normalized float vector
+   - bounding_box: JSONField(null=True, blank=True) # {'x': int, 'y': int, 'w': int, 'h': int}
+   - confidence: FloatField(default=1.0)
+   - created_at: DateTimeField(auto_now_add=True)
+
+-------------------------------------------------------------------------------
+9. App.Storage.UploadReservation
+-------------------------------------------------------------------------------
+   - id: UUIDField (PK, default=uuid.uuid4, editable=False)
+   - photographer: ForeignKey(PhotographerProfile)
+   - gallery: ForeignKey(Gallery)
+   - reserved_bytes: BigIntegerField()
+   - status: CharField(choices=['pending', 'committed', 'expired', 'cancelled'], default='pending')
+   - expires_at: DateTimeField()
+   - created_at: DateTimeField(auto_now_add=True)
+
+-------------------------------------------------------------------------------
+10. App.Storage.BulkDownloadJob (Master & Selective ZIP Archives)
+-------------------------------------------------------------------------------
+   - id: UUIDField (PK, default=uuid.uuid4, editable=False)
+   - gallery: ForeignKey(Gallery, related_name='download_jobs')
+   - requested_by: ForeignKey(User, null=True, blank=True)
+   - download_type: CharField(choices=['master_all', 'selected_subset'], default='master_all')
+   - status: CharField(choices=['pending', 'processing', 'ready', 'failed', 'expired'], default='pending')
+   - archive_storage_key: CharField(512, blank=True)
+   - selected_count: PositiveIntegerField(default=0)
+   - file_size: BigIntegerField(default=0)
+   - progress_percent: PositiveIntegerField(default=0)
+   - expires_at: DateTimeField()
+   - created_at: DateTimeField(auto_now_add=True)
+
+-------------------------------------------------------------------------------
+11. App.Storage.StorageAuditLog
+-------------------------------------------------------------------------------
+   - id: AutoField (PK)
+   - photographer: ForeignKey(PhotographerProfile)
+   - gallery: ForeignKey(Gallery, null=True, blank=True)
+   - user: ForeignKey(User, null=True, blank=True)
+   - action: CharField(50)  # UPLOAD, DELETE, SHARE_GENERATE, BULK_DOWNLOAD, PROOF_SUBMIT
+   - details: JSONField(default=dict)
+   - ip_address: GenericIPAddressField(null=True, blank=True)
+   - timestamp: DateTimeField(auto_now_add=True)
+
+
+===============================================================================
+5. DIRECT-TO-CLOUD STORAGE & UPLOAD PIPELINE (PHOTOS & VIDEOS)
+===============================================================================
+
+Problem Solved:
+Directly handling gigabyte-sized photo batches or 4K video uploads through Django
+WSGI worker threads causes worker pool starvation, high memory spikes, and proxy
+timeouts.
+
+Negotiated Direct-to-Cloud Upload Workflow:
+
+Step 1: Upload Initialization
+  - Client sends: POST /api/storage/galleries/{id}/upload-init/
+    Payload:
+    {
+      "files": [
+        { "filename": "IMG_9041.CR3", "file_size": 48234496, "mime_type": "image/x-canon-cr3", "media_type": "photo" },
+        { "filename": "Highlight_Teaser.mp4", "file_size": 251658240, "mime_type": "video/mp4", "media_type": "video" }
+      ]
+    }
+  - Atomic Quota Check:
+    (photographer.storage_used_bytes + photographer.storage_reserved_bytes + total_requested_bytes) <= plan_storage_limit
+  - Django creates UploadReservation records (status='pending', expires in 2 hours).
+  - Atomically increments photographer.storage_reserved_bytes.
+  - Storage Provider signs direct HTTP PUT pre-signed URLs:
+    Key: "galleries/{gallery_id}/originals/{media_id}.{ext}"
+  - Response returns:
+    [
+      { "media_id": "...", "reservation_id": "...", "upload_url": "https://bucket.s3.amazonaws.com/...", "storage_key": "..." }
+    ]
+
+Step 2: Direct Binary Transfer
+  - Client web browser uploads raw binary data directly to the object store (Local / S3) via HTTP PUT.
+  - Django servers are completely bypassed during the heavy byte streaming.
+
+Step 3: Upload Confirmation & Background Handoff
+  - Client sends: POST /api/storage/galleries/{id}/upload-confirm/
+    Payload:
+    {
+      "media_id": "...",
+      "reservation_id": "...",
+      "aspect_ratio": 1.5,
+      "width": 6000,
+      "height": 4000,
+      "duration": "00:00"
+    }
+  - Django updates photographer storage:
+    storage_reserved_bytes -= file_size
+    storage_used_bytes += file_size
+  - Sets Media status to 'processing'.
+  - Celery Worker task dispatched: process_media_derivatives_and_faces_task.
+
+
+===============================================================================
+6. ASYNCHRONOUS DERIVATIVE, WATERMARKING & MEDIA PIPELINE
+===============================================================================
+
+Celery Worker Pipeline: process_media_derivatives_and_faces_task
+Triggered on: Successful upload confirmation.
+
+Pipeline Steps:
+1. Asset Ingestion:
+   - Fetches original file binary from object storage provider.
+   - Extracts EXIF data (Camera model, lens, aperture, shutter speed, ISO).
+   - Auto-rotates image according to EXIF orientation tag.
+
+2. Thumbnail Generation (Fast 300x300):
+   - Generates compact thumbnail max 300x300 px using LANCZOS downsampling.
+   - Saves optimized JPEG/WebP at 85% quality.
+   - Uploads to: "galleries/{gallery_id}/thumbnails/{media_id}.jpg".
+
+3. Preview Generation & Watermark Application (1200x1200px):
+   - Generates web preview bounding box max 1200x1200 px.
+   - Checks photographer.enable_watermark:
+     * If True and watermark_text is set: renders typographic watermark overlay
+       with customized opacity and position.
+     * If True and watermark_image is set: blends PNG logo watermark with alpha channel.
+   - Saves preview to: "galleries/{gallery_id}/previews/{media_id}.jpg".
+   - Note: Original master files ("originals/...") remain 100% untouched and unwatermarked
+     for client master downloads.
+
+4. Video Media Handling:
+   - If media_type == 'video':
+     * Extracts poster thumbnail frame at 1.0 second offset via ffmpeg/Pillow.
+     * Computes exact duration and stores in Media model.
+
+5. AI Biometric Face Detection:
+   - If gallery.face_search_enabled is True:
+     * Scans preview image for faces.
+     * Calculates 128-D normalized face embedding vectors.
+     * Saves FaceEmbedding rows indexed strictly to gallery.
+
+6. Finalization:
+   - Sets media.processing_status = 'ready'.
+
+
+===============================================================================
+7. CLIENT PROOFING, FAVORITES & SELECTION WORKFLOW
+===============================================================================
+
+Workflow Overview:
+Couples and clients review high-resolution proofs in the editorial or masonry
+layouts, star their favorites, and submit their final selection for retouching
+or album printing.
+
+Step 1: Public or PIN-Protected Access
+  - Client accesses gallery via clean slug or UUID:
+    GET /api/storage/public/galleries/{slug_or_id}/
+  - If is_password_protected: Client enters PIN code.
+  - Endpoint verifies hashed password or PIN code and returns a 12-hour client
+    session access token.
+
+Step 2: Client Favoriting & Selection
+  - Client marks favorites or selects images for album inclusion.
+  - Frontend maintains real-time selection state and syncs to backend:
+    POST /api/storage/galleries/{id}/client-selections/
+    Payload: { "client_email": "couple@wedding.com", "selected_media_ids": ["uuid-1", "uuid-2"] }
+
+Step 3: Selective Bulk Download ("Download Selected")
+  - Client clicks "Download Selected (12 Photos)".
+  - Client dispatches: POST /api/storage/galleries/{id}/bulk-download/
+    Payload: { "download_type": "selected_subset", "media_ids": ["uuid-1", "uuid-2", ...] }
+  - Celery compiles a lightweight ZIP containing only the chosen media files.
+  - Returns signed download URL when job completes.
+
+Step 4: Selection Submission
+  - Client finalizes selections and clicks "Submit Selections to Studio":
+    POST /api/storage/galleries/{id}/client-selections/{selection_id}/submit/
+    Payload: { "client_notes": "Please retouch bride's veil in photo #4 and make photo #12 black & white." }
+  - Selection status changes to 'submitted'.
+  - Backend automatically sends studio notification and email to photographer.
+
+
+===============================================================================
+8. AI BIOMETRIC FACE RECOGNITION & DISCOVERY ENGINE
+===============================================================================
+
+Architecture & Algorithm (FaceService):
+1. Face Region Detection:
+   - Analyzes uploaded media frames and guest selfie probes.
+   - Detects all face bounding boxes (x, y, w, h) and confidence ratings.
+
+2. 128-Dimensional Feature Extraction:
+   - Normalizes facial region to canonical 64x64 illumination-adjusted grid.
+   - Extracts 64 spatial cell mean intensity distributions and 64 gradient moments.
+   - Normalizes vector to unit length (L2 norm).
+
+3. Biometric Search Execution:
+   - Guest uploads reference selfie: POST /api/storage/galleries/{id}/face-search/
+   - FaceService computes 128-D probe vector from selfie.
+   - Fetches FaceEmbedding vectors for the gallery.
+   - Computes cosine similarity: dot(probe_vector, candidate_vector).
+   - Media items with similarity >= 0.65 are ranked and returned.
+
+4. Biometric Privacy Protection:
+   - Vectors are stored strictly as internal database records.
+   - Embeddings are NEVER exposed in any REST API serializer or client response.
+   - Biometric search is strictly isolated per gallery.
+
+
+===============================================================================
+9. SECURITY, AUTHENTICATION & ACCESS CONTROL ARCHITECTURE
+===============================================================================
+
+1. Authentication Protocols:
+   - JWT (SimpleJWT): Bearer <access_token> with 60-minute lifetime and rolling refresh.
+   - Multi-Identifier Authentication: Login via Username, Email, or Phone number.
+   - Transactional OTP: 6-digit codes with 10-minute expiry windows for password reset & registration.
+   - Google OAuth2 token exchange endpoint for one-click studio login.
+
+2. Enterprise Gallery Security:
+   - Cryptographic Share Tokens: 32-byte URL-safe tokens (256 bits entropy).
+   - Token Revocation: Instant re-generation invalidates previously shared links.
+   - Gallery PIN / Passwords: Securely hashed with PBKDF2/Argon2.
+   - Expiration Controls: Automatic expiration timestamps return HTTP 410 Gone.
+
+3. Media Download Protection:
+   - Original master files are strictly private in object storage.
+   - Downloads are delivered via time-limited signed URLs (valid 15 minutes).
+   - Prevents public hotlinking and direct bucket crawling.
+
+
+===============================================================================
+10. RATE LIMITING & ABUSE PREVENTION SPECIFICATION
+===============================================================================
+
+Scoped DRF Rate Limiters (Redis-backed):
+
+Throttle Scope       Rate Limit       Target Vulnerability Prevented
+-------------------------------------------------------------------------------
+anon                 200 / minute     Public endpoint scraping & brute-force
+user                 1000 / minute    API flooding from authenticated sessions
+face_search          15 / minute      Biometric inference & CPU exhaustion
+upload               60 / minute      Storage exhaustion & reservation abuse
+download             120 / minute     Bandwidth scraping
+bulk_download        5 / minute       Zip-bomb & memory exhaustion attacks
+pin_verify           10 / minute      PIN enumeration & brute force guessing
+
+
+===============================================================================
+11. COMPLETE REST API ENDPOINT ROUTING BLUEPRINT
+===============================================================================
+
+Base URL: http://<domain>/api/
+
+-------------------------------------------------------------------------------
+1. Authentication Subsystem (/api/auth/)
+-------------------------------------------------------------------------------
+POST /api/auth/check-username/              # Validate username availability
+POST /api/auth/check-identifier/            # Check email or phone existence
+POST /api/auth/register/                    # Register new photographer account
+POST /api/auth/verify-otp/                  # Verify registration OTP
+POST /api/auth/resend-otp/                  # Resend verification OTP
+POST /api/auth/login/                       # Obtain JWT pair (access + refresh)
+POST /api/auth/logout/                      # Blacklist refresh token
+POST /api/auth/token/refresh/               # Refresh access token
+GET  /api/auth/check-login/                 # Current session status & user role
+POST /api/auth/reset-password/direct/       # Direct password reset (admin/dev)
+POST /api/auth/reset-password/otp/          # Request password reset OTP
+POST /api/auth/reset-password/resend-otp/   # Resend password reset OTP
+POST /api/auth/reset-password/verify-otp/   # Verify OTP and set new password
+POST /api/auth/change-password/             # Authenticated password change
+POST /api/auth/google/                      # Google OAuth2 token exchange
+
+-------------------------------------------------------------------------------
+2. Photographer Studio & Portfolios (/api/photographers/)
+-------------------------------------------------------------------------------
+GET  /api/photographers/profiles/me/        # Get current photographer profile
+PUT  /api/photographers/profiles/me/update/ # Update studio name, bio, location, etc.
+POST /api/photographers/profiles/me/avatar/ # Upload / update studio avatar
+PATCH/api/photographers/profiles/me/watermark/ # Configure watermark text/image
+POST /api/photographers/onboarding/complete/# Mark onboarding walkthrough complete
+GET  /api/photographers/notifications/      # List notifications for studio
+PATCH/api/photographers/notifications/{id}/read/ # Mark notification as read
+GET  /api/photographers/notifications/preferences/ # Get notification settings
+PUT  /api/photographers/notifications/preferences/ # Update notification toggles
+GET  /api/photographers/categories/list/    # List portfolio categories
+POST /api/photographers/categories/create/  # Create portfolio category
+GET  /api/photographers/posts/              # List showcase portfolio posts
+POST /api/photographers/posts/create/       # Create showcase post with camera metadata
+GET  /api/photographers/posts/{id}/         # Detail view of showcase post
+GET  /api/photographers/feedbacks/          # Client testimonials and reviews
+POST /api/photographers/feedbacks/create/   # Post feedback
+
+-------------------------------------------------------------------------------
+3. Subscriptions & Billing (/api/subscriptions/)
+-------------------------------------------------------------------------------
+GET  /api/subscriptions/plans/              # List available tiers (starter, pro, studio, master)
+GET  /api/subscriptions/current/            # Current photographer subscription, quota, & expiry
+POST /api/subscriptions/upgrade/            # Initiate plan upgrade / billing cycle change
+
+-------------------------------------------------------------------------------
+4. Enterprise Client Galleries & DAM (/api/storage/)
+-------------------------------------------------------------------------------
+# Gallery Management (Photographer Dashboard)
+GET  /api/storage/galleries/                # List all galleries (search, filter, sort)
+POST /api/storage/galleries/                # Create new gallery (slug, client info, template)
+GET  /api/storage/galleries/{id}/           # Gallery detail with full media items list
+PUT  /api/storage/galleries/{id}/           # Update gallery info, PIN, visibility, template
+DELETE /api/storage/galleries/{id}/         # Delete gallery and soft-delete media
+PATCH/api/storage/galleries/{id}/template/  # Switch layout template ('editorial'|'masonry'|...)
+POST /api/storage/galleries/{id}/share/     # Regenerate / revoke cryptographic share token
+POST /api/storage/galleries/{id}/set-cover/ # Assign specific media as cover image
+POST /api/storage/galleries/{id}/reorder-media/ # Update display order sequence of media items
+
+# Direct-to-Cloud Upload Flow
+POST /api/storage/galleries/{id}/upload-init/    # Pre-sign direct upload URLs & reserve quota
+POST /api/storage/galleries/{id}/upload-confirm/ # Confirm upload & dispatch Celery workers
+POST /api/storage/galleries/{id}/upload/         # Fallback standard multipart upload
+
+# Media Operations
+GET  /api/storage/galleries/media/{media_id}/    # Get media details
+DELETE /api/storage/galleries/media/{media_id}/  # Remove media item
+POST /api/storage/galleries/media/bulk-delete/   # Bulk remove media items from gallery
+POST /api/storage/galleries/media/{media_id}/favorite/ # Toggle studio favorite flag
+
+# Client Public & PIN Access Endpoints
+GET  /api/storage/public/galleries/{slug_or_id}/ # Public / guest view of gallery
+POST /api/storage/public/galleries/{slug_or_id}/verify-pin/ # Unlock PIN-protected gallery
+GET  /api/storage/shared-galleries/{share_token}/ # Access via cryptographic token
+POST /api/storage/shared-galleries/{share_token}/verify-password/ # Password verify
+
+# Client Proofing & Selections
+POST /api/storage/galleries/{id}/client-selections/ # Save draft client favorites / selections
+GET  /api/storage/galleries/{id}/client-selections/ # List client selections (photographer view)
+POST /api/storage/galleries/{id}/client-selections/{selection_id}/submit/ # Submit final proofing
+
+# Downloads & Bulk ZIP Jobs
+GET  /api/storage/galleries/media/{media_id}/download/ # Single media signed download URL
+POST /api/storage/galleries/{id}/bulk-download/        # Initiate master or selective ZIP job
+GET  /api/storage/galleries/bulk-download-jobs/{job_id}/ # Poll ZIP job compilation progress
+
+# Biometric Face Search
+POST /api/storage/galleries/{id}/face-search/   # Biometric discovery via uploaded selfie
+
+# Quota & Studio Storage Stats
+GET  /api/storage/account/storage/              # Detailed storage breakdown & quota statistics
+
+-------------------------------------------------------------------------------
+5. Event Photo Sharing (Quick Guest Access) (/api/storage/events/)
+-------------------------------------------------------------------------------
+GET  /api/storage/events/                       # List shared events
+POST /api/storage/events/                       # Create shared event
+GET/PUT/DEL /api/storage/events/{id}/           # Event detail / update / delete
+POST /api/storage/events/{id}/upload/           # Direct event photos upload
+POST /api/storage/events/{id}/upload-zip/       # Upload and auto-extract ZIP archive of photos
+POST /api/storage/events/{id}/photos/bulk-delete/# Bulk delete event photos
+GET  /api/storage/share/{access_code}/          # Guest access by code (e.g. EVT-A8B9C2)
+POST /api/storage/share/{access_code}/verify-pin/# Verify optional event PIN
+GET  /api/storage/share/{access_code}/download-all/ # Download full event ZIP archive
+GET  /api/storage/share/{access_code}/qr/       # Generate instant QR code image for event
+
+
+===============================================================================
+12. DATABASE MIGRATION & BACKWARD COMPATIBILITY STRATEGY
+===============================================================================
+
+Preserving Existing Data:
+1. SharedEvent and EventPhoto models remain 100% active and backwards-compatible.
+2. The existing Gallery and Media models are upgraded with additive migrations:
+   - Gallery: add `slug`, `client_name`, `client_email`, `event_date`, `template_id`,
+     `allow_favorites`, and `cover_image_url`. Default values ensure zero downtime.
+   - Media: add `media_type`, `duration`, `video_embed_url`, `aspect_ratio`,
+     `display_order`, `is_cover`, `is_favorite`.
+3. New models added:
+   - `GalleryClientSelection` for client proofing workflows.
+   - `PhotographerSubscription` for formal billing lifecycle tracking.
+   - `NotificationPreference` for granular notification settings.
+
+Execution Command Sequence:
+  python manage.py makemigrations
+  python manage.py migrate
+  python manage.py reconcile_storage_usage
+
+
+===============================================================================
+13. PRODUCTION INFRASTRUCTURE & SCALABILITY ROADMAP
+===============================================================================
+
+Recommended Production Architecture:
+
+       [ Internet / HTTPS Traffic ]
+                    │
+                    ▼
+       [ Cloudflare CDN + DDoS + WAF ]
+                    │
+                    ▼
+     [ NGINX Reverse Proxy / Load Balancer ]
+       - Terminate SSL / TLS 1.3
+       - Brotli & Gzip compression
+       - Serve local static assets (/static/)
+                    │
+     ┌──────────────┴──────────────┐
+     ▼                             ▼
+[Gunicorn API Cluster]     [AWS S3 + CloudFront CDN]
+- Django 6 REST Framework  - Raw Original Files (Private S3 bucket)
+- Multi-worker concurrency - Public Thumbnails & Previews (CloudFront)
+     │                     - Temporary ZIP Export Archives
+     ├─────────────────────────────┬─────────────────────────────┐
+     ▼                             ▼                             ▼
+[PostgreSQL 16+]           [Redis Cache & Broker]        [Celery Workers]
+- PgBouncer Pooling        - Redis Sentinel / Cluster    - Worker Queue: `media_processing`
+- B-Tree & GIN Indexes     - DRF Throttling Caches       - Worker Queue: `bulk_zip_export`
+- Vector search (pgvector) - Celery Broker & Results     - Celery Beat (Hourly cleanup)
+
+Deployment Checklist:
+1. Environment Variables:
+   - DEBUG=False
+   - ALLOWED_HOSTS=studio.yourdomain.com,api.yourdomain.com
+   - SECRET_KEY=<cryptographically-random-64-char-string>
+   - CORS_ALLOWED_ORIGINS=https://studio.yourdomain.com
+2. Database:
+   - Run: python manage.py migrate
+   - Configure PostgreSQL connection pool via PgBouncer.
+3. Celery Daemons:
+   - Run media worker:
+     celery -A config worker -Q media_processing -c 4 --loglevel=INFO
+   - Run ZIP worker:
+     celery -A config worker -Q bulk_zip_export -c 2 --loglevel=INFO
+   - Run cleanup scheduler:
+     celery -A config beat --loglevel=INFO
+
+===============================================================================
+END OF BLUEPRINT (VERSION 2.0)
+===============================================================================

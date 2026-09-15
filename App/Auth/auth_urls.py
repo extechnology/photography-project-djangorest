@@ -15,6 +15,10 @@ from .auth_views import (
     VerifyResetPasswordOTPView,
     ChangePasswordView,
     GoogleAuthView,
+    PasswordlessSendOTPView,
+    PasswordlessVerifyOTPView,
+    PasswordlessResendOTPView,
+    PasswordlessLoginSendOTPView
 )
 
 urlpatterns = [
@@ -33,4 +37,15 @@ urlpatterns = [
     path('reset-password/verify-otp/', VerifyResetPasswordOTPView.as_view(), name='verify-reset-password-otp'),
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('google/', GoogleAuthView.as_view(), name='google-auth'),
+
+    # Passwordless Authentication (Email -> OTP -> Login / Register)
+    path('passwordless/reg/send-otp/', PasswordlessSendOTPView.as_view(), name='passwordless-reg-send-otp'),
+    path('passwordless/reg/verify-otp/', PasswordlessVerifyOTPView.as_view(), name='passwordless-reg-verify-otp'),
+    path('passwordless/reg/resend-otp/', PasswordlessResendOTPView.as_view(), name='passwordless-reg-resend-otp'),
+
+    path('passwordless/login/send-otp/', PasswordlessLoginSendOTPView.as_view(), name='passwordless-login-send-otp'),
+    path('passwordless/login/verify-otp/', PasswordlessVerifyOTPView.as_view(), name='passwordless-login-verify-otp'),
+    path('passwordless/login/resend-otp/', PasswordlessResendOTPView.as_view(), name='passwordless-login-resend-otp'),
+
 ]
+

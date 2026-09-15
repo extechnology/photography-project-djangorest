@@ -544,3 +544,240 @@ class GoogleAuthView(APIView):
         except ValueError as e:
             return Response({"message": f"Invalid token: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
+
+class PasswordlessSendOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordlessSendOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "status": "error",
+                    "message": "Invalid email address.",
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data["email"]
+        is_existing = User.objects.filter(email__iexact=email).exists()
+
+        otp = str(random.randint(100000, 999999))
+        PasswordlessLoginOTP.objects.create(email=email, otp=otp)
+        send_passwordless_otp_email(email, otp, is_existing_user=is_existing)
+
+        action_label = "login" if is_existing else "registration"
+        return Response(
+            {
+                "status": "success",
+                "message": f"Verification code sent to your email for {action_label}.",
+                "email": email,
+                "is_registered": is_existing
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class PasswordlessResendOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordlessSendOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "status": "error",
+                    "message": "Invalid email address.",
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data["email"]
+        is_existing = User.objects.filter(email__iexact=email).exists()
+
+        otp = str(random.randint(100000, 999999))
+        PasswordlessLoginOTP.objects.create(email=email, otp=otp)
+        send_passwordless_otp_email(email, otp, is_existing_user=is_existing)
+
+        return Response(
+            {
+                "status": "success",
+                "message": "A new verification code has been sent to your email.",
+                "email": email,
+                "is_registered": is_existing
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class PasswordlessVerifyOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordlessVerifyOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            err_msg = "Validation error"
+            for k, v in serializer.errors.items():
+                err_msg = v[0] if isinstance(v, list) and len(v) > 0 else str(v)
+                break
+            return Response({"status": "error", "message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        email = serializer.validated_data["email"]
+        input_otp = serializer.validated_data["otp"]
+        fullname = serializer.validated_data.get("fullname", "").strip()
+        role = serializer.validated_data.get("role", User.Role.PHOTOGRAPHER)
+
+        try:
+            otp_record = PasswordlessLoginOTP.objects.filter(email__iexact=email).latest("created_at")
+        except PasswordlessLoginOTP.DoesNotExist:
+            return Response(
+                {"status": "error", "message": "No verification code found for this email. Please request a new code."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not otp_record.is_valid(input_otp):
+            return Response(
+                {"status": "error", "message": "Invalid or expired verification code."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Mark OTP as verified
+        otp_record.is_verified = True
+        otp_record.save(update_fields=["is_verified"])
+
+        # Check if user already exists
+        user = User.objects.filter(email__iexact=email).first()
+        is_new_user = False
+
+        if user:
+            # Existing user -> Log in
+            user.is_email_verified = True
+            user.last_login = timezone.now()
+            if fullname and not user.fullname:
+                user.fullname = fullname
+            user.save()
+        else:
+            # New user -> Auto-Register without password
+            is_new_user = True
+            raw_base = email.split("@")[0].lower()
+            base_username = re.sub(r'[^a-zA-Z0-9_.]', '', raw_base) or "user"
+            candidate = base_username
+            counter = 1
+            while User.objects.filter(username__iexact=candidate).exists():
+                candidate = f"{base_username}_{counter}"
+                counter += 1
+
+            user_fullname = fullname or base_username.replace('.', ' ').replace('_', ' ').title()
+            user = User(
+                username=candidate,
+                email=email,
+                role=role,
+                fullname=user_fullname,
+                is_email_verified=True,
+                is_active=True,
+                last_login=timezone.now()
+            )
+            user.set_unusable_password()
+            user.save()
+
+        # If user is a photographer, ensure PhotographerProfile & subscription exist
+        if user.role == User.Role.PHOTOGRAPHER:
+            from datetime import timedelta
+            from App.Photographers.photo_models import PhotographerProfile, NotificationPreference
+            from App.Subscriptions.sub_models import SubscriptionPlans, PhotographerSubscription
+
+            profile, _ = PhotographerProfile.objects.get_or_create(
+                user=user,
+                defaults={
+                    "name": user.fullname or user.username,
+                    "studio_name": "",
+                    "location": "",
+                    "email": user.email,
+                    "is_onboarded": False,
+                    "onboarding_step": 1,
+                    "default_template": "editorial",
+                }
+            )
+            NotificationPreference.objects.get_or_create(photographer=profile)
+
+            # Assign default plan if not present
+            if not PhotographerSubscription.objects.filter(photographer=profile).exists():
+                plan = SubscriptionPlans.objects.filter(tier='pro').first() or SubscriptionPlans.objects.first()
+                if plan:
+                    PhotographerSubscription.objects.create(
+                        photographer=profile,
+                        plan=plan,
+                        status='active',
+                        expires_at=timezone.now() + timedelta(days=365)
+                    )
+
+        # Issue JWT tokens
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+
+        response_data = {
+            "status": "success",
+            "message": "Account registered and logged in successfully." if is_new_user else "Login successful.",
+            "is_new_user": is_new_user,
+
+            "user": {
+                "id": user.id,
+                "unique_id": str(user.unique_id),
+                "username": user.username,
+                "email": user.email,
+                "fullname": user.fullname,
+                "role": user.role,
+                "is_email_verified": user.is_email_verified
+            }
+        }
+
+        response = Response(response_data, status=status.HTTP_200_OK)
+        set_auth_cookies(response, refresh)
+        return response
+
+
+
+class PasswordlessLoginSendOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordlessSendOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "status": "error",
+                    "message": "Invalid email address.",
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data["email"]
+        is_existing = User.objects.filter(email__iexact=email).exists()
+
+        if not is_existing:
+            return Response(
+                {
+                    "status": "error",
+                    "message": "No account found with this email address.",
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        otp = str(random.randint(100000, 999999))
+        PasswordlessLoginOTP.objects.create(email=email, otp=otp)
+        send_passwordless_otp_email(email, otp, is_existing_user=is_existing)
+
+        action_label = "login" if is_existing else "registration"
+        return Response(
+            {
+                "status": "success",
+                "message": f"Verification code sent to your email for {action_label}.",
+                "email": email,
+                "is_registered": is_existing
+            },
+            status=status.HTTP_200_OK
+        )
+

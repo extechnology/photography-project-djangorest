@@ -159,8 +159,39 @@ class ResetPasswordOTP(models.Model):
         super().save(*args, **kwargs)
         
     def is_valid(self, input_otp):
-
         if self.otp != input_otp:
+            return False
+        if timezone.now() > self.created_at + timedelta(minutes=10):
+            return False
+        return True
+
+
+class PasswordlessLoginOTP(models.Model):
+    email = models.EmailField(db_index=True)
+    otp = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_verified = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Passwordless Login OTP"
+        verbose_name_plural = "Passwordless Login OTPs"
+
+    def __str__(self):
+        return f"{self.email} - {self.otp}"
+
+    def save(self, *args, **kwargs):
+        # Remove previous OTPs for this email address only on creation
+        if not self.pk:
+            PasswordlessLoginOTP.objects.filter(email__iexact=self.email).delete()
+        super().save(*args, **kwargs)
+
+    def is_valid(self, input_otp):
+        from django.utils import timezone
+        from datetime import timedelta
+        if self.is_verified:
+            return False
+        if str(self.otp).strip() != str(input_otp).strip():
             return False
         if timezone.now() > self.created_at + timedelta(minutes=10):
             return False

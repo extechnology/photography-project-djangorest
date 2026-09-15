@@ -102,8 +102,8 @@ class UploadReservationAdmin(admin.ModelAdmin):
 
 @admin.register(BulkDownloadJob)
 class BulkDownloadJobAdmin(admin.ModelAdmin):
-    list_display = ('id', 'gallery', 'status', 'selected_count', 'file_size', 'created_at')
-    list_filter = ('status', 'created_at')
+    list_display = ('id', 'gallery', 'download_type', 'status', 'selected_count', 'progress_percent', 'file_size', 'created_at')
+    list_filter = ('download_type', 'status', 'created_at')
     search_fields = ('gallery__title',)
     readonly_fields = ('id', 'gallery', 'file_size', 'selected_count', 'created_at')
 
@@ -114,3 +114,13 @@ class StorageAuditLogAdmin(admin.ModelAdmin):
     list_filter = ('action', 'timestamp')
     search_fields = ('photographer__name', 'action')
     readonly_fields = ('id', 'photographer', 'gallery', 'user', 'action', 'details', 'ip_address', 'timestamp')
+
+
+from App.Storage.storage_models import GalleryClientSelection
+
+@admin.register(GalleryClientSelection)
+class GalleryClientSelectionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'gallery', 'client_email', 'client_name', 'status', 'selected_count', 'submitted_at', 'updated_at')
+    list_filter = ('status', 'submitted_at', 'updated_at')
+    search_fields = ('client_email', 'client_name', 'gallery__title')
+    readonly_fields = ('id', 'selected_count', 'submitted_at', 'created_at', 'updated_at')

@@ -46,9 +46,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -61,7 +61,7 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -127,6 +127,9 @@ STATIC_ROOT = BASE_DIR / 'static'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# ------------------------------------------------------------------------------
+# AUTHENTICATION & CUSTOM USER MODEL
+# ------------------------------------------------------------------------------
 USER_MODEL = 'App.User'
 AUTH_USER_MODEL = 'App.User'
 
@@ -135,6 +138,10 @@ AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
 ]
 
+
+# ------------------------------------------------------------------------------
+# REST FRAMEWORK & CACHING
+# ------------------------------------------------------------------------------
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -153,6 +160,7 @@ REST_FRAMEWORK = {
         'download': '120/minute',
         'bulk_download': '5/minute',
         'share_access': '150/minute',
+        'pin_verify': '10/minute',
     },
 }
 
@@ -164,16 +172,42 @@ CACHES = {
 }
 
 
+
+# --- CORS Settings ---
+# Allow all origins for development. In production, restrict this to specific origins.
 CORS_ALLOW_ALL_ORIGINS = True
 
+# Optionally allow credentials (cookies, authorization headers)
 CORS_ALLOW_CREDENTIALS = True
 
 
+# --- Cookie Settings ---
+# Session and CSRF cookie security settings (Lax/False for local development, Strict/True for production HTTPS)
 SESSION_COOKIE_SAMESITE = 'None'
 SESSION_COOKIE_SECURE = True  # Set to True in production (HTTPS)
 
 CSRF_COOKIE_SAMESITE = 'None'
 CSRF_COOKIE_SECURE = True  # Set to True in production (HTTPS)
+
+
+# --- CSRF Trusted Origins ---
+# Django 4.0+ requires trusted origins to be explicitly listed for cross-origin POST requests
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
+
+# --- Simple JWT Cookie Configuration ---
+SIMPLE_JWT_COOKIE_SECURE = True       # Must be True if SameSite='None'
+SIMPLE_JWT_COOKIE_SAMESITE = 'None'   # Set to 'None' in production with HTTPS if cross-site
+SIMPLE_JWT_COOKIE_HTTPONLY = True
+
+
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=6000),
@@ -206,10 +240,6 @@ SIMPLE_JWT = {
     'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
-
-SIMPLE_JWT_COOKIE_SECURE = True       
-SIMPLE_JWT_COOKIE_SAMESITE = 'None'  
-SIMPLE_JWT_COOKIE_HTTPONLY = True
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

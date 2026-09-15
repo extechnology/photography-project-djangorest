@@ -279,3 +279,90 @@ def password_changed_email(user, email):
     msg = EmailMultiAlternatives(subject, text_content, from_email, to)
     msg.attach_alternative(html_content, "text/html")
     msg.send()
+
+
+def send_passwordless_otp_email(email, otp, is_existing_user=True):
+    """
+    Sends a 6-digit one-time password (OTP) for passwordless login or registration.
+    """
+    action_text = "sign in to your studio" if is_existing_user else "create your studio account"
+    headline = "Your Studio Access Code" if is_existing_user else "Welcome to Atelier Studio"
+    subject = f"{otp} is your verification code"
+
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    to = [email]
+
+    text_content = (
+        f"Your verification code to {action_text} is: {otp}\n\n"
+        f"This code will expire in 10 minutes. Do not share it with anyone."
+    )
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #e2e8f0;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #0b0f19; padding: 40px 15px;">
+            <tr>
+                <td align="center">
+                    <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 540px; background-color: #151c2e; border: 1px solid #1e293b; border-radius: 14px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                        <!-- Header Banner -->
+                        <tr>
+                            <td style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #4338ca 100%); padding: 36px 30px; text-align: center;">
+                                <div style="font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase; color: #a5b4fc; font-weight: 700; margin-bottom: 8px;">
+                                    LUMIÈRE STUDIO & ATELIER
+                                </div>
+                                <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">
+                                    {headline}
+                                </h1>
+                            </td>
+                        </tr>
+
+                        <!-- Body Content -->
+                        <tr>
+                            <td style="padding: 36px 30px; text-align: center;">
+                                <p style="margin: 0 0 20px; font-size: 15px; color: #cbd5e1; line-height: 1.6;">
+                                    Use the secure one-time passcode below to <strong>{action_text}</strong>.
+                                </p>
+
+                                <!-- OTP Box -->
+                                <div style="margin: 28px auto; display: inline-block; padding: 16px 36px; background-color: #0b0f19; border: 1.5px dashed #6366f1; border-radius: 10px;">
+                                    <span style="font-family: 'Courier New', Courier, monospace; font-size: 34px; font-weight: 800; letter-spacing: 8px; color: #818cf8; display: block;">
+                                        {otp}
+                                    </span>
+                                </div>
+
+                                <p style="margin: 20px 0 0; font-size: 13px; color: #94a3b8; line-height: 1.5;">
+                                    This code is valid for <strong>10 minutes</strong>. If you did not request this login code, you can safely disregard this email.
+                                </p>
+                            </td>
+                        </tr>
+
+                        <!-- Footer -->
+                        <tr>
+                            <td style="background-color: #0e1424; padding: 20px 30px; border-top: 1px solid #1e293b; text-align: center;">
+                                <p style="margin: 0; font-size: 11px; color: #64748b;">
+                                    &copy; 2026 Lumière Studio DAM Platform. All rights reserved.
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
+
+    try:
+        msg = EmailMultiAlternatives(subject, text_content, from_email, to)
+        msg.attach_alternative(html_content, "text/html")
+        msg.send()
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to deliver passwordless OTP email to {email}: {e}. OTP: {otp}")
+        print(f"[AUTH EMAIL] Passwordless OTP for {email}: {otp}")
