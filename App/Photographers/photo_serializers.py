@@ -9,6 +9,8 @@ from .photo_models import (
     Notification,
     NotificationPreference,
 )
+from .photo_utils import validate_non_nude_image
+
 
 
 class PhotoCategorySerializer(serializers.ModelSerializer):
@@ -31,6 +33,9 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     quick_info = serializers.SerializerMethodField()
     plan_details = serializers.SerializerMethodField()
+    avatar = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
+    profile_image = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
+
 
     class Meta:
         model = PhotographerProfile
@@ -192,20 +197,21 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
         }
 
     def get_plan_details(self, obj):
-        plan = obj.plan
-        if not plan and hasattr(obj, 'subscriptions'):
-            active_sub = obj.subscriptions.filter(status='active').select_related('plan').first()
-            if active_sub and active_sub.plan:
-                plan = active_sub.plan
+        plan = getattr(obj, 'studio_plan', None)
+        if not plan and hasattr(obj, 'subscription') and obj.subscription and obj.subscription.plan:
+            plan = obj.subscription.plan
+        if not plan:
+            plan = obj.plan
 
         if plan:
             plan_name = plan.name
             tier = plan.tier
             billing_cycle = plan.billing_cycle
         else:
-            plan_name = "Pro Studio Annual"
-            tier = "pro"
+            plan_name = "Standard Annual"
+            tier = "standard"
             billing_cycle = "annual"
+
 
         return {
             "name": plan_name,
@@ -261,10 +267,16 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class PostImageSerializer(serializers.ModelSerializer):
+    image = serializers.ImageField(validators=[validate_non_nude_image])
+
     class Meta:
         model = PostImage
         fields = ['id', 'post', 'image', 'created_at']
         read_only_fields = ['id', 'created_at']
+
+    def validate_image(self, value):
+        return validate_non_nude_image(value)
+
 
 
 class PostFeedbackSerializer(serializers.ModelSerializer):
@@ -283,10 +295,17 @@ class PhotographerPostSerializer(serializers.ModelSerializer):
     photographer_name = serializers.ReadOnlyField(source='photographer.name')
     photo_category_name = serializers.ReadOnlyField(source='photo_category.name')
     uploaded_images = serializers.ListField(
-        child=serializers.ImageField(allow_empty_file=False, use_url=False),
+        child=serializers.ImageField(allow_empty_file=False, use_url=False, validators=[validate_non_nude_image]),
         write_only=True,
         required=False
     )
+
+    def validate_uploaded_images(self, value):
+        if value:
+            for img in value:
+                validate_non_nude_image(img)
+        return value
+
 
     class Meta:
         model = PhotographerPost
@@ -340,7 +359,8 @@ class OnboardingSetupSerializer(serializers.Serializer):
     occupation = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     studio_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     location = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-    avatar = serializers.ImageField(required=False, allow_null=True)
+    avatar = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
     avatar_url = serializers.CharField(max_length=512, required=False, allow_blank=True, default='')
+
     onboarding_step = serializers.IntegerField(required=False, default=3)
 

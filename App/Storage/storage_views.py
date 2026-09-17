@@ -16,9 +16,10 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
 from App.Auth.auth_utils import get_user_from_request
-from App.Photographers.photo_models import PhotographerProfile
 from App.Photographers.photo_models import PhotographerProfile, Notification, NotificationPreference
+from App.Photographers.photo_utils import check_image_for_nudity
 from App.Storage.storage_models import (
+
     SharedEvent,
     EventPhoto,
     Gallery,
@@ -277,7 +278,14 @@ class EventBulkPhotoUploadView(APIView):
                 rejected_files.append({"name": f.name, "reason": f"Unsupported extension {ext}"})
                 continue
 
+            is_nude, violations = check_image_for_nudity(f)
+            if is_nude:
+                labels = {v['class'].replace('_', ' ').title() for v in violations}
+                rejected_files.append({"name": f.name, "reason": f"Explicit or nude content detected ({', '.join(sorted(labels))})"})
+                continue
+
             photo = EventPhoto.objects.create(
+
                 event=event,
                 image=f,
                 original_filename=f.name,
@@ -939,7 +947,12 @@ class StandardMediaUploadView(APIView):
             if ext not in VALID_IMAGE_EXTENSIONS:
                 continue
 
+            is_nude, violations = check_image_for_nudity(f)
+            if is_nude:
+                continue
+
             file_bytes = f.read()
+
             actual_size = len(file_bytes)
             key = f"galleries/{gallery.id}/originals/{f.name}"
             storage.upload(key, file_bytes, content_type=getattr(f, 'content_type', 'image/jpeg'))

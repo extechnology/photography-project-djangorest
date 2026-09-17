@@ -144,6 +144,7 @@ AUTHENTICATION_BACKENDS = [
 # ------------------------------------------------------------------------------
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
+        'App.Auth.auth_utils.CookieJWTAuthentication',
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
@@ -270,3 +271,23 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 
 CELERY_TIMEZONE = "Asia/Kolkata"
+
+# ------------------------------------------------------------------------------
+# NUDENET CONTENT MODERATION SETTINGS
+# ------------------------------------------------------------------------------
+NUDE_DETECTION_ENABLED = config('NUDE_DETECTION_ENABLED', default=True, cast=bool)
+NUDE_DETECTION_THRESHOLD = config('NUDE_DETECTION_THRESHOLD', default=0.45, cast=float)
+NUDE_DETECTION_PROHIBITED_CLASSES = [
+    'FEMALE_GENITALIA_EXPOSED',
+    'MALE_GENITALIA_EXPOSED',
+    'FEMALE_BREAST_EXPOSED',
+    'BUTTOCKS_EXPOSED',
+    'ANUS_EXPOSED',
+]
+
+# ------------------------------------------------------------------------------
+# PAYMENT GATEWAY (RAZORPAY) SETTINGS
+# ------------------------------------------------------------------------------
+RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='rzp_test_placeholder')
+RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='rzp_secret_placeholder')
+

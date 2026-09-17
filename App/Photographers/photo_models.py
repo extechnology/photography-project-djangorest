@@ -1,6 +1,6 @@
 from django.db import models
 from App.Auth.auth_models import User
-from App.Subscriptions.sub_models import SubscriptionPlans
+from App.Subscriptions.sub_models import SubscriptionPlans, Plan
 
 
 class PhotoCategory(models.Model):
@@ -37,6 +37,14 @@ class PhotographerProfile(models.Model):
         null=True,
         blank=True
     )
+    studio_plan = models.ForeignKey(
+        Plan,
+        on_delete=models.SET_NULL,
+        related_name='photographer_profiles',
+        null=True,
+        blank=True
+    )
+
     studio_name = models.CharField(max_length=255, blank=True, default='')
     name = models.CharField(max_length=255)
     avatar = models.ImageField(
@@ -107,9 +115,16 @@ class PhotographerProfile(models.Model):
 
     def get_storage_limit(self):
         """Returns effective storage limit in bytes based on plan or default."""
+        if hasattr(self, 'studio_plan') and self.studio_plan and self.studio_plan.storage_limit_bytes:
+            return self.studio_plan.storage_limit_bytes
+        if hasattr(self, 'subscription') and self.subscription:
+            sub = self.subscription
+            if sub.plan and sub.plan.storage_limit_bytes:
+                return sub.plan.storage_limit_bytes
         if self.plan and self.plan.storage_limit_bytes:
             return self.plan.storage_limit_bytes
         return 128849018880  # Default 120 GB
+
 
     def get_storage_remaining(self):
         """Returns remaining available storage in bytes."""

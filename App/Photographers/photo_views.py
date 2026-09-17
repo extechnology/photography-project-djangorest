@@ -27,6 +27,22 @@ from .photo_serializers import (
     OnboardingSetupSerializer,
 )
 from App.Auth.auth_utils import get_user_from_request
+from .photo_utils import check_image_for_nudity
+
+
+def check_uploaded_files_for_nudity(files):
+    """Helper to check a list of uploaded files for nudity violations."""
+    rejected = []
+    for f in files:
+        is_nude, violations = check_image_for_nudity(f)
+        if is_nude:
+            labels = {v['class'].replace('_', ' ').title() for v in violations}
+            rejected.append({
+                "filename": getattr(f, 'name', 'unnamed'),
+                "reason": f"Explicit or nude content detected ({', '.join(sorted(labels))})"
+            })
+    return rejected
+
 
 
 def get_current_user(request):
@@ -689,9 +705,21 @@ class PhotographerPostCreateView(APIView):
                 )
 
         uploaded_images = request.FILES.getlist('images') or request.FILES.getlist('uploaded_images')
+        if uploaded_images:
+            rejected = check_uploaded_files_for_nudity(uploaded_images)
+            if rejected:
+                return Response(
+                    {
+                        "message": "Upload rejected: Explicit or nude content detected in one or more photos.",
+                        "rejected_files": rejected,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         serializer = PhotographerPostSerializer(data=data)
         if serializer.is_valid():
             post = serializer.save()
+
 
             if uploaded_images:
                 for img in uploaded_images:
@@ -744,14 +772,26 @@ class PhotographerPostUpdateView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        uploaded_images = request.FILES.getlist('images') or request.FILES.getlist('uploaded_images')
+        if uploaded_images:
+            rejected = check_uploaded_files_for_nudity(uploaded_images)
+            if rejected:
+                return Response(
+                    {
+                        "message": "Update rejected: Explicit or nude content detected in one or more photos.",
+                        "rejected_files": rejected,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         serializer = PhotographerPostSerializer(post, data=request.data)
         if serializer.is_valid():
             updated_post = serializer.save()
 
-            uploaded_images = request.FILES.getlist('images') or request.FILES.getlist('uploaded_images')
             if uploaded_images:
                 for img in uploaded_images:
                     PostImage.objects.create(post=updated_post, image=img)
+
 
             refreshed_post = PhotographerPost.objects.prefetch_related('images', 'feedbacks').get(pk=updated_post.pk)
             return Response(
@@ -785,14 +825,26 @@ class PhotographerPostPartialUpdateView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        uploaded_images = request.FILES.getlist('images') or request.FILES.getlist('uploaded_images')
+        if uploaded_images:
+            rejected = check_uploaded_files_for_nudity(uploaded_images)
+            if rejected:
+                return Response(
+                    {
+                        "message": "Update rejected: Explicit or nude content detected in one or more photos.",
+                        "rejected_files": rejected,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         serializer = PhotographerPostSerializer(post, data=request.data, partial=True)
         if serializer.is_valid():
             updated_post = serializer.save()
 
-            uploaded_images = request.FILES.getlist('images') or request.FILES.getlist('uploaded_images')
             if uploaded_images:
                 for img in uploaded_images:
                     PostImage.objects.create(post=updated_post, image=img)
+
 
             refreshed_post = PhotographerPost.objects.prefetch_related('images', 'feedbacks').get(pk=updated_post.pk)
             return Response(
@@ -890,6 +942,16 @@ class PostImageUploadView(APIView):
 
         uploaded_files = request.FILES.getlist('image') or request.FILES.getlist('images')
         if uploaded_files:
+            rejected = check_uploaded_files_for_nudity(uploaded_files)
+            if rejected:
+                return Response(
+                    {
+                        "message": "Upload rejected: Inappropriate or explicit content detected in one or more photos.",
+                        "rejected_files": rejected,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             created_images = []
             for file in uploaded_files:
                 img_instance = PostImage.objects.create(post=post, image=file)
@@ -902,6 +964,7 @@ class PostImageUploadView(APIView):
                 },
                 status=status.HTTP_201_CREATED
             )
+
 
         data = request.data.copy()
         data['post'] = post.id
