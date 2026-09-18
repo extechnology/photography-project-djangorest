@@ -21,6 +21,7 @@ from .sub_services import (
     activate_subscription,
     create_checkout_order,
     verify_payment_signature,
+    handle_razorpay_webhook,
 )
 
 
@@ -231,6 +232,31 @@ class CancelAutoRenewView(APIView):
             "message": "Auto-renewal has been turned off for your studio subscription.",
             "auto_renew": False,
         }, status=status.HTTP_200_OK)
+
+
+class RazorpayWebhookView(APIView):
+    """
+    Asynchronous server-to-server Razorpay Webhook listener.
+    Processes 'payment.captured', 'order.paid', 'payment.failed' events.
+    POST /api/plans/webhook/  or  POST /api/subscriptions/webhook/
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        signature = request.headers.get('X-Razorpay-Signature', '')
+        if not signature:
+            return Response(
+                {"detail": "Missing X-Razorpay-Signature header."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        raw_body = request.body
+        result = handle_razorpay_webhook(raw_body, signature)
+
+        if result.get('status') == 'error':
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result, status=status.HTTP_200_OK)
 
 
 # =============================================================================

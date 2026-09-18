@@ -565,7 +565,7 @@ class PasswordlessSendOTPView(APIView):
 
         otp = str(random.randint(100000, 999999))
         PasswordlessLoginOTP.objects.create(email=email, otp=otp)
-        send_passwordless_otp_email(email, otp, is_existing_user=is_existing)
+        send_passwordless_otp_email.delay(email, otp, is_existing_user=is_existing)
 
         action_label = "login" if is_existing else "registration"
         return Response(
@@ -599,7 +599,7 @@ class PasswordlessResendOTPView(APIView):
 
         otp = str(random.randint(100000, 999999))
         PasswordlessLoginOTP.objects.create(email=email, otp=otp)
-        send_passwordless_otp_email(email, otp, is_existing_user=is_existing)
+        send_passwordless_otp_email.delay(email, otp, is_existing_user=is_existing)
 
         return Response(
             {
@@ -768,7 +768,7 @@ class PasswordlessLoginSendOTPView(APIView):
 
         otp = str(random.randint(100000, 999999))
         PasswordlessLoginOTP.objects.create(email=email, otp=otp)
-        send_passwordless_otp_email(email, otp, is_existing_user=is_existing)
+        send_passwordless_otp_email.delay(email, otp, is_existing_user=is_existing)
 
         action_label = "login" if is_existing else "registration"
         return Response(

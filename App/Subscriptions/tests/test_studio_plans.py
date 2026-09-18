@@ -211,3 +211,121 @@ class StudioPlansAPITests(TestCase):
         self.assertEqual(resp.data["status"], "active")
         self.assertTrue(PhotographerProfile.objects.filter(user=new_user).exists())
 
+    def test_razorpay_checkout_order_creation(self):
+        """POST /api/plans/checkout/ creates a Razorpay order structure and pending payment record."""
+        resp = self.client.post("/api/plans/checkout/", {
+            "plan_id": "plan-standard-1y",
+            "gateway": "razorpay"
+        })
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(resp.data["direct_activated"])
+        self.assertIn("order_id", resp.data)
+        self.assertIn("amount_paise", resp.data)
+        self.assertEqual(resp.data["plan_id"], "plan-standard-1y")
+        self.assertEqual(resp.data["currency"], "INR")
+
+        payment = SubscriptionPayment.objects.filter(gateway_order_id=resp.data["order_id"]).first()
+        self.assertIsNotNone(payment)
+        self.assertEqual(payment.status, "pending")
+
+    def test_razorpay_verify_payment_signature_and_activation(self):
+        """POST /api/plans/verify/ validates signature, commits quota, and marks payment successful."""
+        # Initiate checkout first
+        checkout_resp = self.client.post("/api/plans/checkout/", {
+            "plan_id": "plan-standard-1y",
+            "gateway": "razorpay"
+        })
+        order_id = checkout_resp.data["order_id"]
+
+        # Verify with test valid signature
+        verify_resp = self.client.post("/api/plans/verify/", {
+            "plan_id": "plan-standard-1y",
+            "gateway_order_id": order_id,
+            "gateway_payment_id": "pay_test_12345",
+            "gateway_signature": "test_signature_valid",
+        })
+        self.assertEqual(verify_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(verify_resp.data["status"], "success")
+        self.assertEqual(verify_resp.data["subscription"]["status"], "active")
+
+        # Verify database state
+        payment = SubscriptionPayment.objects.filter(gateway_order_id=order_id).first()
+        self.assertEqual(payment.status, "success")
+        self.assertEqual(payment.gateway_payment_id, "pay_test_12345")
+
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.studio_plan.id, "plan-standard-1y")
+
+    def test_razorpay_webhook_missing_signature_returns_400(self):
+        """POST /api/plans/webhook/ returns 400 Bad Request when X-Razorpay-Signature header is missing."""
+        anon_client = APIClient()
+        resp = anon_client.post("/api/plans/webhook/", {}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Missing X-Razorpay-Signature", resp.data.get("detail", ""))
+
+    def test_razorpay_webhook_event_handling(self):
+        """POST /api/plans/webhook/ processes payment.captured and updates subscription."""
+        import json
+        import hmac
+        import hashlib
+        from django.conf import settings
+
+        # Set a test webhook secret
+        secret = "test_webhook_secret_key"
+        original_secret = getattr(settings, 'RAZORPAY_WEBHOOK_SECRET', '')
+        settings.RAZORPAY_WEBHOOK_SECRET = secret
+
+        try:
+            # Create a pending payment
+            plan = Plan.objects.get(id="plan-standard-3m")
+            sub = PhotographerSubscription.objects.create(
+                photographer=self.profile,
+                plan=plan,
+                status="pending"
+            )
+            order_id = "order_webhook_test_99"
+            payment = SubscriptionPayment.objects.create(
+                subscription=sub,
+                plan=plan,
+                amount=plan.total_price,
+                gateway="razorpay",
+                gateway_order_id=order_id,
+                status="pending"
+            )
+
+            payload = {
+                "event": "payment.captured",
+                "payload": {
+                    "payment": {
+                        "entity": {
+                            "id": "pay_hook_99",
+                            "order_id": order_id,
+                            "amount": int(plan.total_price * 100),
+                            "status": "captured"
+                        }
+                    }
+                }
+            }
+            raw_body = json.dumps(payload).encode('utf-8')
+            signature = hmac.new(secret.encode('utf-8'), raw_body, hashlib.sha256).hexdigest()
+
+            anon_client = APIClient()
+            resp = anon_client.post(
+                "/api/plans/webhook/",
+                data=raw_body,
+                content_type="application/json",
+                HTTP_X_RAZORPAY_SIGNATURE=signature
+            )
+            self.assertEqual(resp.status_code, status.HTTP_200_OK)
+            self.assertEqual(resp.data["status"], "success")
+
+            payment.refresh_from_db()
+            self.assertEqual(payment.status, "success")
+            self.assertEqual(payment.gateway_payment_id, "pay_hook_99")
+
+            sub.refresh_from_db()
+            self.assertEqual(sub.status, "active")
+        finally:
+            settings.RAZORPAY_WEBHOOK_SECRET = original_secret
+
+

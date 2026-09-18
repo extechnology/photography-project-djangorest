@@ -134,6 +134,9 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
     def get_avatar_url(self, obj):
+        request = self.context.get('request')
+        if request and obj.avatar:
+            return request.build_absolute_uri(obj.avatar.url)
         return obj.get_avatar_url()
 
     def get_storage_limit_bytes(self, obj):

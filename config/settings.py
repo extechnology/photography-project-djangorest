@@ -111,7 +111,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
 
 USE_I18N = True
 
@@ -290,4 +290,6 @@ NUDE_DETECTION_PROHIBITED_CLASSES = [
 # ------------------------------------------------------------------------------
 RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='rzp_test_placeholder')
 RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='rzp_secret_placeholder')
-
+RAZORPAY_WEBHOOK_SECRET = config('RAZORPAY_WEBHOOK_SECRET', default='')
+
+

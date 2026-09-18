@@ -6,6 +6,7 @@ from .sub_views import (
     VerifyPaymentView,
     CancelAutoRenewView,
     UpgradeSubscriptionView,
+    RazorpayWebhookView,
 )
 
 urlpatterns = [
@@ -16,9 +17,10 @@ urlpatterns = [
     # Current subscription & live quota metrics
     path('current/', CurrentSubscriptionView.as_view(), name='subscription-current'),
 
-    # Checkout & Payment Verification
+    # Checkout, Payment Verification & Webhook
     path('checkout/', CheckoutView.as_view(), name='subscription-checkout'),
     path('verify/', VerifyPaymentView.as_view(), name='subscription-verify'),
+    path('webhook/', RazorpayWebhookView.as_view(), name='subscription-webhook'),
     path('cancel/', CancelAutoRenewView.as_view(), name='subscription-cancel'),
 
     # Backward compatibility
