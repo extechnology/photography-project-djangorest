@@ -8,6 +8,7 @@ from django.core.files.base import ContentFile
 from django.db.models import F
 from django.utils.text import slugify
 from django.utils import timezone
+from datetime import timedelta
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -154,6 +155,18 @@ class SharedEventListCreateView(APIView):
         profile = get_photographer_profile(user)
         if not profile:
             return Response({"message": "Only registered photographers can create shared events."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Enforce plan event limit
+        active_plan = getattr(profile, 'studio_plan', None)
+        if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
+            active_plan = profile.subscription.plan
+        if active_plan and getattr(active_plan, 'max_events', 0) > 0:
+            current_events = SharedEvent.objects.filter(photographer=profile).count()
+            if current_events >= active_plan.max_events:
+                return Response({
+                    "code": "EVENT_LIMIT_REACHED",
+                    "message": f"You have reached the maximum shared events limit ({active_plan.max_events}) for your plan. Please upgrade to host more events."
+                }, status=status.HTTP_403_FORBIDDEN)
 
         data = request.data.copy()
         serializer = SharedEventDetailSerializer(data=data, context={'request': request})
@@ -629,9 +642,44 @@ class GalleryListCreateView(APIView):
         if not profile and not (user.is_staff or user.is_superuser):
             return Response({"code": "NOT_A_PHOTOGRAPHER", "detail": "Photographer profile not found."}, status=status.HTTP_403_FORBIDDEN)
 
+        # Enforce plan limits if not staff/superuser
+        active_plan = None
+        if profile:
+            active_plan = getattr(profile, 'studio_plan', None)
+            if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
+                active_plan = profile.subscription.plan
+
+        if active_plan and getattr(active_plan, 'max_galleries', 0) > 0:
+            current_count = Gallery.objects.filter(photographer=profile).exclude(status='archived').count()
+            if current_count >= active_plan.max_galleries:
+                return Response({
+                    "code": "GALLERY_LIMIT_REACHED",
+                    "detail": f"You have reached the maximum active gallery limit ({active_plan.max_galleries}) for your current plan. Please upgrade to create more galleries."
+                }, status=status.HTTP_403_FORBIDDEN)
+
+        # Check template permission if specified in creation request
+        requested_template = request.data.get('template_id')
+        if requested_template and active_plan and getattr(active_plan, 'allowed_templates', None):
+            if requested_template not in active_plan.allowed_templates:
+                return Response({
+                    "code": "TEMPLATE_NOT_ALLOWED",
+                    "detail": f"Template '{requested_template}' is not included in your current subscription tier."
+                }, status=status.HTTP_403_FORBIDDEN)
+
         serializer = GallerySerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             gallery = serializer.save(photographer=profile)
+
+            # Auto-apply plan gallery expiry days if expires_at was not explicitly provided
+            if active_plan and getattr(active_plan, 'gallery_expiry_days', 0) > 0 and not gallery.expires_at:
+                gallery.expires_at = timezone.now() + timedelta(days=active_plan.gallery_expiry_days)
+                gallery.save(update_fields=['expires_at'])
+
+            # Apply plan face search restriction if disabled in current plan
+            if active_plan and getattr(active_plan, 'face_search_enabled', None) is False:
+                gallery.face_search_enabled = False
+                gallery.save(update_fields=['face_search_enabled'])
+
             StorageAuditLog.objects.create(
                 photographer=profile,
                 gallery=gallery,
@@ -1270,8 +1318,14 @@ class GalleryTemplateSwitchView(APIView):
         template_id = serializer.validated_data['template_id']
 
         # Verify against photographer plan permissions if restricted
-        if gallery.photographer.plan and gallery.photographer.plan.allowed_templates:
-            if template_id not in gallery.photographer.plan.allowed_templates:
+        active_plan = getattr(gallery.photographer, 'studio_plan', None)
+        if not active_plan and hasattr(gallery.photographer, 'subscription') and gallery.photographer.subscription and gallery.photographer.subscription.plan:
+            active_plan = gallery.photographer.subscription.plan
+        if not active_plan and gallery.photographer.plan:
+            active_plan = gallery.photographer.plan
+
+        if active_plan and getattr(active_plan, 'allowed_templates', None):
+            if template_id not in active_plan.allowed_templates:
                 return Response({
                     "code": "TEMPLATE_NOT_ALLOWED",
                     "detail": f"Template '{template_id}' is not included in your current subscription tier."

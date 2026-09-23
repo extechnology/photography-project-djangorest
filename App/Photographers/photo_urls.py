@@ -50,6 +50,10 @@ from .photo_views import (
     NotificationMarkAllAsReadView,
     NotificationDeleteView,
     NotificationPreferenceView,
+
+    # Inquiries
+    InquiryListCreateView,
+    InquiryDetailView,
 )
 
 urlpatterns = [
@@ -122,4 +126,10 @@ urlpatterns = [
     path('notifications/<int:pk>/detail/', NotificationDetailView.as_view(), name='notification-detail'),
     path('notifications/<int:pk>/read/', NotificationMarkAsReadView.as_view(), name='notification-mark-read'),
     path('notifications/<int:pk>/delete/', NotificationDeleteView.as_view(), name='notification-delete'),
+
+    # -------------------------------------------------------------------------
+    # Inquiries & Leads
+    # -------------------------------------------------------------------------
+    path('inquiries/', InquiryListCreateView.as_view(), name='inquiry-list-create'),
+    path('inquiries/<uuid:pk>/', InquiryDetailView.as_view(), name='inquiry-detail'),
 ]

@@ -14,6 +14,7 @@ from .photo_models import (
     PostFeedback,
     Notification,
     NotificationPreference,
+    Inquiry,
 )
 from .photo_serializers import (
     PhotoCategorySerializer,
@@ -25,6 +26,7 @@ from .photo_serializers import (
     PhotographerPostSerializer,
     NotificationSerializer,
     OnboardingSetupSerializer,
+    InquirySerializer,
 )
 from App.Auth.auth_utils import get_user_from_request
 from .photo_utils import check_image_for_nudity
@@ -50,6 +52,15 @@ def get_current_user(request):
         return request.user
     try:
         return get_user_from_request(request)
+    except Exception:
+        return None
+
+
+def get_photographer_profile(user):
+    if not user:
+        return None
+    try:
+        return getattr(user, 'photographer_profile', None) or PhotographerProfile.objects.filter(user=user).first()
     except Exception:
         return None
 
@@ -270,6 +281,18 @@ class MyPhotographerProfileGetView(APIView):
             )
 
         profile = self._get_or_create_profile(user)
+        template = request.data.get('default_template')
+        if template:
+            active_plan = getattr(profile, 'studio_plan', None)
+            if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
+                active_plan = profile.subscription.plan
+            if active_plan and getattr(active_plan, 'allowed_portfolio_templates', None):
+                if template not in active_plan.allowed_portfolio_templates:
+                    return Response(
+                        {"message": f"Portfolio template '{template}' is not included in your current subscription plan."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
         serializer = PhotographerProfileSerializer(profile, data=request.data)
         if serializer.is_valid():
             updated_profile = serializer.save()
@@ -294,6 +317,18 @@ class MyPhotographerProfileGetView(APIView):
             )
 
         profile = self._get_or_create_profile(user)
+        template = request.data.get('default_template')
+        if template:
+            active_plan = getattr(profile, 'studio_plan', None)
+            if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
+                active_plan = profile.subscription.plan
+            if active_plan and getattr(active_plan, 'allowed_portfolio_templates', None):
+                if template not in active_plan.allowed_portfolio_templates:
+                    return Response(
+                        {"message": f"Portfolio template '{template}' is not included in your current subscription plan."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
         serializer = PhotographerProfileSerializer(profile, data=request.data, partial=True)
         if serializer.is_valid():
             updated_profile = serializer.save()
@@ -703,6 +738,21 @@ class PhotographerPostCreateView(APIView):
                     {"message": "User does not have a photographer profile. Please create a profile first."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+        else:
+            profile = PhotographerProfile.objects.filter(id=data['photographer']).first()
+
+        # Enforce portfolio posts limit from active plan
+        if profile:
+            active_plan = getattr(profile, 'studio_plan', None)
+            if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
+                active_plan = profile.subscription.plan
+            if active_plan and getattr(active_plan, 'max_portfolio_posts', 0) > 0:
+                current_posts = PhotographerPost.objects.filter(photographer=profile).count()
+                if current_posts >= active_plan.max_portfolio_posts:
+                    return Response(
+                        {"message": f"Portfolio post limit reached ({active_plan.max_portfolio_posts}). Please upgrade your plan to showcase more posts."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
 
         uploaded_images = request.FILES.getlist('images') or request.FILES.getlist('uploaded_images')
         if uploaded_images:
@@ -1263,3 +1313,123 @@ class NotificationDeleteView(APIView):
             {"message": "Notification deleted successfully"},
             status=status.HTTP_200_OK
         )
+
+
+# =============================================================================
+# 7. Client Inquiry & Lead Access Views (Plan Tier Enforced)
+# =============================================================================
+
+class InquiryListCreateView(APIView):
+    """
+    Client inquiry submission and photographer lead access.
+    - POST: Submit an inquiry (client or guest).
+    - GET: List inquiries.
+      * Standard 3 Months: Random 10 inquiries.
+      * Standard 1 Year & Premium Elite: Full access to all inquiries.
+    """
+    def post(self, request):
+        data = request.data.copy()
+        photographer_id = data.get('photographer') or data.get('photographer_id')
+        if photographer_id:
+            try:
+                profile = PhotographerProfile.objects.get(pk=photographer_id)
+                data['photographer'] = profile.id
+            except (PhotographerProfile.DoesNotExist, ValueError):
+                return Response({"message": "Invalid photographer ID."}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = InquirySerializer(data=data)
+        if serializer.is_valid():
+            inquiry = serializer.save()
+            if inquiry.photographer and inquiry.photographer.user:
+                Notification.objects.create(
+                    user=inquiry.photographer.user,
+                    photographer=inquiry.photographer,
+                    title="New Client Inquiry",
+                    message=f"New inquiry from {inquiry.client_name} for {inquiry.event_type}.",
+                    event_type="system"
+                )
+            return Response(
+                {
+                    "message": "Inquiry submitted successfully.",
+                    "data": InquirySerializer(inquiry).data
+                },
+                status=status.HTTP_201_CREATED
+            )
+        return Response({"message": "Failed to submit inquiry.", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def get(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        profile = get_photographer_profile(user)
+        if not profile and not (user.is_staff or user.is_superuser):
+            return Response({"message": "Photographer profile not found."}, status=status.HTTP_403_FORBIDDEN)
+
+        if user.is_staff or user.is_superuser:
+            qs = Inquiry.objects.all()
+        else:
+            qs = Inquiry.objects.filter(Q(photographer=profile) | Q(photographer__isnull=True))
+
+        total_available = qs.count()
+
+        active_plan = None
+        if profile:
+            active_plan = getattr(profile, 'studio_plan', None)
+            if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
+                active_plan = profile.subscription.plan
+
+        is_restricted = False
+        limit = 0
+        if active_plan and active_plan.max_inquiries > 0 and not active_plan.has_full_inquiry_access:
+            is_restricted = True
+            limit = active_plan.max_inquiries
+            qs = qs.order_by('?')[:limit]
+        else:
+            qs = qs.order_by('-created_at')
+
+        serializer = InquirySerializer(qs, many=True)
+        return Response(
+            {
+                "access_tier": "random_sample" if is_restricted else "full_access",
+                "inquiry_limit": limit,
+                "total_available": total_available,
+                "count": len(serializer.data),
+                "inquiries": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class InquiryDetailView(APIView):
+    """
+    Detail, status update, or deletion of an inquiry.
+    """
+    def get(self, request, pk):
+        user = get_current_user(request)
+        if not user:
+            return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        inquiry = get_object_or_404(Inquiry, pk=pk)
+        return Response(InquirySerializer(inquiry).data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        user = get_current_user(request)
+        if not user:
+            return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        inquiry = get_object_or_404(Inquiry, pk=pk)
+        serializer = InquirySerializer(inquiry, data=request.data, partial=True)
+        if serializer.is_valid():
+            updated = serializer.save()
+            return Response(InquirySerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        user = get_current_user(request)
+        if not user:
+            return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        inquiry = get_object_or_404(Inquiry, pk=pk)
+        inquiry.delete()
+        return Response({"message": "Inquiry deleted successfully."}, status=status.HTTP_200_OK)

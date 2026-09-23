@@ -84,12 +84,28 @@ Host: 127.0.0.1:8000
     "image_storage": "200 GB",
     "video_storage": "10 GB",
     "storage_limit_bytes": 225485783040,
+    "max_galleries": 15,
+    "gallery_expiry_days": 90,
+    "face_search_enabled": false,
+    "max_events": 5,
+    "allowed_templates": ["editorial", "masonry"],
+    "allowed_portfolio_templates": ["editorial", "masonry"],
+    "max_portfolio_posts": 10,
+    "max_inquiries": 10,
+    "has_full_inquiry_access": false,
+    "inquiry_access": "Random 10 Inquiries",
+    "can_upgrade_storage": false,
+    "max_upgrade_image_gb": 200,
     "features": [
-      "200 GB Image Storage",
-      "10 GB Video Delivery",
+      "200 GB High-Speed Image Storage",
+      "10 GB 4K Video Delivery",
       "For 03 Months Hosting",
-      "Unlimited Client Galleries",
-      "All 4 Layout Templates (Editorial, Masonry, Cinematic, Minimal)",
+      "Up to 15 Active Client Galleries",
+      "90 Days Gallery Access Validity",
+      "5 Event Section Albums (30-Day Window)",
+      "Editorial & Masonry Gallery Templates",
+      "Photographer Portfolio (10 Showcase Posts)",
+      "Random 10 Client Inquiries Access (Upgrade to view all)",
       "PIN Security & Custom Watermark Suite",
       "Priority Delivery Speeds"
     ],
@@ -115,12 +131,29 @@ Host: 127.0.0.1:8000
     "image_storage": "200 GB",
     "video_storage": "10 GB",
     "storage_limit_bytes": 225485783040,
+    "max_galleries": 50,
+    "gallery_expiry_days": 365,
+    "face_search_enabled": true,
+    "max_events": 25,
+    "allowed_templates": ["editorial", "masonry"],
+    "allowed_portfolio_templates": ["editorial", "masonry"],
+    "max_portfolio_posts": 30,
+    "max_inquiries": 0,
+    "has_full_inquiry_access": true,
+    "inquiry_access": "All Inquiries",
+    "can_upgrade_storage": false,
+    "max_upgrade_image_gb": 200,
     "features": [
-      "200 GB Image Storage",
-      "10 GB Video Delivery",
+      "200 GB High-Speed Image Storage",
+      "10 GB 4K Video Delivery",
       "For 01 Year Uninterrupted Hosting",
-      "Unlimited Client Galleries",
-      "All 4 Layout Templates (Editorial, Masonry, Cinematic, Minimal)",
+      "Up to 50 Active Client Galleries",
+      "365 Days Gallery Access Validity",
+      "AI Biometric Face Search Enabled",
+      "25 Event Section Albums (90-Day Window)",
+      "Editorial & Masonry Gallery Templates",
+      "Photographer Portfolio (30 Showcase Posts)",
+      "Full Access to All Client Inquiries",
       "PIN Security & Custom Watermark Suite",
       "Priority Delivery Speeds"
     ],
@@ -131,28 +164,46 @@ Host: 127.0.0.1:8000
   {
     "id": "plan-premium-elite",
     "name": "Studio Premium Elite",
-    "subtitle": "For 01 Year • Maximum Storage & Dedicated Video Bandwidth",
+    "subtitle": "2xStandard Plan • Maximum Storage & Dedicated Video Bandwidth",
     "tier": "premium",
     "billing_cycle": "annual",
     "period_label": "For 01 Year",
     "duration_months": 12,
     "monthly_price": "1800.00",
-    "original_monthly_price": "2400.00",
+    "original_monthly_price": "2200.00",
     "total_price": "21600.00",
     "billing_text": "₹1,800 / Month • Billed Annually (₹21,600)",
     "currency": "INR",
-    "tag": "2X POWER",
+    "tag": "2xStandard Plan",
     "tag_type": "popular",
-    "image_storage": "1000 GB",
+    "image_storage": "600 GB",
     "video_storage": "50 GB",
-    "storage_limit_bytes": 1127428915200,
+    "storage_limit_bytes": 697932185600,
+    "max_galleries": 0,
+    "gallery_expiry_days": 0,
+    "face_search_enabled": true,
+    "max_events": 0,
+    "allowed_templates": ["editorial", "masonry", "cinematic", "minimal"],
+    "allowed_portfolio_templates": ["editorial", "masonry", "cinematic", "minimal"],
+    "max_portfolio_posts": 0,
+    "max_inquiries": 0,
+    "has_full_inquiry_access": true,
+    "inquiry_access": "All Inquiries",
+    "can_upgrade_storage": true,
+    "max_upgrade_image_gb": 1000,
     "features": [
-      "1000 GB High-Speed Image Storage",
+      "600 GB Image Storage (Upgradeable to 1000 GB)",
       "50 GB 4K Video Delivery",
+      "2x Standard Plan Performance & Quota",
+      "Unlimited Client Galleries (No Cap)",
+      "Unlimited Gallery Expiry (Permanent)",
       "Dedicated High-Bandwidth Cloud Delivery",
-      "Custom Domain & Studio White-Labeling",
-      "Advanced AI Face Search & Tagging",
-      "Custom Studio Watermarking Suite",
+      "VIP AI Face Search & Discovery",
+      "Unlimited Event Section Albums",
+      "All 4 Layout Templates (Editorial, Masonry, Cinematic, Minimal)",
+      "Photographer Portfolio (Unlimited Posts & Custom Domain)",
+      "Full & Unlimited Access to All Client Inquiries",
+      "Custom Studio Watermarking Suite & White-Labeling",
       "VIP Support & Early Access to New Templates"
     ],
     "cta_text": "Choose Studio Premium Elite",
@@ -431,6 +482,18 @@ export interface StudioPlan {
   image_storage: string;
   video_storage: string;
   storage_limit_bytes: number;
+  max_galleries: number; // 0 = unlimited
+  gallery_expiry_days: number; // 0 = unlimited
+  face_search_enabled: boolean;
+  max_events: number; // 0 = unlimited
+  allowed_templates: string[];
+  allowed_portfolio_templates: string[];
+  max_portfolio_posts: number; // 0 = unlimited
+  max_inquiries: number; // 0 = unlimited / all inquiries
+  has_full_inquiry_access: boolean;
+  inquiry_access: string; // e.g. "Random 10 Inquiries" or "All Inquiries"
+  can_upgrade_storage: boolean;
+  max_upgrade_image_gb: number;
   features: string[];
   cta_text: string;
   is_active: boolean;
@@ -627,4 +690,47 @@ export const usePlanUpgrade = (onSuccess: () => void) => {
 
   return { upgradePlan, loading };
 };
+```
+
+---
+
+## 6. Client Inquiries & Leads API
+
+### Summary Table
+
+| Method | Endpoint | Description | Auth Required | Plan Tier Rule |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/api/photographers/inquiries/` | Public inquiry submission by client/guest | No | Open to all clients |
+| `GET` | `/api/photographers/inquiries/` | List inquiries for logged-in photographer | **Yes** | **Standard 3M**: Random 10 inquiries (`random_sample`)<br>**Standard 1Y & Premium**: All inquiries (`full_access`) |
+| `GET` | `/api/photographers/inquiries/<uuid:id>/` | Retrieve inquiry detail | **Yes** | Active plan |
+| `PATCH` | `/api/photographers/inquiries/<uuid:id>/` | Update inquiry status (`contacted`, `booked`, etc.) | **Yes** | Photographer |
+| `DELETE` | `/api/photographers/inquiries/<uuid:id>/` | Delete inquiry | **Yes** | Photographer |
+
+#### List Inquiries Response (`GET /api/photographers/inquiries/`):
+```json
+{
+  "access_tier": "random_sample",
+  "inquiry_limit": 10,
+  "total_available": 42,
+  "count": 10,
+  "inquiries": [
+    {
+      "id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+      "photographer": 1,
+      "photographer_name": "Apex Studio",
+      "studio_name": "Apex Wedding & Studio",
+      "client_name": "Sarah Connor",
+      "client_email": "sarah@example.com",
+      "client_phone": "+919876543210",
+      "event_type": "Wedding",
+      "event_date": "2026-12-15",
+      "location": "Mumbai",
+      "budget": "₹1,50,000",
+      "message": "Looking for wedding photography deliverables.",
+      "status": "new",
+      "created_at": "2026-09-22T10:00:00Z",
+      "updated_at": "2026-09-22T10:00:00Z"
+    }
+  ]
+}
 ```

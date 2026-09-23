@@ -52,8 +52,31 @@ class StudioPlansAPITests(TestCase):
         self.assertEqual(standard_1y["image_storage"], "200 GB")
         self.assertEqual(standard_1y["video_storage"], "10 GB")
         self.assertEqual(standard_1y["tag"], "MOST POPULAR")
-        self.assertIn("200 GB Image Storage", standard_1y["features"])
+        self.assertIn("200 GB High-Speed Image Storage", standard_1y["features"])
         self.assertIn("₹800 / Month", standard_1y["billing_text"])
+        self.assertEqual(standard_1y["max_galleries"], 50)
+        self.assertEqual(standard_1y["gallery_expiry_days"], 365)
+        self.assertTrue(standard_1y["face_search_enabled"])
+        self.assertEqual(standard_1y["max_inquiries"], 0)
+        self.assertTrue(standard_1y["has_full_inquiry_access"])
+        self.assertEqual(standard_1y["inquiry_access"], "All Inquiries")
+
+        standard_3m = next(p for p in resp.data if p["id"] == "plan-standard-3m")
+        self.assertEqual(standard_3m["max_inquiries"], 10)
+        self.assertFalse(standard_3m["has_full_inquiry_access"])
+        self.assertEqual(standard_3m["inquiry_access"], "Random 10 Inquiries")
+
+        premium = next(p for p in resp.data if p["id"] == "plan-premium-elite")
+        self.assertEqual(premium["tag"], "2xStandard Plan")
+        self.assertEqual(float(premium["original_monthly_price"]), 2200.00)
+        self.assertEqual(float(premium["monthly_price"]), 1800.00)
+        self.assertEqual(premium["image_storage"], "600 GB")
+        self.assertEqual(premium["video_storage"], "50 GB")
+        self.assertEqual(premium["max_upgrade_image_gb"], 1000)
+        self.assertTrue(premium["can_upgrade_storage"])
+        self.assertEqual(premium["max_galleries"], 0)
+        self.assertEqual(premium["max_inquiries"], 0)
+        self.assertTrue(premium["has_full_inquiry_access"])
 
     def test_current_subscription(self):
         """GET /api/plans/current/ retrieves active subscription details and storage breakdown."""
@@ -327,5 +350,92 @@ class StudioPlansAPITests(TestCase):
             self.assertEqual(sub.status, "active")
         finally:
             settings.RAZORPAY_WEBHOOK_SECRET = original_secret
+
+    def test_feature_dimensions_enforcement(self):
+        """Test gallery limit, template restrictions, and expiry days based on plan dimensions."""
+        from App.Storage.storage_models import Gallery
+        plan_3m = Plan.objects.get(id="plan-standard-3m")
+        self.profile.studio_plan = plan_3m
+        self.profile.save(update_fields=['studio_plan'])
+
+        # 1. Gallery creation with template not in allowed_templates ('cinematic') should fail
+        resp = self.client.post(
+            "/api/storage/galleries/",
+            {"title": "Test Wedding", "template_id": "cinematic"},
+            format="json"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.data["code"], "TEMPLATE_NOT_ALLOWED")
+
+        # 2. Gallery creation with allowed template ('editorial') should succeed
+        resp = self.client.post(
+            "/api/storage/galleries/",
+            {"title": "Test Wedding Allowed", "template_id": "editorial"},
+            format="json"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        gallery_id = resp.data["id"]
+
+        # 3. Auto-applied expiry_date (90 days)
+        gallery = Gallery.objects.get(id=gallery_id)
+        self.assertIsNotNone(gallery.expires_at)
+        self.assertFalse(gallery.face_search_enabled) # face_search_enabled is False on Standard 3M
+
+        # 4. Attempting to switch template to cinematic should fail
+        resp = self.client.patch(
+            f"/api/storage/galleries/{gallery_id}/template/",
+            {"template_id": "cinematic"},
+            format="json"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.data["code"], "TEMPLATE_NOT_ALLOWED")
+
+        # 5. Switching to masonry should succeed
+        resp = self.client.patch(
+            f"/api/storage/galleries/{gallery_id}/template/",
+            {"template_id": "masonry"},
+            format="json"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    def test_inquiry_access_limit_per_plan(self):
+        """Standard 3 Month plan only accesses random 10 inquiries, while other tiers access all."""
+        from App.Photographers.photo_models import Inquiry
+
+        # Create 15 sample inquiries
+        for i in range(1, 16):
+            Inquiry.objects.create(
+                photographer=self.profile,
+                client_name=f"Client {i}",
+                client_email=f"client{i}@example.com",
+                client_phone="9998887776",
+                event_type="Wedding",
+                message=f"Need wedding photos {i}"
+            )
+
+        # 1. Standard 3 Month plan: random 10 inquiries limit
+        plan_3m = Plan.objects.get(id="plan-standard-3m")
+        self.profile.studio_plan = plan_3m
+        self.profile.save(update_fields=['studio_plan'])
+
+        resp = self.client.get("/api/photographers/inquiries/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["access_tier"], "random_sample")
+        self.assertEqual(resp.data["inquiry_limit"], 10)
+        self.assertEqual(resp.data["total_available"], 15)
+        self.assertEqual(resp.data["count"], 10)
+
+        # 2. Upgrade to Standard 1 Year: full access to all 15 inquiries
+        plan_1y = Plan.objects.get(id="plan-standard-1y")
+        self.profile.studio_plan = plan_1y
+        self.profile.save(update_fields=['studio_plan'])
+
+        resp = self.client.get("/api/photographers/inquiries/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["access_tier"], "full_access")
+        self.assertEqual(resp.data["inquiry_limit"], 0)
+        self.assertEqual(resp.data["total_available"], 15)
+        self.assertEqual(resp.data["count"], 15)
+
 
 

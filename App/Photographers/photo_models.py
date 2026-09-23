@@ -1,3 +1,4 @@
+import uuid
 from django.db import models
 from App.Auth.auth_models import User
 from App.Subscriptions.sub_models import SubscriptionPlans, Plan
@@ -248,3 +249,39 @@ class PostFeedback(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - Post {self.post.id}"
+
+
+class Inquiry(models.Model):
+    STATUS_CHOICES = [
+        ('new', 'New'),
+        ('contacted', 'Contacted'),
+        ('booked', 'Booked'),
+        ('archived', 'Archived'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    photographer = models.ForeignKey(
+        PhotographerProfile,
+        on_delete=models.CASCADE,
+        related_name='inquiries',
+        null=True,
+        blank=True,
+        help_text="Direct inquiry to specific photographer, or null for general lead pool"
+    )
+    client_name = models.CharField(max_length=255)
+    client_email = models.EmailField()
+    client_phone = models.CharField(max_length=20, blank=True, default='')
+    event_type = models.CharField(max_length=100, blank=True, default='Wedding')
+    event_date = models.DateField(null=True, blank=True)
+    location = models.CharField(max_length=255, blank=True, default='')
+    budget = models.CharField(max_length=100, blank=True, default='')
+    message = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='new')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Inquiry: {self.client_name} - {self.event_type}"
