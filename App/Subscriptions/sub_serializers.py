@@ -7,6 +7,7 @@ class PlanSerializer(serializers.ModelSerializer):
     billing_text = serializers.CharField(read_only=True)
     image_storage = serializers.SerializerMethodField()
     video_storage = serializers.SerializerMethodField()
+    inquiry_access = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
@@ -32,20 +33,15 @@ class PlanSerializer(serializers.ModelSerializer):
             'tag_type',
             'cta_text',
             'features',
-            'max_galleries',
-            'gallery_expiry_days',
-            'face_search_enabled',
-            'max_events',
-            'allowed_templates',
-            'allowed_portfolio_templates',
-            'max_portfolio_posts',
-            'max_inquiries',
-            'has_full_inquiry_access',
-            'can_upgrade_storage',
-            'max_upgrade_image_gb',
+            'cta_text',
             'is_active',
             'sort_order',
         ]
+
+    def get_inquiry_access(self, obj):
+        if obj.max_inquiries > 0 and not obj.has_full_inquiry_access:
+            return f"Random {obj.max_inquiries} Inquiries"
+        return "All Inquiries"
 
     def get_image_storage(self, obj):
         return f"{obj.image_storage_gb} GB"

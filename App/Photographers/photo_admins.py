@@ -7,6 +7,7 @@ from .photo_models import (
     PostImage,
     PostFeedback,
     Notification,
+    Inquiry,
 )
 
 
@@ -50,3 +51,10 @@ class NotificationAdmin(admin.ModelAdmin):
     list_display = ('id', 'photographer', 'event_type', 'title', 'is_read', 'created_at')
     list_filter = ('event_type', 'is_read', 'created_at')
     search_fields = ('title', 'message')
+
+
+@admin.register(Inquiry)
+class InquiryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'client_name', 'client_email', 'client_phone', 'event_type', 'event_date', 'status', 'photographer', 'created_at')
+    list_filter = ('status', 'event_type', 'created_at')
+    search_fields = ('client_name', 'client_email', 'client_phone', 'location')

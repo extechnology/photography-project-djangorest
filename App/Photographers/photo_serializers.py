@@ -8,6 +8,7 @@ from .photo_models import (
     PostFeedback,
     Notification,
     NotificationPreference,
+    Inquiry,
 )
 from .photo_utils import validate_non_nude_image
 
@@ -366,4 +367,30 @@ class OnboardingSetupSerializer(serializers.Serializer):
     avatar_url = serializers.CharField(max_length=512, required=False, allow_blank=True, default='')
 
     onboarding_step = serializers.IntegerField(required=False, default=3)
+
+
+class InquirySerializer(serializers.ModelSerializer):
+    photographer_name = serializers.ReadOnlyField(source='photographer.name')
+    studio_name = serializers.ReadOnlyField(source='photographer.studio_name')
+
+    class Meta:
+        model = Inquiry
+        fields = [
+            'id',
+            'photographer',
+            'photographer_name',
+            'studio_name',
+            'client_name',
+            'client_email',
+            'client_phone',
+            'event_type',
+            'event_date',
+            'location',
+            'budget',
+            'message',
+            'status',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
 

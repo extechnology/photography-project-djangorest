@@ -18,7 +18,6 @@ import urllib.parse
 import re
 import random
 
-
 from .auth_models import *
 
 from .auth_serializers import *
