@@ -32,6 +32,13 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if not identifier:
             raise serializers.ValidationError({"message": "Either email or phone number must be provided"})
 
+        from django.conf import settings
+        max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+        if User.objects.filter(is_superuser=False).count() >= max_users:
+            raise serializers.ValidationError({
+                "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+            })
+
         if User.objects.filter(username=username).exists():
             raise serializers.ValidationError({"message": "This username is already taken"})
 
@@ -121,6 +128,13 @@ class EmailOTPVerifySerializer(serializers.Serializer):
             user.save()
 
         else:
+            from django.conf import settings
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                raise serializers.ValidationError({
+                    "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                })
+
             if identifier.isdigit():
                 user = User.objects.create_user(
                     username=identifier,
@@ -226,12 +240,35 @@ class VerifyResetPasswordSerializer(serializers.Serializer):
         return data
     
     def create(self, validated_data):
-        
         identifier = validated_data.get("identifier")
-        
         otp_instance = ResetPasswordOTP.objects.get(identifier=identifier)
         
         otp_instance.is_verified = True
         otp_instance.save()
         
         return {'message': 'OTP verified successfully'}
+
+
+class PasswordlessSendOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+
+class PasswordlessVerifyOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    otp = serializers.CharField(max_length=6, required=True)
+    fullname = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    role = serializers.ChoiceField(
+        choices=User.Role.choices,
+        default=User.Role.PHOTOGRAPHER,
+        required=False
+    )
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+    def validate_otp(self, value):
+        return value.strip()
+

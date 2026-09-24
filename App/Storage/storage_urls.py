@@ -17,16 +17,27 @@ from App.Storage.storage_views import (
     GalleryListCreateView,
     GalleryDetailView,
     GalleryShareView,
+    GalleryTemplateSwitchView,
+    GallerySetCoverView,
+    GalleryReorderMediaView,
 
     # Enterprise Media Uploads & Management
     DirectUploadInitView,
     DirectUploadConfirmView,
     StandardMediaUploadView,
     MediaDetailDeleteView,
+    MediaBulkDeleteView,
+    MediaToggleFavoriteView,
 
     # Enterprise Public & Client Access
+    PublicGallerySlugOrIdView,
+    PublicGalleryVerifyPinView,
     SharedGalleryView,
     VerifyGalleryPasswordView,
+
+    # Client Proofing & Selections
+    ClientSelectionListCreateView,
+    ClientSelectionSubmitView,
 
     # Enterprise Secure Downloads
     MediaDownloadView,
@@ -57,10 +68,13 @@ urlpatterns = [
     path('photos/<int:photo_id>/download/', PublicPhotoDownloadView.as_view(), name='public-photo-download'),
 
     # -------------------------------------------------------------------------
-    # Enterprise Gallery Management APIs
+    # Enterprise Gallery Management APIs (Photographer Dashboard)
     # -------------------------------------------------------------------------
     path('galleries/', GalleryListCreateView.as_view(), name='gallery-list-create'),
     path('galleries/<uuid:pk>/', GalleryDetailView.as_view(), name='gallery-detail'),
+    path('galleries/<uuid:gallery_id>/template/', GalleryTemplateSwitchView.as_view(), name='gallery-template-switch'),
+    path('galleries/<uuid:gallery_id>/set-cover/', GallerySetCoverView.as_view(), name='gallery-set-cover'),
+    path('galleries/<uuid:gallery_id>/reorder-media/', GalleryReorderMediaView.as_view(), name='gallery-reorder-media'),
     path('galleries/<uuid:gallery_id>/share/', GalleryShareView.as_view(), name='gallery-share'),
 
     # -------------------------------------------------------------------------
@@ -71,15 +85,21 @@ urlpatterns = [
     path('galleries/<uuid:gallery_id>/upload/', StandardMediaUploadView.as_view(), name='standard-media-upload'),
     path('galleries/<uuid:gallery_id>/media/upload/', StandardMediaUploadView.as_view(), name='gallery-media-upload-alias'),
     path('galleries/media/<uuid:media_id>/', MediaDetailDeleteView.as_view(), name='media-detail-delete'),
+    path('galleries/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='media-bulk-delete'),
+    path('galleries/media/<uuid:media_id>/favorite/', MediaToggleFavoriteView.as_view(), name='media-toggle-favorite'),
 
     # -------------------------------------------------------------------------
-    # Enterprise Client / Public Gallery Access
+    # Enterprise Client / Public Gallery Access & Proofing
     # -------------------------------------------------------------------------
+    path('public/galleries/<str:slug_or_id>/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-slug-or-id'),
+    path('public/galleries/<str:slug_or_id>/verify-pin/', PublicGalleryVerifyPinView.as_view(), name='public-gallery-verify-pin'),
     path('shared-galleries/<str:share_token>/', SharedGalleryView.as_view(), name='shared-gallery-view'),
     path('shared-galleries/<str:share_token>/verify-password/', VerifyGalleryPasswordView.as_view(), name='verify-gallery-password'),
+    path('galleries/<uuid:gallery_id>/client-selections/', ClientSelectionListCreateView.as_view(), name='client-selection-list-create'),
+    path('galleries/<uuid:gallery_id>/client-selections/<uuid:selection_id>/submit/', ClientSelectionSubmitView.as_view(), name='client-selection-submit'),
 
     # -------------------------------------------------------------------------
-    # Enterprise Secure Downloads (Single & Async Bulk)
+    # Enterprise Secure Downloads (Single & Async Master / Selective Bulk)
     # -------------------------------------------------------------------------
     path('galleries/media/<uuid:media_id>/download/', MediaDownloadView.as_view(), name='media-download'),
     path('galleries/<uuid:gallery_id>/bulk-download/', GalleryBulkDownloadView.as_view(), name='gallery-bulk-download'),

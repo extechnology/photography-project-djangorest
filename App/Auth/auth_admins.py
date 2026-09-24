@@ -116,3 +116,11 @@ class UserAdmin(BaseUserAdmin):
 
 
 admin.site.register(User, UserAdmin)
+
+
+@admin.register(PasswordlessLoginOTP)
+class PasswordlessLoginOTPAdmin(admin.ModelAdmin):
+    list_display = ("email", "otp", "is_verified", "created_at")
+    list_filter = ("is_verified", "created_at")
+    search_fields = ("email", "otp")
+    readonly_fields = ("created_at",)

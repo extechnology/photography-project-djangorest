@@ -2,9 +2,11 @@
 .env/
 .env
 .env.*
+!.env.example
 env/
 venv/
 .venv/
+envnew/
 ENV/
 env.bak/
 venv.bak/
@@ -57,4 +59,3 @@ coverage.xml
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-

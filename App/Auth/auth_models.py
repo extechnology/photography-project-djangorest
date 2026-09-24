@@ -21,6 +21,16 @@ class CustomUserManager(BaseUserManager):
         if not (username or email or phone):
             raise ValueError("User must have either a username, email, or phone")
 
+        is_superuser = extra_fields.get("is_superuser", False)
+        if not is_superuser:
+            from django.conf import settings
+            from django.core.exceptions import ValidationError
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if self.model.objects.filter(is_superuser=False).count() >= max_users:
+                raise ValidationError(
+                    f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                )
+
         user = self.model(
             username=username,
             email=email,
@@ -115,6 +125,28 @@ class User(AbstractBaseUser, PermissionsMixin):
     def is_staff_role(self):
         return self.role == self.Role.STAFF
 
+    def clean(self):
+        super().clean()
+        if not self.pk and not self.is_superuser:
+            from django.conf import settings
+            from django.core.exceptions import ValidationError
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                raise ValidationError(
+                    f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                )
+
+    def save(self, *args, **kwargs):
+        if not self.pk and not self.is_superuser:
+            from django.conf import settings
+            from django.core.exceptions import ValidationError
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                raise ValidationError(
+                    f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                )
+        super().save(*args, **kwargs)
+
 class RegistrationOTP(models.Model):
     identifier = models.CharField(max_length=255)  
     otp = models.CharField(max_length=6)
@@ -159,8 +191,39 @@ class ResetPasswordOTP(models.Model):
         super().save(*args, **kwargs)
         
     def is_valid(self, input_otp):
-
         if self.otp != input_otp:
+            return False
+        if timezone.now() > self.created_at + timedelta(minutes=10):
+            return False
+        return True
+
+
+class PasswordlessLoginOTP(models.Model):
+    email = models.EmailField(db_index=True)
+    otp = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_verified = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Passwordless Login OTP"
+        verbose_name_plural = "Passwordless Login OTPs"
+
+    def __str__(self):
+        return f"{self.email} - {self.otp}"
+
+    def save(self, *args, **kwargs):
+        # Remove previous OTPs for this email address only on creation
+        if not self.pk:
+            PasswordlessLoginOTP.objects.filter(email__iexact=self.email).delete()
+        super().save(*args, **kwargs)
+
+    def is_valid(self, input_otp):
+        from django.utils import timezone
+        from datetime import timedelta
+        if self.is_verified:
+            return False
+        if str(self.otp).strip() != str(input_otp).strip():
             return False
         if timezone.now() > self.created_at + timedelta(minutes=10):
             return False

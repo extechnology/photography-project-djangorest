@@ -1,0 +1,326 @@
+================================================================================
+EX SHARE - RAZORPAY SUBSCRIPTION INTEGRATION & API URLS
+================================================================================
+
+BASE URLS:
+All subscription endpoints are mounted under both:
+  - http://127.0.0.1:8000/api/plans/
+  - http://127.0.0.1:8000/api/subscriptions/
+
+Authentication:
+  - Header: Authorization: Bearer <access_token>
+  - OR HttpOnly Cookie: access_token=<access_token>
+
+
+--------------------------------------------------------------------------------
+1. PUBLIC PLANS CATALOG
+--------------------------------------------------------------------------------
+URL:
+  GET /api/plans/
+  GET /api/subscriptions/plans/
+
+Auth:
+  None (Public)
+
+Response (200 OK):
+[
+  {
+    "id": "plan-standard-3m",
+    "name": "Standard Quarterly",
+    "subtitle": "Essential tools for active event photographers",
+    "tier": "standard",
+    "billing_cycle": "quarterly",
+    "period_label": "For 03 Months",
+    "duration_months": 3,
+    "monthly_price": "900.00",
+    "original_monthly_price": "1200.00",
+    "total_price": "2700.00",
+    "billing_text": "₹900 / Month • Billed Quarterly (₹2,700)",
+    "currency": "INR",
+    "tag": "",
+    "tag_type": "default",
+    "image_storage": "200 GB",
+    "video_storage": "10 GB",
+    "storage_limit_bytes": 225485783040,
+    "features": [
+      "200 GB Image Storage",
+      "10 GB 4K Video Storage",
+      "Editorial, Masonry & Minimal layouts",
+      "AI-Powered Face Discovery",
+      "Custom Studio Typography & Watermarking"
+    ],
+    "cta_text": "Choose Plan",
+    "is_active": true,
+    "sort_order": 1
+  },
+  {
+    "id": "plan-standard-1y",
+    "name": "Standard Annual",
+    "subtitle": "Best value for professional boutique studios",
+    "tier": "standard",
+    "billing_cycle": "annual",
+    "period_label": "For 01 Year",
+    "duration_months": 12,
+    "monthly_price": "800.00",
+    "original_monthly_price": "1200.00",
+    "total_price": "9600.00",
+    "billing_text": "₹800 / Month • Billed Annually (₹9,600)",
+    "currency": "INR",
+    "tag": "MOST POPULAR",
+    "tag_type": "popular",
+    "image_storage": "200 GB",
+    "video_storage": "10 GB",
+    "storage_limit_bytes": 225485783040,
+    "features": [
+      "200 GB Image Storage",
+      "10 GB 4K Video Storage",
+      "Editorial, Masonry & Minimal layouts",
+      "AI-Powered Face Discovery",
+      "Custom Studio Typography & Watermarking"
+    ],
+    "cta_text": "Upgrade to Annual",
+    "is_active": true,
+    "sort_order": 2
+  }
+]
+
+
+--------------------------------------------------------------------------------
+2. CURRENT SUBSCRIPTION & REAL-TIME QUOTA
+--------------------------------------------------------------------------------
+URL:
+  GET /api/plans/current/
+  GET /api/subscriptions/current/
+
+Auth:
+  Required (JWT Bearer or access_token cookie)
+
+Response (200 OK):
+{
+  "id": "e4b105a3-7182-4fa1-b1e4-c5a452ef7211",
+  "status": "active",
+  "plan": {
+    "id": "plan-standard-1y",
+    "name": "Standard Annual",
+    "tier": "standard",
+    "billing_cycle": "annual",
+    "duration_months": 12,
+    "total_price": "9600.00",
+    "currency": "INR"
+  },
+  "start_date": "2026-09-18T12:00:00Z",
+  "expiry_date": "2027-09-18T12:00:00Z",
+  "days_remaining": 365,
+  "storage": {
+    "used_bytes": 4529848320,
+    "limit_bytes": 225485783040,
+    "used_gb": 4.2,
+    "limit_gb": 210.0,
+    "used_percentage": 2.0
+  },
+  "auto_renew": true,
+  "payment_gateway_ref": "pay_NXK64qP33Lkm1a"
+}
+
+
+--------------------------------------------------------------------------------
+3. INITIATE RAZORPAY CHECKOUT (CREATE ORDER)
+--------------------------------------------------------------------------------
+URL:
+  POST /api/plans/checkout/
+  POST /api/subscriptions/checkout/
+
+Auth:
+  Required (JWT Bearer or access_token cookie)
+
+Request Body:
+{
+  "plan_id": "plan-standard-1y",
+  "gateway": "razorpay"
+}
+
+Response (200 OK):
+{
+  "status": "success",
+  "direct_activated": false,
+  "order_id": "order_NXK54xL09XjL9K",
+  "amount": 9600.0,
+  "amount_paise": 960000,
+  "currency": "INR",
+  "key_id": "rzp_live_xxxxxxxxxxxxxx",
+  "plan_id": "plan-standard-1y",
+  "payment_id": "b34e402a-973e-468f-9a4f-56191b72e597"
+}
+
+
+--------------------------------------------------------------------------------
+4. VERIFY RAZORPAY PAYMENT & ACTIVATE SUBSCRIPTION
+--------------------------------------------------------------------------------
+URL:
+  POST /api/plans/verify/
+  POST /api/subscriptions/verify/
+
+Auth:
+  Required (JWT Bearer or access_token cookie)
+
+Request Body:
+{
+  "plan_id": "plan-standard-1y",
+  "razorpay_order_id": "order_NXK54xL09XjL9K",
+  "razorpay_payment_id": "pay_NXK64qP33Lkm1a",
+  "razorpay_signature": "9efb4b9b940e4f3a970e30342617da9d71c849646b62719602fa48e9a26532ae"
+}
+
+*Note: Also accepts parameter names:
+  "gateway_order_id", "gateway_payment_id", "gateway_signature"
+
+Response (200 OK):
+{
+  "status": "success",
+  "message": "Payment verified. Standard Annual subscription is now active.",
+  "subscription": {
+    "id": "e4b105a3-7182-4fa1-b1e4-c5a452ef7211",
+    "status": "active",
+    "plan": {
+      "id": "plan-standard-1y",
+      "name": "Standard Annual",
+      "tier": "standard",
+      "billing_cycle": "annual",
+      "duration_months": 12,
+      "total_price": "9600.00",
+      "currency": "INR"
+    },
+    "start_date": "2026-09-18T12:00:00Z",
+    "expiry_date": "2027-09-18T12:00:00Z",
+    "days_remaining": 365,
+    "storage": {
+      "used_bytes": 0,
+      "limit_bytes": 225485783040,
+      "used_gb": 0.0,
+      "limit_gb": 210.0,
+      "used_percentage": 0.0
+    },
+    "auto_renew": true,
+    "payment_gateway_ref": "pay_NXK64qP33Lkm1a"
+  }
+}
+
+Error Response (400 Bad Request):
+{
+  "detail": "Payment verification failed: invalid signature."
+}
+
+
+--------------------------------------------------------------------------------
+5. RAZORPAY WEBHOOK (ASYNCHRONOUS SERVER-TO-SERVER)
+--------------------------------------------------------------------------------
+URL:
+  POST /api/plans/webhook/
+  POST /api/subscriptions/webhook/
+
+Auth:
+  None (Public endpoint, verified cryptographically via header)
+
+Headers Required:
+  X-Razorpay-Signature: <hmac_sha256_hex_digest>
+  Content-Type: application/json
+
+Events Handled:
+  1. "payment.captured" / "order.paid":
+     - Finds pending SubscriptionPayment by order_id
+     - Marks payment status as 'success'
+     - Activates PhotographerSubscription and applies storage quota immediately
+  2. "payment.failed":
+     - Updates SubscriptionPayment status to 'failed'
+
+Response (200 OK):
+{
+  "status": "success",
+  "message": "Subscription activated for order order_NXK54xL09XjL9K"
+}
+
+
+--------------------------------------------------------------------------------
+6. CANCEL AUTO-RENEWAL
+--------------------------------------------------------------------------------
+URL:
+  POST /api/plans/cancel/
+  POST /api/subscriptions/cancel/
+
+Auth:
+  Required (JWT Bearer or access_token cookie)
+
+Request Body:
+  {}
+
+Response (200 OK):
+{
+  "status": "success",
+  "message": "Auto-renewal has been turned off for your studio subscription.",
+  "auto_renew": false
+}
+
+
+--------------------------------------------------------------------------------
+7. ENVIRONMENT VARIABLES (.env)
+--------------------------------------------------------------------------------
+RAZORPAY_KEY_ID=rzp_live_xxxxxxxxxxxxxx
+RAZORPAY_KEY_SECRET=your_razorpay_secret_key
+RAZORPAY_WEBHOOK_SECRET=your_razorpay_webhook_secret
+
+
+--------------------------------------------------------------------------------
+8. FRONTEND CHECKOUT JS CODE SNIPPET (REACT / VANILLA JS)
+--------------------------------------------------------------------------------
+async function handleSubscribe(planId) {
+  // Step 1: Request Order ID from backend
+  const checkoutRes = await fetch('/api/plans/checkout/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${accessToken}`
+    },
+    body: JSON.stringify({ plan_id: planId, gateway: 'razorpay' })
+  });
+  const orderData = await checkoutRes.json();
+
+  // Step 2: Open Razorpay Checkout Modal
+  const options = {
+    key: orderData.key_id,
+    amount: orderData.amount_paise,
+    currency: orderData.currency,
+    name: 'EX SHARE',
+    description: 'Studio Tier Subscription',
+    order_id: orderData.order_id,
+    handler: async function (response) {
+      // Step 3: Verify signature on backend
+      const verifyRes = await fetch('/api/plans/verify/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          plan_id: planId,
+          razorpay_order_id: response.razorpay_order_id,
+          razorpay_payment_id: response.razorpay_payment_id,
+          razorpay_signature: response.razorpay_signature
+        })
+      });
+      const verifyData = await verifyRes.json();
+      if (verifyData.status === 'success') {
+        alert('Subscription activated successfully!');
+        window.location.reload();
+      } else {
+        alert('Payment verification failed.');
+      }
+    },
+    theme: {
+      color: '#000000'
+    }
+  };
+
+  const rzp = new window.Razorpay(options);
+  rzp.open();
+}
+================================================================================

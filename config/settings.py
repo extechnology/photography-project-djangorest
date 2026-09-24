@@ -23,12 +23,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-w^01^8=!drxc9o$y08d@4atllv82xqr5ow%)b_z&fyzgt&ehwo'
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-w^01^8=!drxc9o$y08d@4atllv82xqr5ow%)b_z&fyzgt&ehwo')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 
 
 # Application definition
@@ -46,9 +46,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -61,7 +61,7 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -111,7 +111,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
 
 USE_I18N = True
 
@@ -127,6 +127,9 @@ STATIC_ROOT = BASE_DIR / 'static'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# ------------------------------------------------------------------------------
+# AUTHENTICATION & CUSTOM USER MODEL
+# ------------------------------------------------------------------------------
 USER_MODEL = 'App.User'
 AUTH_USER_MODEL = 'App.User'
 
@@ -135,9 +138,13 @@ AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
 ]
 
+
+# ------------------------------------------------------------------------------
+# REST FRAMEWORK & CACHING
+# ------------------------------------------------------------------------------
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'App.Auth.auth_utils.CookieJWTAuthentication',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
@@ -153,6 +160,7 @@ REST_FRAMEWORK = {
         'download': '120/minute',
         'bulk_download': '5/minute',
         'share_access': '150/minute',
+        'pin_verify': '10/minute',
     },
 }
 
@@ -164,16 +172,42 @@ CACHES = {
 }
 
 
+
+# --- CORS Settings ---
+# Allow all origins for development. In production, restrict this to specific origins.
 CORS_ALLOW_ALL_ORIGINS = True
 
+# Optionally allow credentials (cookies, authorization headers)
 CORS_ALLOW_CREDENTIALS = True
 
 
+# --- Cookie Settings ---
+# Session and CSRF cookie security settings (Lax/False for local development, Strict/True for production HTTPS)
 SESSION_COOKIE_SAMESITE = 'None'
 SESSION_COOKIE_SECURE = True  # Set to True in production (HTTPS)
 
 CSRF_COOKIE_SAMESITE = 'None'
 CSRF_COOKIE_SECURE = True  # Set to True in production (HTTPS)
+
+
+# --- CSRF Trusted Origins ---
+# Django 4.0+ requires trusted origins to be explicitly listed for cross-origin POST requests
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
+
+# --- Simple JWT Cookie Configuration ---
+SIMPLE_JWT_COOKIE_SECURE = True       # Must be True if SameSite='None'
+SIMPLE_JWT_COOKIE_SAMESITE = 'None'   # Set to 'None' in production with HTTPS if cross-site
+SIMPLE_JWT_COOKIE_HTTPONLY = True
+
+
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=6000),
@@ -207,31 +241,27 @@ SIMPLE_JWT = {
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
 
-SIMPLE_JWT_COOKIE_SECURE = True       
-SIMPLE_JWT_COOKIE_SAMESITE = 'None'  
-SIMPLE_JWT_COOKIE_HTTPONLY = True
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-EMAIL_BACKEND = config('EMAIL_BACKEND')
-EMAIL_HOST = config('EMAIL_HOST')
-EMAIL_PORT = config('EMAIL_PORT')
-EMAIL_USE_TLS = config('EMAIL_USE_TLS')
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='EX SHARE <noreply@exshare.com>')
 
-GOOGLE_CLIENT_ID = config('GOOGLE_CLIENT_ID')
-GOOGLE_CLIENT_SECRET = config('GOOGLE_CLIENT_SECRET')
+GOOGLE_CLIENT_ID = config('GOOGLE_CLIENT_ID', default='')
+GOOGLE_CLIENT_SECRET = config('GOOGLE_CLIENT_SECRET', default='')
 
 
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://127.0.0.1:6379/0")
 
-CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0"
+CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="redis://127.0.0.1:6379/0")
 
 CELERY_ACCEPT_CONTENT = ["json"]
 
@@ -240,3 +270,48 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 
 CELERY_TIMEZONE = "Asia/Kolkata"
+
+# ------------------------------------------------------------------------------
+# NUDENET CONTENT MODERATION SETTINGS
+# ------------------------------------------------------------------------------
+NUDE_DETECTION_ENABLED = config('NUDE_DETECTION_ENABLED', default=True, cast=bool)
+NUDE_DETECTION_THRESHOLD = config('NUDE_DETECTION_THRESHOLD', default=0.45, cast=float)
+NUDE_DETECTION_PROHIBITED_CLASSES = [
+    'FEMALE_GENITALIA_EXPOSED',
+    'MALE_GENITALIA_EXPOSED',
+    'FEMALE_BREAST_EXPOSED',
+    'BUTTOCKS_EXPOSED',
+    'ANUS_EXPOSED',
+]
+
+# ------------------------------------------------------------------------------
+# PAYMENT GATEWAY (RAZORPAY) SETTINGS
+# ------------------------------------------------------------------------------
+RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='rzp_test_placeholder')
+RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='rzp_secret_placeholder')
+RAZORPAY_WEBHOOK_SECRET = config('RAZORPAY_WEBHOOK_SECRET', default='')
+
+# ------------------------------------------------------------------------------
+# HIGH-CAPACITY MULTI-FILE UPLOAD CONFIGURATION (Supports 2,000+ files per batch)
+# ------------------------------------------------------------------------------
+# Allow up to 10,000 files in a single batch multipart request (default was 1,000)
+DATA_UPLOAD_MAX_NUMBER_FILES = 10000
+
+# Allow up to 10,000 form fields
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000
+
+# Allow multi-gigabyte upload payloads (e.g. 2,000 high-res / RAW photos up to 10 GB)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10737418240
+
+# Stream files larger than 10MB to disk instead of filling system RAM
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 MB
+
+# ------------------------------------------------------------------------------
+# TEST ENVIRONMENT LIMITATIONS
+# ------------------------------------------------------------------------------
+# Maximum number of standard accounts (excluding superuser) that can be created
+MAX_TEST_USERS = config('MAX_TEST_USERS', default=5, cast=int)
+
+# Storage quota limit for test users (20 GB per standard account)
+TEST_USER_STORAGE_LIMIT_GB = config('TEST_USER_STORAGE_LIMIT_GB', default=20, cast=int)
+TEST_USER_STORAGE_LIMIT_BYTES = TEST_USER_STORAGE_LIMIT_GB * 1024 * 1024 * 1024  # 21,474,836,480 bytes

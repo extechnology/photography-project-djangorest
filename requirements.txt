@@ -36,3 +36,6 @@ tzlocal==5.4.4
 urllib3==2.7.0
 vine==5.1.0
 wcwidth==0.8.2
+django-ratelimit==4.1.0
+numpy==2.5.3
+nudenet>=3.4.2

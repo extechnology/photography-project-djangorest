@@ -18,7 +18,6 @@ import urllib.parse
 import re
 import random
 
-
 from .auth_models import *
 
 from .auth_serializers import *
@@ -81,6 +80,7 @@ def delete_auth_cookies(response):
 
 class CheckUsernameView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def get(self, request):
         new_username = request.query_params.get("username", "").strip()
 
@@ -124,6 +124,7 @@ class CheckUsernameView(APIView):
 
 class CheckIdentifierView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def get(self, request):
         identifier = request.query_params.get("identifier", "").strip()
         
@@ -166,6 +167,7 @@ class CheckIdentifierView(APIView):
 # @rate_limit(key='ip', rate='1/m', block=True)
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):               
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
@@ -179,6 +181,7 @@ class RegisterView(APIView):
 # @rate_limit(key='ip', rate='1/m', block=True)
 class ResendOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
        serializer = ResentOTPSerializer(data=request.data, context={'request': request})
        if serializer.is_valid():
@@ -192,6 +195,7 @@ class ResendOTPView(APIView):
    
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request,):
         serializer = EmailOTPVerifySerializer(data=request.data)
         if serializer.is_valid():
@@ -229,6 +233,7 @@ class VerifyOTPView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         identifier = request.data.get("identifier")
         password = request.data.get("password")
@@ -267,6 +272,7 @@ class LoginView(APIView):
     
 class LogoutView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
 
         response = Response({
@@ -280,6 +286,7 @@ class LogoutView(APIView):
 
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         refresh_token = request.COOKIES.get("refresh_token")
 
@@ -301,33 +308,47 @@ class RefreshTokenView(APIView):
 
 class CheckLoginView(APIView):
     permission_classes = [AllowAny]
+
     def get(self, request):
         user = request.user
         if not user or isinstance(user, AnonymousUser) or not user.is_authenticated:
-            access_token = request.COOKIES.get('access_token')
-            if not access_token:
-                return Response({
-                    'is_logged_in': False,
-                    'message': 'No access token found'
-                }, status=status.HTTP_401_UNAUTHORIZED)
-            try:
-                token = AccessToken(access_token)
-                user = User.objects.get(id=token['user_id'])
-            except Exception as e:
-                return Response({
-                    'is_logged_in': False,
-                    'message': f'Invalid or expired token: {str(e)}'
-                }, status=status.HTTP_401_UNAUTHORIZED)
+            auth_header = request.headers.get('Authorization')
+            raw_token = None
+            if auth_header and auth_header.startswith('Bearer '):
+                raw_token = auth_header.split(' ')[1]
+            if not raw_token:
+                raw_token = request.COOKIES.get('access_token')
+
+            if raw_token:
+                try:
+                    token = AccessToken(raw_token)
+                    user = User.objects.get(id=token['user_id'])
+                except Exception:
+                    user = None
+
+        if not user or isinstance(user, AnonymousUser) or not user.is_authenticated:
+            return Response({
+                'is_logged_in': False,
+                'is_authenticated': False,
+                'user': None,
+                'message': 'No active session or access token found'
+            }, status=status.HTTP_200_OK)
 
         user_data = {
             'id': user.id,
             'username': user.username,
             'email': user.email,
             'phone': getattr(user, 'phone', None),
+            'role': getattr(user, 'role', 'photographer'),
+            'fullname': getattr(user, 'fullname', user.username),
         }
 
         return Response({
             'is_logged_in': True,
+            'is_authenticated': True,
+            'user_id': user.id,
+            'username': user.username,
+            'role': getattr(user, 'role', 'photographer'),
             'user': user_data
         }, status=status.HTTP_200_OK)
 
@@ -372,6 +393,7 @@ class DirectResetPasswordView(APIView):
 
 class ResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -404,6 +426,7 @@ class ResetPasswordOTPView(APIView):
 
 class ResendResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         serializer = ResendResetPasswordOTPSerializer(data=request.data)
         if serializer.is_valid():
@@ -432,6 +455,7 @@ class ResendResetPasswordOTPView(APIView):
 
 class VerifyResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         serializer = VerifyResetPasswordSerializer(data=request.data)
         if serializer.is_valid():
@@ -458,6 +482,7 @@ class VerifyResetPasswordOTPView(APIView):
 
 class ChangePasswordView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def patch(self, request):
         identifier = request.data.get("identifier")
         new_password = request.data.get("new_password")
@@ -487,6 +512,7 @@ class ChangePasswordView(APIView):
 GOOGLE_CLIENT_ID = getattr(settings, 'GOOGLE_CLIENT_ID', None)
 class GoogleAuthView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         if not GOOGLE_CLIENT_ID:
             return Response({"message": "Google Authentication is not configured in settings.py"}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -522,6 +548,19 @@ class GoogleAuthView(APIView):
             if not email:
                 raise ValueError('Email not found in Google response.')
 
+            if not User.objects.filter(email=email).exists():
+                from django.conf import settings
+                max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+                if User.objects.filter(is_superuser=False).count() >= max_users:
+                    return Response(
+                        {
+                            "status": "error",
+                            "code": "USER_LIMIT_REACHED",
+                            "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                        },
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
             user, created = User.objects.get_or_create(
                 email=email, 
                 defaults={'username': email.split('@')[0], 'fullname': fullname}
@@ -543,4 +582,270 @@ class GoogleAuthView(APIView):
 
         except ValueError as e:
             return Response({"message": f"Invalid token: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PasswordlessSendOTPView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = PasswordlessSendOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "status": "error",
+                    "message": "Invalid email address.",
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data["email"]
+        is_existing = User.objects.filter(email__iexact=email).exists()
+
+        if not is_existing:
+            from django.conf import settings
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                return Response(
+                    {
+                        "status": "error",
+                        "code": "USER_LIMIT_REACHED",
+                        "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        otp = str(random.randint(100000, 999999))
+        PasswordlessLoginOTP.objects.create(email=email, otp=otp)
+        send_passwordless_otp_email.delay(email, otp, is_existing_user=is_existing)
+
+        action_label = "login" if is_existing else "registration"
+        return Response(
+            {
+                "status": "success",
+                "message": f"Verification code sent to your email for {action_label}.",
+                "email": email,
+                "is_registered": is_existing
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class PasswordlessResendOTPView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = PasswordlessSendOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "status": "error",
+                    "message": "Invalid email address.",
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data["email"]
+        is_existing = User.objects.filter(email__iexact=email).exists()
+
+        otp = str(random.randint(100000, 999999))
+        PasswordlessLoginOTP.objects.create(email=email, otp=otp)
+        send_passwordless_otp_email.delay(email, otp, is_existing_user=is_existing)
+
+        return Response(
+            {
+                "status": "success",
+                "message": "A new verification code has been sent to your email.",
+                "email": email,
+                "is_registered": is_existing
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class PasswordlessVerifyOTPView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = PasswordlessVerifyOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            err_msg = "Validation error"
+            for k, v in serializer.errors.items():
+                err_msg = v[0] if isinstance(v, list) and len(v) > 0 else str(v)
+                break
+            return Response({"status": "error", "message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        email = serializer.validated_data["email"]
+        input_otp = serializer.validated_data["otp"]
+        fullname = serializer.validated_data.get("fullname", "").strip()
+        role = serializer.validated_data.get("role", User.Role.PHOTOGRAPHER)
+
+        try:
+            otp_record = PasswordlessLoginOTP.objects.filter(email__iexact=email).latest("created_at")
+        except PasswordlessLoginOTP.DoesNotExist:
+            return Response(
+                {"status": "error", "message": "No verification code found for this email. Please request a new code."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not otp_record.is_valid(input_otp):
+            return Response(
+                {"status": "error", "message": "Invalid or expired verification code."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Mark OTP as verified
+        otp_record.is_verified = True
+        otp_record.save(update_fields=["is_verified"])
+
+        # Check if user already exists
+        user = User.objects.filter(email__iexact=email).first()
+        is_new_user = False
+
+        if user:
+            # Existing user -> Log in
+            user.is_email_verified = True
+            user.last_login = timezone.now()
+            if fullname and not user.fullname:
+                user.fullname = fullname
+            user.save()
+        else:
+            from django.conf import settings
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                return Response(
+                    {
+                        "status": "error",
+                        "code": "USER_LIMIT_REACHED",
+                        "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            # New user -> Auto-Register without password
+            is_new_user = True
+            raw_base = email.split("@")[0].lower()
+            base_username = re.sub(r'[^a-zA-Z0-9_.]', '', raw_base) or "user"
+            candidate = base_username
+            counter = 1
+            while User.objects.filter(username__iexact=candidate).exists():
+                candidate = f"{base_username}_{counter}"
+                counter += 1
+
+            user_fullname = fullname or base_username.replace('.', ' ').replace('_', ' ').title()
+            user = User(
+                username=candidate,
+                email=email,
+                role=role,
+                fullname=user_fullname,
+                is_email_verified=True,
+                is_active=True,
+                last_login=timezone.now()
+            )
+            user.set_unusable_password()
+            user.save()
+
+        # If user is a photographer, ensure PhotographerProfile & subscription exist
+        if user.role == User.Role.PHOTOGRAPHER:
+            from datetime import timedelta
+            from App.Photographers.photo_models import PhotographerProfile, NotificationPreference
+            from App.Subscriptions.sub_models import SubscriptionPlans, PhotographerSubscription
+
+            profile, _ = PhotographerProfile.objects.get_or_create(
+                user=user,
+                defaults={
+                    "name": user.fullname or user.username,
+                    "studio_name": "",
+                    "location": "",
+                    "email": user.email,
+                    "is_onboarded": False,
+                    "onboarding_step": 1,
+                    "default_template": "editorial",
+                }
+            )
+            NotificationPreference.objects.get_or_create(photographer=profile)
+
+            # Assign default plan if not present
+            if not PhotographerSubscription.objects.filter(photographer=profile).exists():
+                plan = SubscriptionPlans.objects.filter(tier='pro').first() or SubscriptionPlans.objects.first()
+                if plan:
+                    PhotographerSubscription.objects.create(
+                        photographer=profile,
+                        plan=plan,
+                        status='active',
+                        expires_at=timezone.now() + timedelta(days=365)
+                    )
+
+        # Issue JWT tokens
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+
+        response_data = {
+            "status": "success",
+            "message": "Account registered and logged in successfully." if is_new_user else "Login successful.",
+            "is_new_user": is_new_user,
+
+            "user": {
+                "id": user.id,
+                "unique_id": str(user.unique_id),
+                "username": user.username,
+                "email": user.email,
+                "fullname": user.fullname,
+                "role": user.role,
+                "is_email_verified": user.is_email_verified
+            }
+        }
+
+        response = Response(response_data, status=status.HTTP_200_OK)
+        set_auth_cookies(response, refresh)
+        return response
+
+
+
+class PasswordlessLoginSendOTPView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = PasswordlessSendOTPSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "status": "error",
+                    "message": "Invalid email address.",
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data["email"]
+        is_existing = User.objects.filter(email__iexact=email).exists()
+
+        if not is_existing:
+            return Response(
+                {
+                    "status": "error",
+                    "message": "No account found with this email address.",
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        otp = str(random.randint(100000, 999999))
+        PasswordlessLoginOTP.objects.create(email=email, otp=otp)
+        send_passwordless_otp_email.delay(email, otp, is_existing_user=is_existing)
+
+        action_label = "login" if is_existing else "registration"
+        return Response(
+            {
+                "status": "success",
+                "message": f"Verification code sent to your email for {action_label}.",
+                "email": email,
+                "is_registered": is_existing
+            },
+            status=status.HTTP_200_OK
+        )
 

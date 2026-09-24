@@ -3,6 +3,7 @@ import secrets
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
 from django.utils import timezone
+from django.utils.text import slugify
 from App.Auth.auth_models import User
 from App.Photographers.photo_models import PhotographerProfile
 
@@ -129,6 +130,8 @@ class EventPhoto(models.Model):
 
 class Gallery(models.Model):
     STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('delivered', 'Delivered'),
         ('draft', 'Draft'),
         ('published', 'Published'),
         ('archived', 'Archived'),
@@ -140,6 +143,13 @@ class Gallery(models.Model):
         ('password_protected', 'Password Protected'),
     ]
 
+    TEMPLATE_CHOICES = [
+        ('editorial', 'Editorial'),
+        ('masonry', 'Masonry'),
+        ('cinematic', 'Cinematic'),
+        ('minimal', 'Minimal'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     photographer = models.ForeignKey(
         PhotographerProfile,
@@ -147,7 +157,13 @@ class Gallery(models.Model):
         related_name='galleries'
     )
     title = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True, null=True, blank=True, db_index=True)
+    client_name = models.CharField(max_length=255, blank=True, default='')
+    client_email = models.EmailField(blank=True, null=True)
+    event_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True)
+    template_id = models.CharField(max_length=50, choices=TEMPLATE_CHOICES, default='editorial')
+    
     cover_media = models.ForeignKey(
         'Media',
         on_delete=models.SET_NULL,
@@ -155,7 +171,9 @@ class Gallery(models.Model):
         blank=True,
         related_name='+'
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='published')
+    cover_image_url = models.CharField(max_length=512, blank=True, default='')
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     visibility = models.CharField(max_length=30, choices=VISIBILITY_CHOICES, default='public')
 
     # Cryptographically secure sharing
@@ -165,16 +183,20 @@ class Gallery(models.Model):
         db_index=True,
         default=generate_secure_share_token
     )
+    is_password_protected = models.BooleanField(default=False)
     password = models.CharField(max_length=128, blank=True, null=True)
     expires_at = models.DateTimeField(null=True, blank=True)
 
     # Feature Toggles
     downloads_enabled = models.BooleanField(default=True)
+    allow_downloads = models.BooleanField(default=True)
+    allow_favorites = models.BooleanField(default=True)
     face_search_enabled = models.BooleanField(default=True)
 
-    # Analytics
+    # Analytics & Engagements
     views_count = models.PositiveIntegerField(default=0)
     downloads_count = models.PositiveIntegerField(default=0)
+    favorites_count = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -184,6 +206,7 @@ class Gallery(models.Model):
         indexes = [
             models.Index(fields=['photographer', 'created_at']),
             models.Index(fields=['share_token']),
+            models.Index(fields=['slug']),
             models.Index(fields=['status', 'visibility']),
         ]
 
@@ -195,14 +218,27 @@ class Gallery(models.Model):
             self.share_token = generate_secure_share_token()
             while Gallery.objects.filter(share_token=self.share_token).exists():
                 self.share_token = generate_secure_share_token()
+
+        if not self.slug:
+            base_slug = slugify(self.title) or "gallery"
+            unique_slug = f"{base_slug}-{secrets.token_hex(3)}"
+            while Gallery.objects.filter(slug=unique_slug).exists():
+                unique_slug = f"{base_slug}-{secrets.token_hex(3)}"
+            self.slug = unique_slug
+
+        if self.password:
+            self.is_password_protected = True
+
         super().save(*args, **kwargs)
 
     def set_access_password(self, raw_password):
         if raw_password:
             self.password = make_password(raw_password)
             self.visibility = 'password_protected'
+            self.is_password_protected = True
         else:
             self.password = None
+            self.is_password_protected = False
             if self.visibility == 'password_protected':
                 self.visibility = 'public'
 
@@ -228,6 +264,11 @@ class Gallery(models.Model):
 
 
 class Media(models.Model):
+    MEDIA_TYPE_CHOICES = [
+        ('photo', 'Photo'),
+        ('video', 'Video'),
+    ]
+
     PROCESSING_STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('processing', 'Processing'),
@@ -253,6 +294,9 @@ class Media(models.Model):
         on_delete=models.CASCADE,
         related_name='media_items'
     )
+    media_type = models.CharField(max_length=20, choices=MEDIA_TYPE_CHOICES, default='photo')
+    title = models.CharField(max_length=255, blank=True, default='')
+    caption = models.TextField(blank=True, default='')
     original_filename = models.CharField(max_length=255)
 
     # Object storage keys (decoupled from storage provider/CDN URLs)
@@ -261,12 +305,22 @@ class Media(models.Model):
     preview_storage_key = models.CharField(max_length=512, blank=True, null=True)
     thumbnail_storage_key = models.CharField(max_length=512, blank=True, null=True)
 
+    # Video attributes
+    duration = models.CharField(max_length=50, blank=True, null=True, help_text="e.g. '02:45'")
+    video_embed_url = models.URLField(blank=True, null=True)
+    video_stream_key = models.CharField(max_length=512, blank=True, null=True)
+
     mime_type = models.CharField(max_length=100, default='image/jpeg')
     file_extension = models.CharField(max_length=20, default='.jpg')
     file_size = models.BigIntegerField(default=0, help_text="Exact file size in bytes")
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
-    duration = models.FloatField(null=True, blank=True, help_text="Duration in seconds if video")
+    aspect_ratio = models.FloatField(null=True, blank=True)
+
+    # Layout sequencing & flags
+    display_order = models.PositiveIntegerField(default=0, db_index=True)
+    is_cover = models.BooleanField(default=False)
+    is_favorite = models.BooleanField(default=False)
 
     processing_status = models.CharField(max_length=20, choices=PROCESSING_STATUS_CHOICES, default='ready')
     upload_status = models.CharField(max_length=20, choices=UPLOAD_STATUS_CHOICES, default='completed')
@@ -279,8 +333,9 @@ class Media(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['display_order', '-created_at']
         indexes = [
+            models.Index(fields=['gallery', 'display_order']),
             models.Index(fields=['gallery', 'created_at']),
             models.Index(fields=['photographer', 'file_size']),
             models.Index(fields=['processing_status']),
@@ -324,6 +379,44 @@ class GalleryClientAccess(models.Model):
         return True
 
 
+class GalleryClientSelection(models.Model):
+    """
+    Client proofing, favorites, and album selection submissions.
+    """
+    STATUS_CHOICES = [
+        ('draft', 'Draft'),
+        ('submitted', 'Submitted'),
+        ('reviewed', 'Reviewed'),
+        ('approved', 'Approved'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    gallery = models.ForeignKey(
+        Gallery,
+        on_delete=models.CASCADE,
+        related_name='client_selections'
+    )
+    client_email = models.EmailField()
+    client_name = models.CharField(max_length=255, blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    selected_media = models.ManyToManyField(
+        Media,
+        related_name='client_selections',
+        blank=True
+    )
+    selected_count = models.PositiveIntegerField(default=0)
+    client_notes = models.TextField(blank=True, default='')
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f"Selection by {self.client_email} for {self.gallery.title} ({self.selected_count} items)"
+
+
 class FaceEmbedding(models.Model):
     """
     Stores face embedding vectors and bounding boxes strictly associated with a gallery.
@@ -340,8 +433,7 @@ class FaceEmbedding(models.Model):
         on_delete=models.CASCADE,
         related_name='face_embeddings'
     )
-    # 128 or 512 dimensional normalized float array
-    embedding = models.JSONField(help_text="Internal vector array representation")
+    embedding = models.JSONField(help_text="Internal 128-dimensional normalized vector array")
     bounding_box = models.JSONField(null=True, blank=True, help_text="{'x': int, 'y': int, 'w': int, 'h': int}")
     confidence = models.FloatField(default=1.0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -395,7 +487,7 @@ class UploadReservation(models.Model):
 
 class BulkDownloadJob(models.Model):
     """
-    Tracks asynchronous bulk ZIP generation.
+    Tracks asynchronous bulk ZIP generation for master or selective downloads.
     """
     STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -403,6 +495,11 @@ class BulkDownloadJob(models.Model):
         ('ready', 'Ready'),
         ('failed', 'Failed'),
         ('expired', 'Expired'),
+    ]
+
+    DOWNLOAD_TYPE_CHOICES = [
+        ('master_all', 'Master All'),
+        ('selected_subset', 'Selected Subset'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -417,10 +514,12 @@ class BulkDownloadJob(models.Model):
         null=True,
         blank=True
     )
+    download_type = models.CharField(max_length=30, choices=DOWNLOAD_TYPE_CHOICES, default='master_all')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     archive_storage_key = models.CharField(max_length=512, blank=True, null=True)
     selected_count = models.PositiveIntegerField(default=0)
     file_size = models.BigIntegerField(default=0)
+    progress_percent = models.PositiveIntegerField(default=0)
     error_message = models.TextField(blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -447,7 +546,7 @@ class StorageAuditLog(models.Model):
         null=True,
         blank=True
     )
-    action = models.CharField(max_length=50)  # e.g. UPLOAD, DELETE, SHARE_GENERATE, DOWNLOAD
+    action = models.CharField(max_length=50)  # e.g. UPLOAD, DELETE, SHARE_GENERATE, DOWNLOAD, PROOF_SUBMIT
     details = models.JSONField(default=dict, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)

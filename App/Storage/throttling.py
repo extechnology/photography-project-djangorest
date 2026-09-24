@@ -72,6 +72,14 @@ class ShareAccessRateThrottle(BaseStorageThrottle):
     scope = 'share_access'
 
 
+class PinVerifyRateThrottle(BaseStorageThrottle):
+    """
+    Limits PIN verification attempts to prevent brute-force guessing.
+    Default: 10 requests per minute.
+    """
+    scope = 'pin_verify'
+
+
 def drf_ratelimit(key='ip', rate='30/m', block=False, method=None):
     """
     Decorator integrating django_ratelimit with DRF class-based API views.

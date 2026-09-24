@@ -1,5 +1,6 @@
 import io
 import os
+import uuid
 import zipfile
 import urllib.parse
 from django.shortcuts import get_object_or_404
@@ -8,6 +9,7 @@ from django.core.files.base import ContentFile
 from django.db.models import F
 from django.utils.text import slugify
 from django.utils import timezone
+from datetime import timedelta
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -16,13 +18,16 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
 from App.Auth.auth_utils import get_user_from_request
-from App.Photographers.photo_models import PhotographerProfile
+from App.Photographers.photo_models import PhotographerProfile, Notification, NotificationPreference
+from App.Photographers.photo_utils import check_image_for_nudity
 from App.Storage.storage_models import (
+
     SharedEvent,
     EventPhoto,
     Gallery,
     Media,
     GalleryClientAccess,
+    GalleryClientSelection,
     FaceEmbedding,
     UploadReservation,
     BulkDownloadJob,
@@ -36,8 +41,12 @@ from App.Storage.storage_serializers import (
     GallerySerializer,
     PublicGallerySerializer,
     MediaSerializer,
-    DirectUploadInitSerializer,
+    GalleryClientSelectionSerializer,
+    DirectUploadInitItemSerializer,
     DirectUploadConfirmSerializer,
+    GalleryTemplateUpdateSerializer,
+    GallerySetCoverSerializer,
+    GalleryReorderMediaSerializer,
     StorageUsageSerializer,
     BulkDownloadJobSerializer,
 )
@@ -61,7 +70,37 @@ from App.Storage.throttling import (
     DownloadRateThrottle,
     BulkDownloadRateThrottle,
     ShareAccessRateThrottle,
+    PinVerifyRateThrottle,
 )
+
+
+def trigger_studio_notification(photographer, event_type, title, message, gallery_id=None):
+    if not photographer:
+        return
+    try:
+        prefs, _ = NotificationPreference.objects.get_or_create(photographer=photographer)
+        should_send = True
+        if event_type == 'client_visit' and not prefs.notify_client_visited:
+            should_send = False
+        elif event_type == 'download' and not prefs.notify_photos_downloaded:
+            should_send = False
+        elif event_type == 'proofing_submitted' and not prefs.notify_favorites_selected:
+            should_send = False
+        elif event_type == 'storage_warning' and not prefs.notify_storage_alerts:
+            should_send = False
+
+        if should_send:
+            Notification.objects.create(
+                photographer=photographer,
+                user=photographer.user,
+                event_type=event_type,
+                title=title,
+                message=message,
+                related_gallery_id=gallery_id
+            )
+    except Exception:
+        pass
+
 
 VALID_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff'}
 
@@ -117,6 +156,18 @@ class SharedEventListCreateView(APIView):
         profile = get_photographer_profile(user)
         if not profile:
             return Response({"message": "Only registered photographers can create shared events."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Enforce plan event limit
+        active_plan = getattr(profile, 'studio_plan', None)
+        if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
+            active_plan = profile.subscription.plan
+        if active_plan and getattr(active_plan, 'max_events', 0) > 0:
+            current_events = SharedEvent.objects.filter(photographer=profile).count()
+            if current_events >= active_plan.max_events:
+                return Response({
+                    "code": "EVENT_LIMIT_REACHED",
+                    "message": f"You have reached the maximum shared events limit ({active_plan.max_events}) for your plan. Please upgrade to host more events."
+                }, status=status.HTTP_403_FORBIDDEN)
 
         data = request.data.copy()
         serializer = SharedEventDetailSerializer(data=data, context={'request': request})
@@ -241,7 +292,14 @@ class EventBulkPhotoUploadView(APIView):
                 rejected_files.append({"name": f.name, "reason": f"Unsupported extension {ext}"})
                 continue
 
+            is_nude, violations = check_image_for_nudity(f)
+            if is_nude:
+                labels = {v['class'].replace('_', ' ').title() for v in violations}
+                rejected_files.append({"name": f.name, "reason": f"Explicit or nude content detected ({', '.join(sorted(labels))})"})
+                continue
+
             photo = EventPhoto.objects.create(
+
                 event=event,
                 image=f,
                 original_filename=f.name,
@@ -708,8 +766,9 @@ class GalleryShareView(APIView):
 
 class DirectUploadInitView(APIView):
     """
-    Step 1: Photographer requests pre-signed direct upload URL.
+    Step 1: Photographer requests pre-signed direct upload URL(s).
     Validates photographer storage quota and atomically reserves bytes.
+    Supports single file or batch 'files: [...]' payload.
     """
     throttle_classes = [UploadRateThrottle]
 
@@ -722,38 +781,68 @@ class DirectUploadInitView(APIView):
         if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
             return Response({"code": "GALLERY_ACCESS_DENIED"}, status=status.HTTP_403_FORBIDDEN)
 
-        serializer = DirectUploadInitSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response({"code": "VALIDATION_FAILED", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        # Handle batch or single file
+        files_data = request.data.get('files')
+        is_batch = isinstance(files_data, list) and len(files_data) > 0
+        if not is_batch:
+            files_data = [request.data]
 
-        file_size = serializer.validated_data["file_size"]
-        filename = serializer.validated_data["original_filename"]
-        mime_type = serializer.validated_data["mime_type"]
+        prepared_items = []
+        total_requested_size = 0
+        for item in files_data:
+            filename = item.get("filename") or item.get("original_filename")
+            file_size = item.get("file_size")
+            mime_type = item.get("mime_type", "image/jpeg")
+            media_type = item.get("media_type", "photo")
+            if not filename or not file_size:
+                return Response({
+                    "code": "VALIDATION_FAILED",
+                    "detail": "Each file must specify 'filename' (or 'original_filename') and 'file_size'."
+                }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Atomic quota reservation
-        try:
-            reservation = StorageQuotaService.reserve_quota(gallery.photographer, gallery, file_size)
-        except StorageQuotaExceededException as e:
-            return Response(
-                {"code": "STORAGE_LIMIT_EXCEEDED", "detail": str(e)},
-                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-            )
+            total_requested_size += int(file_size)
+            prepared_items.append({
+                "filename": filename,
+                "file_size": int(file_size),
+                "mime_type": mime_type,
+                "media_type": media_type
+            })
 
-        storage_key = f"galleries/{gallery.id}/originals/{reservation.id}_{filename}"
+        # Atomic check against photographer's storage quota
+        photographer = gallery.photographer
+        if not photographer.can_allocate_storage(total_requested_size):
+            remaining = photographer.get_storage_remaining()
+            return Response({
+                "code": "STORAGE_LIMIT_EXCEEDED",
+                "detail": f"Insufficient storage quota. Requested {total_requested_size} bytes, available {remaining} bytes."
+            }, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+
+        results = []
         storage = get_storage_provider()
-        upload_meta = storage.generate_signed_upload_url(storage_key, expires_in=1800, content_type=mime_type)
 
-        return Response(
-            {
+        for item in prepared_items:
+            try:
+                reservation = StorageQuotaService.reserve_quota(photographer, gallery, item["file_size"])
+            except StorageQuotaExceededException as e:
+                return Response({"code": "STORAGE_LIMIT_EXCEEDED", "detail": str(e)}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+
+            storage_key = f"galleries/{gallery.id}/originals/{reservation.id}_{item['filename']}"
+            upload_meta = storage.generate_signed_upload_url(storage_key, expires_in=1800, content_type=item["mime_type"])
+
+            results.append({
                 "reservation_id": str(reservation.id),
                 "storage_key": storage_key,
+                "filename": item["filename"],
+                "media_type": item["media_type"],
                 "upload_url": upload_meta["upload_url"],
                 "method": upload_meta.get("method", "PUT"),
                 "headers": upload_meta.get("headers", {}),
                 "expires_in": 1800,
-            },
-            status=status.HTTP_200_OK
-        )
+            })
+
+        if is_batch:
+            return Response({"status": "success", "files": results}, status=status.HTTP_200_OK)
+        return Response(results[0], status=status.HTTP_200_OK)
 
 
 class DirectUploadConfirmView(APIView):
@@ -778,7 +867,7 @@ class DirectUploadConfirmView(APIView):
         reservation_id = serializer.validated_data["reservation_id"]
         reservation = get_object_or_404(UploadReservation, id=reservation_id, gallery=gallery)
 
-        storage_key = serializer.validated_data["storage_key"]
+        storage_key = serializer.validated_data.get("storage_key") or f"galleries/{gallery.id}/originals/{reservation.id}_{serializer.validated_data.get('original_filename', 'media')}"
         storage = get_storage_provider()
 
         if not storage.exists(storage_key):
@@ -786,21 +875,32 @@ class DirectUploadConfirmView(APIView):
             return Response({"code": "FILE_NOT_FOUND_IN_STORAGE", "detail": "Media file does not exist in storage."}, status=status.HTTP_400_BAD_REQUEST)
 
         meta = storage.get_metadata(storage_key)
-        actual_size = meta.get("size", serializer.validated_data["file_size"])
-        filename = serializer.validated_data["original_filename"]
+        actual_size = meta.get("size", serializer.validated_data.get("file_size", reservation.reserved_bytes))
+        filename = serializer.validated_data.get("original_filename") or "media_upload"
         ext = os.path.splitext(filename)[1].lower() or ".jpg"
 
         # Finalize quota
         StorageQuotaService.commit_quota(reservation, actual_size)
 
+        media_type = request.data.get("media_type", "photo")
+        aspect_ratio = request.data.get("aspect_ratio")
+        width = request.data.get("width")
+        height = request.data.get("height")
+        duration = request.data.get("duration")
+
         media = Media.objects.create(
             photographer=gallery.photographer,
             gallery=gallery,
+            media_type=media_type,
             original_filename=filename,
             storage_key=storage_key,
             file_size=actual_size,
-            mime_type=serializer.validated_data["mime_type"],
+            mime_type=serializer.validated_data.get("mime_type", "image/jpeg"),
             file_extension=ext,
+            aspect_ratio=float(aspect_ratio) if aspect_ratio else None,
+            width=int(width) if width else None,
+            height=int(height) if height else None,
+            duration=str(duration) if duration else None,
             processing_status="pending",
             upload_status="completed",
         )
@@ -856,20 +956,33 @@ class StandardMediaUploadView(APIView):
         created_media = []
         committed_bytes = 0
 
+        # High-volume batch optimizations (supports 2,000+ files per request)
+        is_large_batch = len(files) > 20
+
         for f in files:
             ext = os.path.splitext(f.name)[1].lower()
             if ext not in VALID_IMAGE_EXTENSIONS:
                 continue
 
+            # For small batches, run sync nudity detection.
+            # For large batches (>20), defer to Celery worker to prevent HTTP timeout.
+            if not is_large_batch:
+                is_nude, violations = check_image_for_nudity(f)
+                if is_nude:
+                    continue
+
             file_bytes = f.read()
             actual_size = len(file_bytes)
-            key = f"galleries/{gallery.id}/originals/{f.name}"
+            media_id = uuid.uuid4()
+            safe_name = os.path.basename(f.name)
+            key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
             storage.upload(key, file_bytes, content_type=getattr(f, 'content_type', 'image/jpeg'))
 
-            media = Media.objects.create(
+            media = Media(
+                id=media_id,
                 photographer=profile,
                 gallery=gallery,
-                original_filename=f.name,
+                original_filename=safe_name,
                 storage_key=key,
                 file_size=actual_size,
                 mime_type=getattr(f, 'content_type', 'image/jpeg'),
@@ -880,8 +993,13 @@ class StandardMediaUploadView(APIView):
             created_media.append(media)
             committed_bytes += actual_size
 
-            # Trigger processing
-            run_or_queue_task(process_media_derivatives_and_faces_task, str(media.id))
+        # Bulk insert records in chunks of 500 for high performance
+        if created_media:
+            Media.objects.bulk_create(created_media, batch_size=500)
+
+        # Trigger background processing for derivatives and face indexing
+        for media_item in created_media:
+            run_or_queue_task(process_media_derivatives_and_faces_task, str(media_item.id), skip_sync_fallback=is_large_batch)
 
         StorageQuotaService.commit_quota(reservation, committed_bytes)
 
@@ -1097,6 +1215,22 @@ class GalleryFaceSearchView(APIView):
         if not gallery.face_search_enabled:
             return Response({"code": "FACE_SEARCH_DISABLED", "detail": "Face search is disabled for this gallery."}, status=status.HTTP_403_FORBIDDEN)
 
+        # Plan Feature Enforcement
+        if gallery.photographer:
+            try:
+                from App.Subscriptions.sub_enforcer import PlanFeatureEnforcer
+                PlanFeatureEnforcer.check_face_search_permission(gallery.photographer)
+            except Exception as e:
+                err_detail = getattr(e, 'detail', str(e))
+                return Response(
+                    err_detail if isinstance(err_detail, dict) else {
+                        "error_code": "FACE_SEARCH_LOCKED",
+                        "message": "AI Biometric Face Search is not included in Standard Quarterly. Upgrade to Standard Annual or Studio Premium Elite.",
+                        "upgrade_required": True
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
         password = request.headers.get("X-Gallery-Password") or request.data.get("password")
         if gallery.visibility == "password_protected" and not gallery.check_access_password(password):
             return Response({"code": "PASSWORD_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1152,3 +1286,369 @@ class PhotographerStorageUsageView(APIView):
 
         serializer = StorageUsageSerializer(data)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# =============================================================================
+# 8. Version 2.0 Editorial Templates, Proofing, and Media Management APIs
+# =============================================================================
+
+class GalleryTemplateSwitchView(APIView):
+    """
+    Switches the layout template ('editorial'|'masonry'|'cinematic'|'minimal')
+    PATCH /api/storage/galleries/{id}/template/
+    """
+    def patch(self, request, gallery_id):
+        user = get_current_user(request)
+        if not user:
+            return Response({"code": "AUTHENTICATION_REQUIRED"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        gallery = get_object_or_404(Gallery.objects.select_related('photographer', 'photographer__plan'), id=gallery_id)
+        if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
+            return Response({"code": "GALLERY_ACCESS_DENIED"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = GalleryTemplateUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        template_id = serializer.validated_data['template_id']
+
+        # Verify against photographer plan permissions if restricted
+        active_plan = getattr(gallery.photographer, 'studio_plan', None)
+        if not active_plan and hasattr(gallery.photographer, 'subscription') and gallery.photographer.subscription and gallery.photographer.subscription.plan:
+            active_plan = gallery.photographer.subscription.plan
+        if not active_plan and gallery.photographer.plan:
+            active_plan = gallery.photographer.plan
+
+        if active_plan and getattr(active_plan, 'allowed_templates', None):
+            if template_id not in active_plan.allowed_templates:
+                return Response({
+                    "code": "TEMPLATE_NOT_ALLOWED",
+                    "detail": f"Template '{template_id}' is not included in your current subscription tier."
+                }, status=status.HTTP_403_FORBIDDEN)
+
+        gallery.template_id = template_id
+        gallery.save(update_fields=['template_id'])
+
+        return Response({
+            "message": f"Gallery template switched to {template_id}",
+            "template_id": gallery.template_id
+        }, status=status.HTTP_200_OK)
+
+
+class GallerySetCoverView(APIView):
+    """
+    Assigns a specific media item or cover image URL as gallery cover.
+    POST /api/storage/galleries/{id}/set-cover/
+    """
+    def post(self, request, gallery_id):
+        user = get_current_user(request)
+        if not user:
+            return Response({"code": "AUTHENTICATION_REQUIRED"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        gallery = get_object_or_404(Gallery, id=gallery_id)
+        if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
+            return Response({"code": "GALLERY_ACCESS_DENIED"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = GallerySetCoverSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        media_id = serializer.validated_data.get('media_id')
+        cover_image_url = serializer.validated_data.get('cover_image_url')
+
+        if media_id:
+            media = get_object_or_404(Media, id=media_id, gallery=gallery)
+            # Reset is_cover on other media items
+            gallery.media_items.filter(is_cover=True).update(is_cover=False)
+            media.is_cover = True
+            media.save(update_fields=['is_cover'])
+            gallery.cover_media = media
+            gallery.save(update_fields=['cover_media'])
+        elif cover_image_url:
+            gallery.cover_image_url = cover_image_url
+            gallery.save(update_fields=['cover_image_url'])
+
+        return Response({
+            "message": "Cover media updated successfully.",
+            "gallery_id": str(gallery.id),
+            "cover_image": GallerySerializer(gallery).data.get('cover_image')
+        }, status=status.HTTP_200_OK)
+
+
+class GalleryReorderMediaView(APIView):
+    """
+    Reorders media items inside a gallery.
+    POST /api/storage/galleries/{id}/reorder-media/
+    """
+    def post(self, request, gallery_id):
+        user = get_current_user(request)
+        if not user:
+            return Response({"code": "AUTHENTICATION_REQUIRED"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        gallery = get_object_or_404(Gallery, id=gallery_id)
+        if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
+            return Response({"code": "GALLERY_ACCESS_DENIED"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = GalleryReorderMediaSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        order_list = serializer.validated_data['order']
+        updated = 0
+        for item in order_list:
+            m_id = item.get('media_id') or item.get('id')
+            d_order = item.get('display_order', 0)
+            if m_id is not None:
+                Media.objects.filter(id=m_id, gallery=gallery).update(display_order=d_order)
+                updated += 1
+
+        return Response({
+            "message": f"Successfully reordered {updated} media items."
+        }, status=status.HTTP_200_OK)
+
+
+class MediaBulkDeleteView(APIView):
+    """
+    Bulk removes multiple media items from a gallery.
+    POST /api/storage/galleries/media/bulk-delete/
+    """
+    def post(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response({"code": "AUTHENTICATION_REQUIRED"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        media_ids = request.data.get('media_ids', [])
+        if not isinstance(media_ids, list) or not media_ids:
+            return Response({"detail": "media_ids must be a non-empty list of UUIDs."}, status=status.HTTP_400_BAD_REQUEST)
+
+        media_qs = Media.objects.filter(id__in=media_ids, deleted_at__isnull=True).select_related('photographer')
+        deleted_count = 0
+        total_freed_bytes = 0
+
+        storage = get_storage_provider()
+        for media in media_qs:
+            if media.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
+                continue
+
+            if media.storage_key:
+                storage.delete(media.storage_key)
+            if media.thumbnail_storage_key:
+                storage.delete(media.thumbnail_storage_key)
+            if media.preview_storage_key:
+                storage.delete(media.preview_storage_key)
+
+            FaceEmbedding.objects.filter(media=media).delete()
+            StorageQuotaService.deduct_storage(media.photographer, media.file_size)
+            total_freed_bytes += media.file_size
+
+            media.deleted_at = timezone.now()
+            media.save(update_fields=['deleted_at'])
+            deleted_count += 1
+
+        return Response({
+            "message": f"Successfully deleted {deleted_count} media items.",
+            "deleted_count": deleted_count,
+            "freed_bytes": total_freed_bytes
+        }, status=status.HTTP_200_OK)
+
+
+class MediaToggleFavoriteView(APIView):
+    """
+    Toggles is_favorite flag for studio starred media.
+    POST /api/storage/galleries/media/{media_id}/favorite/
+    """
+    def post(self, request, media_id):
+        media = get_object_or_404(Media.objects.select_related('gallery', 'photographer'), id=media_id)
+        
+        # Toggle favorite
+        media.is_favorite = not media.is_favorite
+        media.save(update_fields=['is_favorite'])
+
+        # Update gallery favorites count
+        gallery = media.gallery
+        fav_count = gallery.media_items.filter(is_favorite=True, deleted_at__isnull=True).count()
+        gallery.favorites_count = fav_count
+        gallery.save(update_fields=['favorites_count'])
+
+        return Response({
+            "message": "Media favorite toggled successfully.",
+            "media_id": str(media.id),
+            "is_favorite": media.is_favorite,
+            "gallery_favorites_count": fav_count
+        }, status=status.HTTP_200_OK)
+
+
+class PublicGallerySlugOrIdView(APIView):
+    """
+    Public / guest view of gallery by slug or UUID.
+    GET /api/storage/public/galleries/{slug_or_id}/
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ShareAccessRateThrottle]
+
+    def get(self, request, slug_or_id):
+        gallery = None
+        try:
+            gallery = Gallery.objects.select_related('photographer').get(id=slug_or_id)
+        except Exception:
+            pass
+
+        if not gallery:
+            gallery = get_object_or_404(Gallery.objects.select_related('photographer'), slug=slug_or_id)
+
+        if gallery.is_expired():
+            return Response({"code": "GALLERY_EXPIRED", "detail": "This gallery has expired."}, status=status.HTTP_410_GONE)
+
+        # Track views and trigger studio notification
+        Gallery.objects.filter(id=gallery.id).update(views_count=F('views_count') + 1)
+        trigger_studio_notification(
+            gallery.photographer,
+            'client_visit',
+            f"Client opened gallery: {gallery.title}",
+            f"A client or visitor viewed gallery '{gallery.title}' ({gallery.template_id} template).",
+            gallery.id
+        )
+
+        provided_password = request.headers.get("X-Gallery-Password") or request.query_params.get("password") or request.query_params.get("pin")
+        is_locked = gallery.is_password_protected or gallery.visibility == 'password_protected'
+        access_granted = not is_locked or (provided_password and gallery.check_access_password(provided_password))
+
+        serializer = PublicGallerySerializer(
+            gallery,
+            context={'request': request, 'access_granted': access_granted}
+        )
+        data = serializer.data
+        data['access_granted'] = bool(access_granted)
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class PublicGalleryVerifyPinView(APIView):
+    """
+    Verifies PIN code / password for gallery access.
+    POST /api/storage/public/galleries/{slug_or_id}/verify-pin/
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [PinVerifyRateThrottle]
+
+    def post(self, request, slug_or_id):
+        gallery = None
+        try:
+            gallery = Gallery.objects.select_related('photographer').get(id=slug_or_id)
+        except Exception:
+            pass
+
+        if not gallery:
+            gallery = get_object_or_404(Gallery.objects.select_related('photographer'), slug=slug_or_id)
+
+        pin = request.data.get("pin") or request.data.get("password")
+        if not pin:
+            return Response({"code": "PIN_REQUIRED", "detail": "Please provide 'pin' or 'password'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not gallery.check_access_password(pin):
+            return Response({"code": "INVALID_PIN", "detail": "Incorrect PIN or password."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = PublicGallerySerializer(gallery, context={'request': request, 'access_granted': True})
+        return Response({
+            "status": "success",
+            "message": "Access granted.",
+            "gallery": serializer.data
+        }, status=status.HTTP_200_OK)
+
+
+class ClientSelectionListCreateView(APIView):
+    """
+    GET / POST /api/storage/galleries/{id}/client-selections/
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, gallery_id):
+        gallery = get_object_or_404(Gallery, id=gallery_id)
+        client_email = request.query_params.get('email')
+        qs = gallery.client_selections.all()
+        if client_email:
+            qs = qs.filter(client_email=client_email)
+
+        serializer = GalleryClientSelectionSerializer(qs, many=True, context={'request': request})
+        return Response({"status": "success", "results": serializer.data}, status=status.HTTP_200_OK)
+
+    def post(self, request, gallery_id):
+        gallery = get_object_or_404(Gallery, id=gallery_id)
+        client_email = request.data.get('client_email')
+        if not client_email:
+            return Response({"detail": "client_email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        client_name = request.data.get('client_name', '')
+        client_notes = request.data.get('client_notes', '')
+        selected_media_ids = request.data.get('selected_media_ids', [])
+
+        selection, _ = GalleryClientSelection.objects.get_or_create(
+            gallery=gallery,
+            client_email=client_email,
+            defaults={'client_name': client_name, 'client_notes': client_notes}
+        )
+
+        if client_name:
+            selection.client_name = client_name
+        if client_notes:
+            selection.client_notes = client_notes
+
+        if isinstance(selected_media_ids, list):
+            valid_media = gallery.media_items.filter(id__in=selected_media_ids, deleted_at__isnull=True)
+            selection.selected_media.set(valid_media)
+            selection.selected_count = valid_media.count()
+
+        selection.save()
+        serializer = GalleryClientSelectionSerializer(selection, context={'request': request})
+        return Response({
+            "status": "success",
+            "message": "Client selections saved.",
+            "selection": serializer.data
+        }, status=status.HTTP_200_OK)
+
+
+class ClientSelectionSubmitView(APIView):
+    """
+    Submits client proofing selection with notes to studio.
+    POST /api/storage/galleries/{id}/client-selections/{selection_id}/submit/
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, gallery_id, selection_id):
+        gallery = get_object_or_404(Gallery.objects.select_related('photographer'), id=gallery_id)
+        selection = get_object_or_404(GalleryClientSelection, id=selection_id, gallery=gallery)
+
+        client_notes = request.data.get('client_notes')
+        if client_notes is not None:
+            selection.client_notes = client_notes
+
+        selection.status = 'submitted'
+        selection.submitted_at = timezone.now()
+        selection.save()
+
+        # Trigger studio notification
+        trigger_studio_notification(
+            gallery.photographer,
+            'proofing_submitted',
+            f"Client selections submitted for {gallery.title}",
+            f"Client {selection.client_email} finalized {selection.selected_count} proofing favorites for '{gallery.title}'.",
+            gallery.id
+        )
+
+        StorageAuditLog.objects.create(
+            photographer=gallery.photographer,
+            gallery=gallery,
+            action="PROOF_SUBMIT",
+            details={
+                "client_email": selection.client_email,
+                "selected_count": selection.selected_count,
+                "notes": selection.client_notes
+            }
+        )
+
+        serializer = GalleryClientSelectionSerializer(selection, context={'request': request})
+        return Response({
+            "status": "success",
+            "message": "Proofing selection submitted to studio successfully.",
+            "selection": serializer.data
+        }, status=status.HTTP_200_OK)
+
