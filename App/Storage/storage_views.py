@@ -1,5 +1,6 @@
 import io
 import os
+import uuid
 import zipfile
 import urllib.parse
 from django.shortcuts import get_object_or_404
@@ -629,9 +630,37 @@ class GalleryListCreateView(APIView):
         if not profile and not (user.is_staff or user.is_superuser):
             return Response({"code": "NOT_A_PHOTOGRAPHER", "detail": "Photographer profile not found."}, status=status.HTTP_403_FORBIDDEN)
 
+        if profile and not (user.is_staff or user.is_superuser):
+            try:
+                from App.Subscriptions.sub_enforcer import PlanFeatureEnforcer
+                PlanFeatureEnforcer.check_gallery_creation(profile)
+                req_template = request.data.get('template_id')
+                if req_template:
+                    PlanFeatureEnforcer.check_gallery_template(profile, req_template)
+            except Exception as e:
+                err_detail = getattr(e, 'detail', str(e))
+                return Response(
+                    err_detail if isinstance(err_detail, dict) else {
+                        "error_code": "PLAN_LIMIT_EXCEEDED",
+                        "message": str(err_detail),
+                        "upgrade_required": True
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
         serializer = GallerySerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             gallery = serializer.save(photographer=profile)
+            if profile and not gallery.expires_at:
+                try:
+                    from App.Subscriptions.sub_enforcer import PlanFeatureEnforcer
+                    exp = PlanFeatureEnforcer.compute_gallery_expiry(profile)
+                    if exp:
+                        gallery.expires_at = exp
+                        gallery.save(update_fields=['expires_at'])
+                except Exception:
+                    pass
+
             StorageAuditLog.objects.create(
                 photographer=profile,
                 gallery=gallery,
@@ -942,25 +971,33 @@ class StandardMediaUploadView(APIView):
         created_media = []
         committed_bytes = 0
 
+        # High-volume batch optimizations (supports 2,000+ files per request)
+        is_large_batch = len(files) > 20
+
         for f in files:
             ext = os.path.splitext(f.name)[1].lower()
             if ext not in VALID_IMAGE_EXTENSIONS:
                 continue
 
-            is_nude, violations = check_image_for_nudity(f)
-            if is_nude:
-                continue
+            # For small batches, run sync nudity detection.
+            # For large batches (>20), defer to Celery worker to prevent HTTP timeout.
+            if not is_large_batch:
+                is_nude, violations = check_image_for_nudity(f)
+                if is_nude:
+                    continue
 
             file_bytes = f.read()
-
             actual_size = len(file_bytes)
-            key = f"galleries/{gallery.id}/originals/{f.name}"
+            media_id = uuid.uuid4()
+            safe_name = os.path.basename(f.name)
+            key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
             storage.upload(key, file_bytes, content_type=getattr(f, 'content_type', 'image/jpeg'))
 
-            media = Media.objects.create(
+            media = Media(
+                id=media_id,
                 photographer=profile,
                 gallery=gallery,
-                original_filename=f.name,
+                original_filename=safe_name,
                 storage_key=key,
                 file_size=actual_size,
                 mime_type=getattr(f, 'content_type', 'image/jpeg'),
@@ -971,8 +1008,13 @@ class StandardMediaUploadView(APIView):
             created_media.append(media)
             committed_bytes += actual_size
 
-            # Trigger processing
-            run_or_queue_task(process_media_derivatives_and_faces_task, str(media.id))
+        # Bulk insert records in chunks of 500 for high performance
+        if created_media:
+            Media.objects.bulk_create(created_media, batch_size=500)
+
+        # Trigger background processing for derivatives and face indexing
+        for media_item in created_media:
+            run_or_queue_task(process_media_derivatives_and_faces_task, str(media_item.id), skip_sync_fallback=is_large_batch)
 
         StorageQuotaService.commit_quota(reservation, committed_bytes)
 
@@ -1187,6 +1229,22 @@ class GalleryFaceSearchView(APIView):
 
         if not gallery.face_search_enabled:
             return Response({"code": "FACE_SEARCH_DISABLED", "detail": "Face search is disabled for this gallery."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Plan Feature Enforcement
+        if gallery.photographer:
+            try:
+                from App.Subscriptions.sub_enforcer import PlanFeatureEnforcer
+                PlanFeatureEnforcer.check_face_search_permission(gallery.photographer)
+            except Exception as e:
+                err_detail = getattr(e, 'detail', str(e))
+                return Response(
+                    err_detail if isinstance(err_detail, dict) else {
+                        "error_code": "FACE_SEARCH_LOCKED",
+                        "message": "AI Biometric Face Search is not included in Standard Quarterly. Upgrade to Standard Annual or Studio Premium Elite.",
+                        "upgrade_required": True
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         password = request.headers.get("X-Gallery-Password") or request.data.get("password")
         if gallery.visibility == "password_protected" and not gallery.check_access_password(password):

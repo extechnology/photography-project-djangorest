@@ -81,6 +81,7 @@ def delete_auth_cookies(response):
 
 class CheckUsernameView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def get(self, request):
         new_username = request.query_params.get("username", "").strip()
 
@@ -124,6 +125,7 @@ class CheckUsernameView(APIView):
 
 class CheckIdentifierView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def get(self, request):
         identifier = request.query_params.get("identifier", "").strip()
         
@@ -166,6 +168,7 @@ class CheckIdentifierView(APIView):
 # @rate_limit(key='ip', rate='1/m', block=True)
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):               
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
@@ -179,6 +182,7 @@ class RegisterView(APIView):
 # @rate_limit(key='ip', rate='1/m', block=True)
 class ResendOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
        serializer = ResentOTPSerializer(data=request.data, context={'request': request})
        if serializer.is_valid():
@@ -192,6 +196,7 @@ class ResendOTPView(APIView):
    
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request,):
         serializer = EmailOTPVerifySerializer(data=request.data)
         if serializer.is_valid():
@@ -229,6 +234,7 @@ class VerifyOTPView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         identifier = request.data.get("identifier")
         password = request.data.get("password")
@@ -267,6 +273,7 @@ class LoginView(APIView):
     
 class LogoutView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
 
         response = Response({
@@ -280,6 +287,7 @@ class LogoutView(APIView):
 
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         refresh_token = request.COOKIES.get("refresh_token")
 
@@ -301,33 +309,47 @@ class RefreshTokenView(APIView):
 
 class CheckLoginView(APIView):
     permission_classes = [AllowAny]
+
     def get(self, request):
         user = request.user
         if not user or isinstance(user, AnonymousUser) or not user.is_authenticated:
-            access_token = request.COOKIES.get('access_token')
-            if not access_token:
-                return Response({
-                    'is_logged_in': False,
-                    'message': 'No access token found'
-                }, status=status.HTTP_401_UNAUTHORIZED)
-            try:
-                token = AccessToken(access_token)
-                user = User.objects.get(id=token['user_id'])
-            except Exception as e:
-                return Response({
-                    'is_logged_in': False,
-                    'message': f'Invalid or expired token: {str(e)}'
-                }, status=status.HTTP_401_UNAUTHORIZED)
+            auth_header = request.headers.get('Authorization')
+            raw_token = None
+            if auth_header and auth_header.startswith('Bearer '):
+                raw_token = auth_header.split(' ')[1]
+            if not raw_token:
+                raw_token = request.COOKIES.get('access_token')
+
+            if raw_token:
+                try:
+                    token = AccessToken(raw_token)
+                    user = User.objects.get(id=token['user_id'])
+                except Exception:
+                    user = None
+
+        if not user or isinstance(user, AnonymousUser) or not user.is_authenticated:
+            return Response({
+                'is_logged_in': False,
+                'is_authenticated': False,
+                'user': None,
+                'message': 'No active session or access token found'
+            }, status=status.HTTP_200_OK)
 
         user_data = {
             'id': user.id,
             'username': user.username,
             'email': user.email,
             'phone': getattr(user, 'phone', None),
+            'role': getattr(user, 'role', 'photographer'),
+            'fullname': getattr(user, 'fullname', user.username),
         }
 
         return Response({
             'is_logged_in': True,
+            'is_authenticated': True,
+            'user_id': user.id,
+            'username': user.username,
+            'role': getattr(user, 'role', 'photographer'),
             'user': user_data
         }, status=status.HTTP_200_OK)
 
@@ -372,6 +394,7 @@ class DirectResetPasswordView(APIView):
 
 class ResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -404,6 +427,7 @@ class ResetPasswordOTPView(APIView):
 
 class ResendResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         serializer = ResendResetPasswordOTPSerializer(data=request.data)
         if serializer.is_valid():
@@ -432,6 +456,7 @@ class ResendResetPasswordOTPView(APIView):
 
 class VerifyResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         serializer = VerifyResetPasswordSerializer(data=request.data)
         if serializer.is_valid():
@@ -458,6 +483,7 @@ class VerifyResetPasswordOTPView(APIView):
 
 class ChangePasswordView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def patch(self, request):
         identifier = request.data.get("identifier")
         new_password = request.data.get("new_password")
@@ -487,6 +513,7 @@ class ChangePasswordView(APIView):
 GOOGLE_CLIENT_ID = getattr(settings, 'GOOGLE_CLIENT_ID', None)
 class GoogleAuthView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     def post(self, request):
         if not GOOGLE_CLIENT_ID:
             return Response({"message": "Google Authentication is not configured in settings.py"}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -522,6 +549,19 @@ class GoogleAuthView(APIView):
             if not email:
                 raise ValueError('Email not found in Google response.')
 
+            if not User.objects.filter(email=email).exists():
+                from django.conf import settings
+                max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+                if User.objects.filter(is_superuser=False).count() >= max_users:
+                    return Response(
+                        {
+                            "status": "error",
+                            "code": "USER_LIMIT_REACHED",
+                            "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                        },
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
             user, created = User.objects.get_or_create(
                 email=email, 
                 defaults={'username': email.split('@')[0], 'fullname': fullname}
@@ -547,6 +587,7 @@ class GoogleAuthView(APIView):
 
 class PasswordlessSendOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = PasswordlessSendOTPSerializer(data=request.data)
@@ -562,6 +603,19 @@ class PasswordlessSendOTPView(APIView):
 
         email = serializer.validated_data["email"]
         is_existing = User.objects.filter(email__iexact=email).exists()
+
+        if not is_existing:
+            from django.conf import settings
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                return Response(
+                    {
+                        "status": "error",
+                        "code": "USER_LIMIT_REACHED",
+                        "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         otp = str(random.randint(100000, 999999))
         PasswordlessLoginOTP.objects.create(email=email, otp=otp)
@@ -581,6 +635,7 @@ class PasswordlessSendOTPView(APIView):
 
 class PasswordlessResendOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = PasswordlessSendOTPSerializer(data=request.data)
@@ -614,6 +669,7 @@ class PasswordlessResendOTPView(APIView):
 
 class PasswordlessVerifyOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = PasswordlessVerifyOTPSerializer(data=request.data)
@@ -659,6 +715,18 @@ class PasswordlessVerifyOTPView(APIView):
                 user.fullname = fullname
             user.save()
         else:
+            from django.conf import settings
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                return Response(
+                    {
+                        "status": "error",
+                        "code": "USER_LIMIT_REACHED",
+                        "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
             # New user -> Auto-Register without password
             is_new_user = True
             raw_base = email.split("@")[0].lower()
@@ -741,6 +809,7 @@ class PasswordlessVerifyOTPView(APIView):
 
 class PasswordlessLoginSendOTPView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = PasswordlessSendOTPSerializer(data=request.data)

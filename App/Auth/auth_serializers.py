@@ -32,6 +32,13 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if not identifier:
             raise serializers.ValidationError({"message": "Either email or phone number must be provided"})
 
+        from django.conf import settings
+        max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+        if User.objects.filter(is_superuser=False).count() >= max_users:
+            raise serializers.ValidationError({
+                "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+            })
+
         if User.objects.filter(username=username).exists():
             raise serializers.ValidationError({"message": "This username is already taken"})
 
@@ -121,6 +128,13 @@ class EmailOTPVerifySerializer(serializers.Serializer):
             user.save()
 
         else:
+            from django.conf import settings
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                raise serializers.ValidationError({
+                    "message": f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                })
+
             if identifier.isdigit():
                 user = User.objects.create_user(
                     username=identifier,

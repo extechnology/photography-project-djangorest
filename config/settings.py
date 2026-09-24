@@ -145,7 +145,6 @@ AUTHENTICATION_BACKENDS = [
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'App.Auth.auth_utils.CookieJWTAuthentication',
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
@@ -292,4 +291,27 @@ RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='rzp_test_placeholder')
 RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='rzp_secret_placeholder')
 RAZORPAY_WEBHOOK_SECRET = config('RAZORPAY_WEBHOOK_SECRET', default='')
 
+# ------------------------------------------------------------------------------
+# HIGH-CAPACITY MULTI-FILE UPLOAD CONFIGURATION (Supports 2,000+ files per batch)
+# ------------------------------------------------------------------------------
+# Allow up to 10,000 files in a single batch multipart request (default was 1,000)
+DATA_UPLOAD_MAX_NUMBER_FILES = 10000
 
+# Allow up to 10,000 form fields
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000
+
+# Allow multi-gigabyte upload payloads (e.g. 2,000 high-res / RAW photos up to 10 GB)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10737418240
+
+# Stream files larger than 10MB to disk instead of filling system RAM
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 MB
+
+# ------------------------------------------------------------------------------
+# TEST ENVIRONMENT LIMITATIONS
+# ------------------------------------------------------------------------------
+# Maximum number of standard accounts (excluding superuser) that can be created
+MAX_TEST_USERS = config('MAX_TEST_USERS', default=5, cast=int)
+
+# Storage quota limit for test users (20 GB per standard account)
+TEST_USER_STORAGE_LIMIT_GB = config('TEST_USER_STORAGE_LIMIT_GB', default=20, cast=int)
+TEST_USER_STORAGE_LIMIT_BYTES = TEST_USER_STORAGE_LIMIT_GB * 1024 * 1024 * 1024  # 21,474,836,480 bytes

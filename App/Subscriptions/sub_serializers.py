@@ -23,13 +23,26 @@ class PlanSerializer(serializers.ModelSerializer):
             'total_price',
             'billing_text',
             'currency',
-            'tag',
-            'tag_type',
+            'image_storage_gb',
+            'video_storage_gb',
             'image_storage',
             'video_storage',
             'storage_limit_bytes',
-            'features',
+            'tag',
+            'tag_type',
             'cta_text',
+            'features',
+            'max_galleries',
+            'gallery_expiry_days',
+            'face_search_enabled',
+            'max_events',
+            'allowed_templates',
+            'allowed_portfolio_templates',
+            'max_portfolio_posts',
+            'max_inquiries',
+            'has_full_inquiry_access',
+            'can_upgrade_storage',
+            'max_upgrade_image_gb',
             'is_active',
             'sort_order',
         ]
@@ -68,7 +81,7 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
 
     def get_storage(self, obj):
         photographer = obj.photographer
-        limit_bytes = obj.plan.storage_limit_bytes if obj.plan else photographer.get_storage_limit()
+        limit_bytes = obj.effective_storage_limit_bytes if hasattr(obj, 'effective_storage_limit_bytes') else photographer.get_storage_limit()
         used_bytes = photographer.storage_used_bytes + photographer.storage_reserved_bytes
         used_gb = round(used_bytes / (1024 ** 3), 1)
         limit_gb = round(limit_bytes / (1024 ** 3), 1)

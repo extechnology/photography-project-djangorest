@@ -312,3 +312,53 @@ class UpgradeSubscriptionView(APIView):
             "message": f"Successfully upgraded to {legacy_plan.name}.",
             "subscription": PhotographerSubscriptionSerializer(subscription).data
         }, status=status.HTTP_200_OK)
+
+
+class StorageAddonView(APIView):
+    """
+    POST /api/plans/storage-addon/
+    Adds additional storage (available on Studio Premium Elite).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        photographer, err = get_photographer_from_request(request)
+        if err:
+            return Response({"detail": err}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            additional_gb = int(request.data.get('additional_gb', 0))
+        except (ValueError, TypeError):
+            return Response({"detail": "additional_gb must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if additional_gb <= 0:
+            return Response({"detail": "additional_gb must be a positive integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        subscription = getattr(photographer, 'subscription', None)
+        if not subscription or not subscription.plan or not subscription.plan.can_upgrade_storage:
+            return Response({
+                "error_code": "PLAN_NOT_UPGRADEABLE",
+                "message": "Storage add-ons are only available on Studio Premium Elite."
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        current_total = subscription.plan.image_storage_gb + subscription.extra_storage_gb + additional_gb
+        if current_total > subscription.plan.max_upgrade_image_gb:
+            return Response({
+                "error_code": "STORAGE_UPGRADE_LIMIT_EXCEEDED",
+                "message": f"Maximum upgradeable storage limit is {subscription.plan.max_upgrade_image_gb} GB."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        subscription.extra_storage_gb += additional_gb
+        subscription.save(update_fields=['extra_storage_gb'])
+
+        # Also update photographer's storage limit cache if present
+        if hasattr(photographer, 'storage_limit_bytes'):
+            photographer.storage_limit_bytes = subscription.effective_storage_limit_bytes
+            photographer.save(update_fields=['storage_limit_bytes'])
+
+        return Response({
+            "status": "success",
+            "message": f"Successfully added {additional_gb} GB storage.",
+            "subscription": CurrentSubscriptionSerializer(subscription).data
+        }, status=status.HTTP_200_OK)
+

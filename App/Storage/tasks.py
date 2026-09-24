@@ -17,11 +17,15 @@ def run_or_queue_task(task_func, *args, **kwargs):
     Executes task asynchronously via Celery if available, or falls back to
     immediate synchronous execution if Celery broker is unavailable.
     """
+    skip_sync = kwargs.pop('skip_sync_fallback', False)
     try:
         return task_func.delay(*args, **kwargs)
     except Exception:
+        if skip_sync:
+            return None
         # Fallback to direct synchronous execution
         return task_func(*args, **kwargs)
+
 
 
 @shared_task

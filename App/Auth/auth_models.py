@@ -21,6 +21,16 @@ class CustomUserManager(BaseUserManager):
         if not (username or email or phone):
             raise ValueError("User must have either a username, email, or phone")
 
+        is_superuser = extra_fields.get("is_superuser", False)
+        if not is_superuser:
+            from django.conf import settings
+            from django.core.exceptions import ValidationError
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if self.model.objects.filter(is_superuser=False).count() >= max_users:
+                raise ValidationError(
+                    f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                )
+
         user = self.model(
             username=username,
             email=email,
@@ -114,6 +124,28 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_staff_role(self):
         return self.role == self.Role.STAFF
+
+    def clean(self):
+        super().clean()
+        if not self.pk and not self.is_superuser:
+            from django.conf import settings
+            from django.core.exceptions import ValidationError
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                raise ValidationError(
+                    f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                )
+
+    def save(self, *args, **kwargs):
+        if not self.pk and not self.is_superuser:
+            from django.conf import settings
+            from django.core.exceptions import ValidationError
+            max_users = getattr(settings, 'MAX_TEST_USERS', 5)
+            if User.objects.filter(is_superuser=False).count() >= max_users:
+                raise ValidationError(
+                    f"Registration limit reached. Only {max_users} test accounts are allowed (excluding superusers)."
+                )
+        super().save(*args, **kwargs)
 
 class RegistrationOTP(models.Model):
     identifier = models.CharField(max_length=255)  

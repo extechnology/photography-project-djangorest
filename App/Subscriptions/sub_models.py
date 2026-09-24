@@ -57,6 +57,22 @@ class Plan(models.Model):
     tag_type = models.CharField(max_length=20, choices=TAG_TYPE_CHOICES, default='default')
     cta_text = models.CharField(max_length=100, default='Choose Plan')
     features = models.JSONField(default=list)
+
+    # Storage upgradeability
+    can_upgrade_storage = models.BooleanField(default=False)
+    max_upgrade_image_gb = models.PositiveIntegerField(default=200)
+
+    # Strict Quota Dimensions
+    max_galleries = models.PositiveIntegerField(default=15, help_text="0 for unlimited")
+    gallery_expiry_days = models.PositiveIntegerField(default=90, help_text="0 for permanent/unlimited")
+    face_search_enabled = models.BooleanField(default=False)
+    max_events = models.PositiveIntegerField(default=5, help_text="0 for unlimited")
+    allowed_templates = models.JSONField(default=list)  # ['editorial', 'masonry']
+    allowed_portfolio_templates = models.JSONField(default=list)
+    max_portfolio_posts = models.PositiveIntegerField(default=10, help_text="0 for unlimited")
+    max_inquiries = models.PositiveIntegerField(default=10, help_text="0 for unlimited")
+    has_full_inquiry_access = models.BooleanField(default=False)
+
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -190,6 +206,7 @@ class PhotographerSubscription(models.Model):
     expires_at = models.DateTimeField(null=True, blank=True)
     auto_renew = models.BooleanField(default=True)
     payment_gateway_ref = models.CharField(max_length=255, blank=True, default='')
+    extra_storage_gb = models.PositiveIntegerField(default=0, help_text="For Elite Plan storage add-on")
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
 
@@ -229,6 +246,32 @@ class PhotographerSubscription(models.Model):
         if self.expires_at and timezone.now() > self.expires_at:
             return False
         return True
+
+    @property
+    def is_currently_active(self):
+        return self.is_active
+
+    @property
+    def effective_storage_limit_bytes(self):
+        from django.conf import settings
+        test_storage_limit = getattr(settings, 'TEST_USER_STORAGE_LIMIT_BYTES', None)
+
+        # Superusers are exempt from the test storage limit
+        is_super = False
+        try:
+            if hasattr(self, 'photographer') and self.photographer and hasattr(self.photographer, 'user') and self.photographer.user:
+                if self.photographer.user.is_superuser:
+                    is_super = True
+        except Exception:
+            pass
+
+        if not is_super and test_storage_limit:
+            return test_storage_limit
+
+        base_bytes = self.plan.storage_limit_bytes if self.plan else 225485783040
+        if self.plan and self.plan.can_upgrade_storage and self.extra_storage_gb > 0:
+            base_bytes += (self.extra_storage_gb * 1024 * 1024 * 1024)
+        return base_bytes
 
 
 

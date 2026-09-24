@@ -115,6 +115,20 @@ class PhotographerProfile(models.Model):
 
     def get_storage_limit(self):
         """Returns effective storage limit in bytes based on plan or default."""
+        from django.conf import settings
+        test_storage_limit = getattr(settings, 'TEST_USER_STORAGE_LIMIT_BYTES', None)
+
+        # Superusers are exempt from the test storage limit
+        is_super = False
+        try:
+            if hasattr(self, 'user') and self.user and self.user.is_superuser:
+                is_super = True
+        except Exception:
+            pass
+
+        if not is_super and test_storage_limit:
+            return test_storage_limit
+
         if hasattr(self, 'studio_plan') and self.studio_plan and self.studio_plan.storage_limit_bytes:
             return self.studio_plan.storage_limit_bytes
         if hasattr(self, 'subscription') and self.subscription:
