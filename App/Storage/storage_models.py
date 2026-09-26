@@ -271,7 +271,7 @@ class Gallery(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.title} ({self.id})"
+        return f"{self.title} ({self.get_status_display()})"
 
     def save(self, *args, **kwargs):
         if not self.share_token:

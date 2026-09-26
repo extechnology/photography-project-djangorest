@@ -16,6 +16,7 @@ from App.Storage.storage_views import (
     # Enterprise Photographer Gallery Views
     GalleryListCreateView,
     GalleryDetailView,
+    GalleryRestoreView,
     GallerySettingsDetailView,
     GalleryShareView,
     GalleryTemplateSwitchView,
@@ -130,6 +131,8 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/upload/', StandardMediaUploadView.as_view(), name='standard-media-upload'),
 
     # Gallery Detail & Settings (placed after sub-routes so <str:pk> matches clean gallery IDs or slugs)
+    path('galleries/<str:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore'),
+    path('galleries/<uuid:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore-uuid'),
     path('galleries/<str:pk>/', GalleryDetailView.as_view(), name='gallery-detail'),
 
     # Individual Photo / Media Deletion in Gallery
@@ -158,6 +161,7 @@ urlpatterns = [
     path('public/galleries/<str:slug_or_id>/track-view/', PublicGalleryTrackView.as_view(), name='public-gallery-track-view'),
     path('public/galleries/<str:slug_or_id>/download-zip/', PublicGalleryDownloadZipView.as_view(), name='public-gallery-download-zip'),
     path('public/galleries/<str:slug_or_id>/verify-pin/', PublicGalleryVerifyPinView.as_view(), name='public-gallery-verify-pin'),
+    path('public/galleries/<str:slug_or_id>/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-detail'),
     path('public/galleries/<str:slug_or_id>/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-slug-or-id'),
     path('shared-galleries/<str:share_token>/', SharedGalleryView.as_view(), name='shared-gallery-view'),
     path('shared-galleries/<str:share_token>/verify-password/', VerifyGalleryPasswordView.as_view(), name='verify-gallery-password'),

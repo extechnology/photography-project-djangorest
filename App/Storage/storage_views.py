@@ -20,6 +20,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from datetime import timedelta
 from rest_framework import status, viewsets, permissions
+from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -687,10 +688,15 @@ class GalleryListCreateView(APIView):
                 Q(title__icontains=search) | Q(client_name__icontains=search)
             )
 
-        # ─── 2. Status Filter ('active' or 'delivered') ───
-        status_param = request.query_params.get('status', '').strip().lower()
-        if status_param in ['active', 'delivered', 'draft', 'archived']:
+        # ─── 2. Status Filter ───
+        status_param = (request.query_params.get('status') or '').strip().lower()
+        if status_param == 'archived':
+            queryset = queryset.filter(status='archived')
+        elif status_param in ['active', 'delivered', 'draft', 'published']:
             queryset = queryset.filter(status=status_param)
+        elif not status_param or status_param == 'all':
+            # Default active drive view: Exclude archived items so they don't clutter the main drive
+            queryset = queryset.exclude(status='archived')
 
         # ─── 3. Date Presets & Custom Ranges ───
         date_filter = request.query_params.get('date_filter', '').strip().lower()
@@ -1026,11 +1032,52 @@ class GalleryDetailView(APIView):
                 return Response({'code': 'GALLERY_ACCESS_DENIED', 'detail': 'You do not own this gallery.'}, status=status.HTTP_403_FORBIDDEN)
             return Response({'detail': 'Gallery not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        if request.query_params.get('permanent') == 'true' or gallery.status == 'archived':
-            gallery.delete()
-            return Response({'success': True, 'message': 'Gallery deleted successfully.'}, status=status.HTTP_200_OK)
+        is_permanent = request.query_params.get('permanent', 'false').lower() in ('true', '1')
 
-        # Soft delete / archive policy
+        # Permanent Delete
+        if is_permanent or gallery.status == 'archived':
+            gallery_title = gallery.title
+            photographer = gallery.photographer
+
+            # Cascade media files from object storage (cloud / local)
+            storage = get_storage_provider()
+            media_items = list(gallery.media_items.all())
+            for media in media_items:
+                try:
+                    if media.storage_key:
+                        storage.delete(media.storage_key)
+                    if media.thumbnail_storage_key:
+                        storage.delete(media.thumbnail_storage_key)
+                    if media.preview_storage_key:
+                        storage.delete(media.preview_storage_key)
+                    if media.file and hasattr(media.file, 'path') and os.path.exists(media.file.path):
+                        try:
+                            os.remove(media.file.path)
+                        except OSError:
+                            pass
+                    FaceEmbedding.objects.filter(media=media).delete()
+                    if media.deleted_at is None and media.file_size:
+                        StorageQuotaService.deduct_storage(photographer, media.file_size)
+                except Exception as e:
+                    logger.warning(f"Error deleting media {media.id} files during gallery purge: {e}")
+
+            gallery.delete()
+
+            StorageAuditLog.objects.create(
+                photographer=photographer,
+                gallery=None,
+                user=user,
+                action="GALLERY_PERMANENTLY_DELETED",
+                details={"title": gallery_title, "gallery_id": str(pk)}
+            )
+
+            return Response({
+                'success': True,
+                'status': 'deleted',
+                'message': f'Gallery "{gallery_title}" permanently deleted.'
+            }, status=status.HTTP_200_OK)
+
+        # Soft Delete (Move to Archive / Trash)
         gallery.status = 'archived'
         gallery.save(update_fields=['status'])
 
@@ -1041,7 +1088,11 @@ class GalleryDetailView(APIView):
             action="GALLERY_ARCHIVED",
             details={"gallery_id": str(gallery.id), "title": gallery.title}
         )
-        return Response({"status": "archived", "success": True, "message": "Gallery moved to archive."}, status=status.HTTP_200_OK)
+        return Response({
+            'success': True,
+            'status': 'archived',
+            'message': f'Gallery "{gallery.title}" moved to archive / trash.'
+        }, status=status.HTTP_200_OK)
 
 
 GallerySettingsDetailView = GalleryDetailView
@@ -1077,9 +1128,14 @@ class GalleryViewSet(viewsets.ModelViewSet):
                 Q(title__icontains=search) | Q(client_name__icontains=search)
             )
 
-        status_param = self.request.query_params.get('status', '').strip().lower()
-        if status_param in ['active', 'delivered', 'draft', 'archived']:
-            queryset = queryset.filter(status=status_param)
+        status_filter = (self.request.query_params.get('status') or '').strip().lower()
+        if status_filter == 'archived':
+            queryset = queryset.filter(status='archived')
+        elif status_filter in ['active', 'delivered', 'draft', 'published']:
+            queryset = queryset.filter(status=status_filter)
+        elif not status_filter or status_filter == 'all':
+            # Default active drive view: Exclude archived items so they don't clutter the main drive
+            queryset = queryset.exclude(status='archived')
 
         date_filter = self.request.query_params.get('date_filter', '').strip().lower()
         now = timezone.now().date()
@@ -1190,11 +1246,116 @@ class GalleryViewSet(viewsets.ModelViewSet):
         return super().partial_update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
-        # Soft delete / archive policy
-        gallery = self.get_object()
-        gallery.status = "archived"
-        gallery.save(update_fields=["status"])
-        return Response({"status": "archived", "message": "Gallery moved to archive."}, status=status.HTTP_200_OK)
+        """
+        Two-stage gallery deletion:
+        1. Calling DELETE on an active gallery moves it to 'archived'.
+        2. Calling DELETE on an already-archived gallery (or with ?permanent=true) permanently removes it.
+        """
+        instance = self.get_object()
+        is_permanent = request.query_params.get('permanent', 'false').lower() in ('true', '1')
+
+        # Permanent Delete
+        if is_permanent or instance.status == 'archived':
+            gallery_title = instance.title
+            photographer = instance.photographer
+            storage = get_storage_provider()
+            for media in instance.media_items.all():
+                try:
+                    if media.storage_key:
+                        storage.delete(media.storage_key)
+                    if media.thumbnail_storage_key:
+                        storage.delete(media.thumbnail_storage_key)
+                    if media.preview_storage_key:
+                        storage.delete(media.preview_storage_key)
+                    if media.file and hasattr(media.file, 'path') and os.path.exists(media.file.path):
+                        try:
+                            os.remove(media.file.path)
+                        except OSError:
+                            pass
+                    FaceEmbedding.objects.filter(media=media).delete()
+                    if media.deleted_at is None and media.file_size:
+                        StorageQuotaService.deduct_storage(photographer, media.file_size)
+                except Exception as e:
+                    logger.warning(f"Error deleting media {media.id} files: {e}")
+
+            self.perform_destroy(instance)
+            return Response({
+                'success': True,
+                'status': 'deleted',
+                'message': f'Gallery "{gallery_title}" permanently deleted.'
+            }, status=status.HTTP_200_OK)
+
+        # Soft Delete (Move to Archive / Trash)
+        instance.status = 'archived'
+        instance.save(update_fields=['status'])
+        return Response({
+            'success': True,
+            'status': 'archived',
+            'message': f'Gallery "{instance.title}" moved to archive / trash.'
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='restore')
+    def restore(self, request, pk=None):
+        """
+        POST /api/galleries/{id}/restore/
+        Reactivates an archived gallery back to 'active' or 'delivered'.
+        """
+        instance = self.get_object()
+        target_status = request.data.get('status', 'active')
+        if target_status not in ['active', 'delivered']:
+            target_status = 'active'
+
+        instance.status = target_status
+        instance.save(update_fields=['status'])
+        return Response({
+            'success': True,
+            'status': instance.status,
+            'message': f'Gallery "{instance.title}" restored to {instance.status}.'
+        }, status=status.HTTP_200_OK)
+
+
+class GalleryRestoreView(APIView):
+    """
+    POST /api/galleries/{id}/restore/
+    Reactivates an archived gallery back to 'active' or 'delivered'.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, gallery_id=None, pk=None):
+        user = get_current_user(request)
+        if not user:
+            return Response({"code": "AUTHENTICATION_REQUIRED", "detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        target_id = gallery_id or pk
+        gallery = _get_gallery_or_404(target_id, user)
+        if not gallery:
+            unfiltered = _get_gallery_or_404(target_id)
+            if not unfiltered:
+                return Response({"code": "gallery_not_found", "detail": "Gallery not found."}, status=status.HTTP_404_NOT_FOUND)
+            if not (user.is_staff or user.is_superuser or unfiltered.photographer.user_id == user.id):
+                return Response({"code": "GALLERY_ACCESS_DENIED", "detail": "You do not own this gallery."}, status=status.HTTP_403_FORBIDDEN)
+            gallery = unfiltered
+
+        target_status = request.data.get('status', 'active')
+        if target_status not in ['active', 'delivered']:
+            target_status = 'active'
+
+        gallery.status = target_status
+        gallery.save(update_fields=['status', 'updated_at'])
+
+        StorageAuditLog.objects.create(
+            photographer=gallery.photographer,
+            gallery=gallery,
+            user=user,
+            action="GALLERY_RESTORED",
+            details={"gallery_id": str(gallery.id), "status": gallery.status, "title": gallery.title}
+        )
+
+        return Response({
+            'success': True,
+            'status': gallery.status,
+            'message': f'Gallery "{gallery.title}" restored to {gallery.status}.'
+        }, status=status.HTTP_200_OK)
 
 
 class GalleryShareView(APIView):
@@ -2055,7 +2216,13 @@ class SharedGalleryView(APIView):
             return Response({"code": "GALLERY_EXPIRED", "detail": "This gallery link has expired."}, status=status.HTTP_410_GONE)
 
         if gallery.status == "archived":
-            return Response({"code": "GALLERY_ARCHIVED", "detail": "This gallery is no longer available."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                "code": "gallery_archived",
+                "status": "archived",
+                "title": gallery.title,
+                "client_name": gallery.client_name,
+                "detail": "This collection has been archived by the studio and is currently unavailable."
+            }, status=status.HTTP_410_GONE)
 
         # Password protection check
         password = request.headers.get("X-Gallery-Password") or request.query_params.get("password")
@@ -2982,35 +3149,56 @@ def get_public_gallery(slug_or_id: str) -> Gallery:
     query = Q(id=slug_or_id) if is_uuid else Q(slug=slug_or_id)
     gallery = Gallery.objects.select_related('photographer', 'photographer__user').filter(query).first()
     if not gallery:
-        raise NotFound(detail={"error": "Private collection not found.", "code": "not_found"})
+        raise NotFound(detail={"code": "gallery_not_found", "detail": "This collection does not exist or has been permanently removed."})
     return gallery
 
 
 class PublicGallerySlugOrIdView(APIView):
     """
-    Public / guest view of gallery by slug or UUID.
+    Public Client Gallery Access.
     GET /api/public/galleries/{slug_or_id}/
     """
     permission_classes = [AllowAny]
     throttle_classes = [ShareAccessRateThrottle]
 
     def get(self, request, slug_or_id):
-        gallery = get_public_gallery(slug_or_id)
+        # 1. Lookup by UUID id or unique slug
+        is_uuid = False
+        try:
+            uuid.UUID(str(slug_or_id))
+            is_uuid = True
+        except (ValueError, AttributeError):
+            is_uuid = False
 
-        # 1. EXPIRATION CHECK:
-        # If gallery has passed its access window, return HTTP 410 GONE
-        if gallery.is_expired:
-            return Response(
-                {
-                    "error": "The access period for this private collection has expired.",
-                    "code": "gallery_expired",
-                    "is_expired": True,
-                    "title": gallery.title,
-                    "client_name": gallery.client_name,
-                    "expires_at": gallery.expires_at.isoformat() if gallery.expires_at else None,
-                },
-                status=status.HTTP_410_GONE
-            )
+        query = Q(id=slug_or_id) if is_uuid else Q(slug=slug_or_id)
+        gallery = Gallery.objects.select_related('photographer', 'photographer__user').filter(query).first()
+
+        # 2. Deleted or Non-existent Gallery
+        if not gallery:
+            return Response({
+                'code': 'gallery_not_found',
+                'detail': 'This collection does not exist or has been permanently removed.'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # 3. Block Archived Gallery Access
+        if gallery.status == 'archived':
+            return Response({
+                'code': 'gallery_archived',
+                'status': 'archived',
+                'title': gallery.title,
+                'client_name': gallery.client_name,
+                'detail': 'This collection has been archived by the studio and is currently unavailable.'
+            }, status=status.HTTP_410_GONE)
+
+        # 4. Block Expired Gallery Access
+        if gallery.is_expired():
+            return Response({
+                'code': 'gallery_expired',
+                'status': 'expired',
+                'title': gallery.title,
+                'is_expired': True,
+                'detail': 'The access period for this private collection has expired.'
+            }, status=status.HTTP_410_GONE)
 
         # Track views and trigger studio notification
         Gallery.objects.filter(id=gallery.id).update(views_count=F('views_count') + 1)
@@ -3030,6 +3218,7 @@ class PublicGallerySlugOrIdView(APIView):
             gallery.check_access_password(provided_password)
         ))
 
+        # 5. Return Public Gallery Serializer (media items, layout configuration, etc.)
         serializer = PublicGallerySerializer(
             gallery,
             context={'request': request, 'access_granted': access_granted}
@@ -3051,6 +3240,16 @@ class PublicGalleryDownloadZipView(APIView):
 
     def get(self, request, slug_or_id):
         gallery = get_public_gallery(slug_or_id)
+
+        # 0. Block Archived Gallery Access
+        if gallery.status == 'archived':
+            return Response({
+                'code': 'gallery_archived',
+                'status': 'archived',
+                'title': gallery.title,
+                'client_name': gallery.client_name,
+                'detail': 'This collection has been archived by the studio and is currently unavailable.'
+            }, status=status.HTTP_410_GONE)
 
         # 1. Enforce Expiration:
         if gallery.is_expired:
@@ -3129,6 +3328,16 @@ class PublicGalleryVerifyPinView(APIView):
     def post(self, request, slug_or_id):
         gallery = get_public_gallery(slug_or_id)
 
+        # 0. Block Archived Gallery Access
+        if gallery.status == 'archived':
+            return Response({
+                'code': 'gallery_archived',
+                'status': 'archived',
+                'title': gallery.title,
+                'client_name': gallery.client_name,
+                'detail': 'This collection has been archived by the studio and is currently unavailable.'
+            }, status=status.HTTP_410_GONE)
+
         # 1. Enforce Expiration:
         if gallery.is_expired:
             return Response(
@@ -3178,6 +3387,17 @@ class PublicGalleryTrackView(APIView):
 
     def post(self, request, slug_or_id):
         gallery = get_public_gallery(slug_or_id)
+
+        # 0. Block Archived Gallery Access
+        if gallery.status == 'archived':
+            return Response({
+                'code': 'gallery_archived',
+                'status': 'archived',
+                'title': gallery.title,
+                'client_name': gallery.client_name,
+                'detail': 'This collection has been archived by the studio and is currently unavailable.'
+            }, status=status.HTTP_410_GONE)
+
         if gallery.is_expired:
             return Response(
                 {
