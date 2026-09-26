@@ -128,7 +128,46 @@ class EventPhoto(models.Model):
 # 2. Enterprise Client Gallery & Media Delivery System
 # =============================================================================
 
+class ExpiredStatus:
+    def __init__(self, val: bool):
+        self._val = bool(val)
+    def __bool__(self):
+        return self._val
+    def __call__(self):
+        return self._val
+    def __repr__(self):
+        return repr(self._val)
+    def __eq__(self, other):
+        return self._val == bool(other)
+    def __hash__(self):
+        return hash(self._val)
+
+
+class GalleryQuerySet(models.QuerySet):
+    def active(self):
+        """Galleries that have either no expiration date or whose expiration is in the future."""
+        now = timezone.now()
+        return self.filter(models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=now))
+
+    def expired(self):
+        """Galleries whose expiration date has passed."""
+        now = timezone.now()
+        return self.filter(expires_at__isnull=False, expires_at__lte=now)
+
+
+class GalleryManager(models.Manager):
+    def get_queryset(self):
+        return GalleryQuerySet(self.model, using=self._db)
+
+    def active(self):
+        return self.get_queryset().active()
+
+    def expired(self):
+        return self.get_queryset().expired()
+
+
 class Gallery(models.Model):
+    objects = GalleryManager()
     STATUS_CHOICES = [
         ('active', 'Active'),
         ('delivered', 'Delivered'),
@@ -144,10 +183,14 @@ class Gallery(models.Model):
     ]
 
     TEMPLATE_CHOICES = [
-        ('editorial', 'Editorial'),
-        ('masonry', 'Masonry'),
-        ('cinematic', 'Cinematic'),
-        ('minimal', 'Minimal'),
+        ('editorial', 'Editorial High-Fashion'),
+        ('masonry', 'Dynamic Masonry Mosaic'),
+        ('slideshow', 'Full-bleed Cinematic Slideshow'),
+        ('filmstrip', 'Horizontal Filmstrip Flow'),
+        ('minimal', 'Fine Art Minimal White'),
+        ('columns', 'Multi-Column Grid'),
+        ('grid', 'Classic Balanced Grid'),
+        ('cinematic', 'Widescreen Cinematic'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -160,9 +203,18 @@ class Gallery(models.Model):
     slug = models.SlugField(max_length=255, unique=True, null=True, blank=True, db_index=True)
     client_name = models.CharField(max_length=255, blank=True, default='')
     client_email = models.EmailField(blank=True, null=True)
+    client_phone = models.CharField(max_length=40, blank=True, default='')
     event_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True)
     template_id = models.CharField(max_length=50, choices=TEMPLATE_CHOICES, default='editorial')
+    template_banners = models.JSONField(
+        default=dict, blank=True,
+        help_text="Dictionary mapping templateId to hero banner URL, e.g. {'editorial': 'https://...', 'cinematic': 'https://...'}"
+    )
+    masonry_banner_images = models.JSONField(
+        default=list, blank=True,
+        help_text="Array of up to 4 image URLs for the Masonry mosaic header"
+    )
     
     cover_media = models.ForeignKey(
         'Media',
@@ -172,9 +224,11 @@ class Gallery(models.Model):
         related_name='+'
     )
     cover_image_url = models.CharField(max_length=512, blank=True, default='')
+    cover_image = models.URLField(max_length=750, blank=True, default='')
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     visibility = models.CharField(max_length=30, choices=VISIBILITY_CHOICES, default='public')
+    sections = models.JSONField(default=list, blank=True)
 
     # Cryptographically secure sharing
     share_token = models.CharField(
@@ -185,7 +239,13 @@ class Gallery(models.Model):
     )
     is_password_protected = models.BooleanField(default=False)
     password = models.CharField(max_length=128, blank=True, null=True)
-    expires_at = models.DateTimeField(null=True, blank=True)
+    download_pin = models.CharField(max_length=20, blank=True, default='')
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="UTC timestamp when client viewing access expires. NULL means permanent access (never expires)."
+    )
 
     # Feature Toggles
     downloads_enabled = models.BooleanField(default=True)
@@ -249,10 +309,28 @@ class Gallery(models.Model):
             return False
         return check_password(raw_password, self.password)
 
+    @property
     def is_expired(self):
+        val = False
         if self.expires_at:
-            return timezone.now() > self.expires_at
-        return False
+            val = timezone.now() > self.expires_at
+        return ExpiredStatus(val)
+
+    @property
+    def sections_list(self):
+        """Returns ordered list of custom section names."""
+        secs = list(self.section_items.values_list('title', flat=True).order_by('order', 'id'))
+        if secs:
+            return secs
+        if self.sections and isinstance(self.sections, list) and len(self.sections) > 0:
+            return self.sections
+        distinct_secs = list(
+            self.media_items.filter(deleted_at__isnull=True)
+            .exclude(section_title='')
+            .values_list('section_title', flat=True)
+            .distinct()
+        )
+        return distinct_secs or ['HIGHLIGHTS']
 
     def revoke_share_token(self):
         """Generates a new share token, invalidating any previously distributed links."""
@@ -261,6 +339,30 @@ class Gallery(models.Model):
             self.share_token = generate_secure_share_token()
         self.save(update_fields=['share_token'])
         return self.share_token
+
+    @property
+    def media(self):
+        return self.media_items.filter(deleted_at__isnull=True).order_by('display_order', '-created_at')
+
+
+class GallerySection(models.Model):
+    """
+    Custom Sections / Event Parts inside a Gallery (e.g. CEREMONY, RECEPTION, PORTRAITS).
+    """
+    id = models.BigAutoField(primary_key=True)
+    gallery = models.ForeignKey(
+        Gallery, on_delete=models.CASCADE, related_name='section_items', db_index=True
+    )
+    title = models.CharField(max_length=120)
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order', 'id']
+        unique_together = ('gallery', 'title')
+
+    def __str__(self):
+        return f"{self.gallery.title} — {self.title}"
 
 
 class Media(models.Model):
@@ -294,9 +396,18 @@ class Media(models.Model):
         on_delete=models.CASCADE,
         related_name='media_items'
     )
+    section = models.ForeignKey(
+        GallerySection,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='media_items'
+    )
     media_type = models.CharField(max_length=20, choices=MEDIA_TYPE_CHOICES, default='photo')
     title = models.CharField(max_length=255, blank=True, default='')
     caption = models.TextField(blank=True, default='')
+    section_title = models.CharField(max_length=100, default='Highlights', db_index=True)
+    file = models.FileField(upload_to='galleries/%Y/%m/', null=True, blank=True)
     original_filename = models.CharField(max_length=255)
 
     # Object storage keys (decoupled from storage provider/CDN URLs)
@@ -320,11 +431,13 @@ class Media(models.Model):
     # Layout sequencing & flags
     display_order = models.PositiveIntegerField(default=0, db_index=True)
     is_cover = models.BooleanField(default=False)
-    is_favorite = models.BooleanField(default=False)
+    is_favorite = models.BooleanField(default=False, db_index=True)
 
     processing_status = models.CharField(max_length=20, choices=PROCESSING_STATUS_CHOICES, default='ready')
     upload_status = models.CharField(max_length=20, choices=UPLOAD_STATUS_CHOICES, default='completed')
     downloads_count = models.PositiveIntegerField(default=0)
+    views_count = models.PositiveIntegerField(default=0)
+    favorites_count = models.PositiveIntegerField(default=0)
 
     # Soft deletion
     deleted_at = models.DateTimeField(null=True, blank=True)
@@ -333,9 +446,15 @@ class Media(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['display_order', '-created_at']
+        ordering = ['display_order', '-created_at', 'id']
         indexes = [
+            # Composite cursor pagination indexes for O(1) keyset seeking
+            models.Index(fields=['gallery', 'display_order', '-created_at', 'id']),
+            models.Index(fields=['gallery', 'section_title', 'display_order', '-created_at', 'id']),
+            models.Index(fields=['gallery', 'is_favorite', 'display_order', '-created_at', 'id']),
+
             models.Index(fields=['gallery', 'display_order']),
+            models.Index(fields=['gallery', 'section_title']),
             models.Index(fields=['gallery', 'created_at']),
             models.Index(fields=['photographer', 'file_size']),
             models.Index(fields=['processing_status']),
@@ -348,6 +467,50 @@ class Media(models.Model):
     @property
     def is_deleted(self):
         return self.deleted_at is not None
+
+    @property
+    def sort_order(self):
+        return self.display_order
+
+    @sort_order.setter
+    def sort_order(self, val):
+        self.display_order = val
+
+
+class GalleryAnalyticsEvent(models.Model):
+    """
+    Real-time telemetry event stream (views, downloads, favorites, shares).
+    """
+    EVENT_TYPES = (
+        ('view', 'Gallery View'),
+        ('download', 'Photo or Zip Download'),
+        ('favorite', 'Photo Favorited'),
+        ('share', 'Gallery Shared'),
+    )
+
+    id = models.BigAutoField(primary_key=True)
+    gallery = models.ForeignKey(
+        Gallery, on_delete=models.CASCADE, related_name='analytics_events', db_index=True
+    )
+    media = models.ForeignKey(
+        Media, on_delete=models.SET_NULL, null=True, blank=True, related_name='analytics_events'
+    )
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPES, db_index=True)
+    device = models.CharField(max_length=20, default='desktop')  # desktop, mobile, tablet
+    traffic_source = models.CharField(max_length=30, default='direct_link')  # direct_link, social, email, qr_code
+    ip_hash = models.CharField(max_length=64, blank=True, db_index=True)
+    user_agent = models.TextField(blank=True)
+    details = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['gallery', 'event_type', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.gallery.title} - {self.event_type} ({self.created_at})"
 
 
 class GalleryClientAccess(models.Model):
@@ -557,3 +720,8 @@ class StorageAuditLog(models.Model):
             models.Index(fields=['photographer', 'action']),
             models.Index(fields=['timestamp']),
         ]
+
+
+# Backward & REST compatibility alias
+MediaItem = Media
+

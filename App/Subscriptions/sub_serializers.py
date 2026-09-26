@@ -33,14 +33,27 @@ class PlanSerializer(serializers.ModelSerializer):
             'tag_type',
             'cta_text',
             'features',
-            'cta_text',
+            'max_galleries',
+            'gallery_expiry_days',
+            'face_search_enabled',
+            'allowed_templates',
+            'allowed_portfolio_templates',
+            'max_events',
+            'max_portfolio_posts',
+            'can_upgrade_storage',
+            'max_upgrade_image_gb',
+            'max_inquiries',
+            'has_full_inquiry_access',
+            'inquiry_access',
             'is_active',
             'sort_order',
         ]
 
     def get_inquiry_access(self, obj):
-        if obj.max_inquiries > 0 and not obj.has_full_inquiry_access:
-            return f"Random {obj.max_inquiries} Inquiries"
+        max_inq = getattr(obj, 'max_inquiries', 0)
+        has_full = getattr(obj, 'has_full_inquiry_access', False)
+        if max_inq > 0 and not has_full:
+            return f"Random {max_inq} Inquiries"
         return "All Inquiries"
 
     def get_image_storage(self, obj):
@@ -49,17 +62,64 @@ class PlanSerializer(serializers.ModelSerializer):
     def get_video_storage(self, obj):
         return f"{obj.video_storage_gb} GB"
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        templates = data.get('allowed_templates')
+        if not templates:
+            data['allowed_templates'] = ["editorial", "masonry", "cinematic", "minimal"] if instance.tier == 'premium' else ["editorial", "masonry"]
+        elif isinstance(templates, str):
+            import json
+            try:
+                data['allowed_templates'] = json.loads(templates)
+            except Exception:
+                data['allowed_templates'] = [templates]
+        return data
+
+
+StudioPlanSerializer = PlanSerializer
+
 
 class PlanSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Plan
-        fields = ['id', 'name', 'tier', 'billing_cycle', 'duration_months', 'total_price', 'currency']
+        fields = [
+            'id',
+            'name',
+            'tier',
+            'billing_cycle',
+            'max_galleries',
+            'allowed_templates',
+            'face_search_enabled',
+            'gallery_expiry_days',
+            'max_events',
+            'max_portfolio_posts',
+            'has_full_inquiry_access',
+            'duration_months',
+            'total_price',
+            'currency',
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        templates = data.get('allowed_templates')
+        if not templates:
+            data['allowed_templates'] = ["editorial", "masonry", "cinematic", "minimal"] if instance.tier == 'premium' else ["editorial", "masonry"]
+        elif isinstance(templates, str):
+            import json
+            try:
+                data['allowed_templates'] = json.loads(templates)
+            except Exception:
+                data['allowed_templates'] = [templates]
+        return data
 
 
 class CurrentSubscriptionSerializer(serializers.ModelSerializer):
     plan = PlanSummarySerializer(read_only=True)
+    start_date = serializers.DateTimeField(source='started_at', read_only=True)
+    expiry_date = serializers.DateTimeField(source='expires_at', read_only=True)
     days_remaining = serializers.IntegerField(read_only=True)
     storage = serializers.SerializerMethodField()
+    usage = serializers.SerializerMethodField()
 
     class Meta:
         model = PhotographerSubscription
@@ -71,14 +131,15 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
             'expiry_date',
             'days_remaining',
             'storage',
+            'usage',
             'auto_renew',
             'payment_gateway_ref',
         ]
 
     def get_storage(self, obj):
         photographer = obj.photographer
-        limit_bytes = obj.effective_storage_limit_bytes if hasattr(obj, 'effective_storage_limit_bytes') else photographer.get_storage_limit()
-        used_bytes = photographer.storage_used_bytes + photographer.storage_reserved_bytes
+        limit_bytes = obj.effective_storage_limit_bytes if hasattr(obj, 'effective_storage_limit_bytes') else (photographer.get_storage_limit() if photographer else 225485783040)
+        used_bytes = (photographer.storage_used_bytes + photographer.storage_reserved_bytes) if photographer else 0
         used_gb = round(used_bytes / (1024 ** 3), 1)
         limit_gb = round(limit_bytes / (1024 ** 3), 1)
         used_pct = round((used_bytes / limit_bytes) * 100, 1) if limit_bytes > 0 else 0.0
@@ -89,6 +150,64 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
             "used_gb": used_gb,
             "limit_gb": limit_gb,
             "used_percentage": min(100.0, used_pct),
+        }
+
+    def get_usage(self, obj):
+        photographer = obj.photographer
+        plan = obj.plan
+
+        # Galleries usage
+        galleries_used = 0
+        if photographer and hasattr(photographer, 'galleries'):
+            try:
+                galleries_used = photographer.galleries.exclude(status='archived').count()
+            except Exception:
+                galleries_used = 0
+        galleries_limit = getattr(plan, 'max_galleries', 0) if plan else 0
+        galleries_unlimited = bool(galleries_limit == 0)
+        galleries_remaining = None if galleries_unlimited else max(0, galleries_limit - galleries_used)
+
+        # Events usage
+        events_used = 0
+        if photographer and hasattr(photographer, 'shared_events'):
+            try:
+                events_used = photographer.shared_events.count()
+            except Exception:
+                events_used = 0
+        events_limit = getattr(plan, 'max_events', 0) if plan else 0
+        events_unlimited = bool(events_limit == 0)
+        events_remaining = None if events_unlimited else max(0, events_limit - events_used)
+
+        # Portfolio Posts usage
+        posts_used = 0
+        if photographer and hasattr(photographer, 'posts'):
+            try:
+                posts_used = photographer.posts.count()
+            except Exception:
+                posts_used = 0
+        posts_limit = getattr(plan, 'max_portfolio_posts', 0) if plan else 0
+        posts_unlimited = bool(posts_limit == 0)
+        posts_remaining = None if posts_unlimited else max(0, posts_limit - posts_used)
+
+        return {
+            "galleries": {
+                "used": galleries_used,
+                "limit": galleries_limit,
+                "remaining": galleries_remaining,
+                "is_unlimited": galleries_unlimited,
+            },
+            "events": {
+                "used": events_used,
+                "limit": events_limit,
+                "remaining": events_remaining,
+                "is_unlimited": events_unlimited,
+            },
+            "portfolio_posts": {
+                "used": posts_used,
+                "limit": posts_limit,
+                "remaining": posts_remaining,
+                "is_unlimited": posts_unlimited,
+            },
         }
 
 
@@ -149,7 +268,7 @@ class SubscriptionPlansSerializer(serializers.ModelSerializer):
 
 
 class PhotographerSubscriptionSerializer(serializers.ModelSerializer):
-    plan = SubscriptionPlansSerializer(read_only=True)
+    plan = serializers.SerializerMethodField()
     storage_used_bytes = serializers.IntegerField(source='photographer.storage_used_bytes', read_only=True)
     storage_reserved_bytes = serializers.IntegerField(source='photographer.storage_reserved_bytes', read_only=True)
     storage_limit_bytes = serializers.SerializerMethodField()
@@ -170,12 +289,22 @@ class PhotographerSubscriptionSerializer(serializers.ModelSerializer):
             'storage_percentage',
         ]
 
+    def get_plan(self, obj):
+        if obj.plan:
+            return PlanSummarySerializer(obj.plan).data
+        if obj.legacy_plan:
+            return SubscriptionPlansSerializer(obj.legacy_plan).data
+        return None
+
     def get_storage_limit_bytes(self, obj):
+        if hasattr(obj, 'effective_storage_limit_bytes'):
+            return obj.effective_storage_limit_bytes
         if obj.plan:
             return obj.plan.storage_limit_bytes
         if obj.legacy_plan:
             return obj.legacy_plan.storage_limit_bytes
-        return 10737418240
+        from django.conf import settings
+        return getattr(settings, 'TEST_USER_STORAGE_LIMIT_BYTES', 21474836480)
 
     def get_storage_percentage(self, obj):
         limit = self.get_storage_limit_bytes(obj)

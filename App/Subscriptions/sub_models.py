@@ -57,6 +57,17 @@ class Plan(models.Model):
     tag_type = models.CharField(max_length=20, choices=TAG_TYPE_CHOICES, default='default')
     cta_text = models.CharField(max_length=100, default='Choose Plan')
     features = models.JSONField(default=list)
+    allowed_templates = models.JSONField(default=default_allowed_templates, help_text="List of allowed gallery layouts for this tier")
+    allowed_portfolio_templates = models.JSONField(default=default_allowed_templates, help_text="List of allowed portfolio showcase layouts")
+    max_galleries = models.PositiveIntegerField(default=0, help_text="Max active client galleries (0 for unlimited)")
+    gallery_expiry_days = models.PositiveIntegerField(default=0, help_text="Gallery link/access validity in days (0 for unlimited)")
+    face_search_enabled = models.BooleanField(default=True, help_text="Whether AI face search/discovery is enabled")
+    max_events = models.PositiveIntegerField(default=0, help_text="Max shared events allowed in event section (0 for unlimited)")
+    max_portfolio_posts = models.PositiveIntegerField(default=0, help_text="Max showcase portfolio posts (0 for unlimited)")
+    can_upgrade_storage = models.BooleanField(default=False, help_text="Whether this tier can purchase additional storage upgrades")
+    max_upgrade_image_gb = models.PositiveIntegerField(default=0, help_text="Maximum expandable image storage in GB (e.g. 1000 GB)")
+    has_full_inquiry_access = models.BooleanField(default=True, help_text="Whether photographer can access all inquiries or only a sampled limit")
+    max_inquiries = models.PositiveIntegerField(default=0, help_text="Max client inquiries accessible (0 for all/unlimited)")
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -240,22 +251,19 @@ class PhotographerSubscription(models.Model):
         from django.conf import settings
         test_storage_limit = getattr(settings, 'TEST_USER_STORAGE_LIMIT_BYTES', None)
 
-        # Superusers are exempt from the test storage limit
-        is_super = False
-        try:
-            if hasattr(self, 'photographer') and self.photographer and hasattr(self.photographer, 'user') and self.photographer.user:
-                if self.photographer.user.is_superuser:
-                    is_super = True
-        except Exception:
-            pass
+        if self.plan and self.plan.storage_limit_bytes:
+            base_bytes = self.plan.storage_limit_bytes
+            if getattr(self.plan, 'can_upgrade_storage', False) and self.extra_storage_gb > 0:
+                base_bytes += (self.extra_storage_gb * 1024 * 1024 * 1024)
+            return base_bytes
 
-        if not is_super and test_storage_limit:
+        if self.legacy_plan and self.legacy_plan.storage_limit_bytes:
+            return self.legacy_plan.storage_limit_bytes
+
+        if test_storage_limit:
             return test_storage_limit
 
-        base_bytes = self.plan.storage_limit_bytes if self.plan else 225485783040
-        if self.plan and self.plan.can_upgrade_storage and self.extra_storage_gb > 0:
-            base_bytes += (self.extra_storage_gb * 1024 * 1024 * 1024)
-        return base_bytes
+        return 21474836480  # Default 20 GB (20 * 1024^3)
 
 
 

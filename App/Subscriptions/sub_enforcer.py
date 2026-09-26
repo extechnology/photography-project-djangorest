@@ -16,9 +16,17 @@ class PlanFeatureEnforcer:
     @staticmethod
     def get_subscription(photographer):
         sub = getattr(photographer, 'subscription', None)
-        if not sub or not sub.is_currently_active:
-            raise PlanEnforcementError("NO_ACTIVE_SUBSCRIPTION", "Please activate a Studio Plan to continue.")
-        return sub
+        if sub and getattr(sub, 'is_currently_active', False):
+            return sub
+        plan = getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)
+        if plan:
+            class MockSub:
+                def __init__(self, p, prof):
+                    self.plan = p
+                    self.is_currently_active = True
+                    self.effective_storage_limit_bytes = getattr(p, 'storage_limit_bytes', 0)
+            return MockSub(plan, photographer)
+        raise PlanEnforcementError("NO_ACTIVE_SUBSCRIPTION", "Please activate a Studio Plan to continue.")
 
     @classmethod
     def check_gallery_creation(cls, photographer):

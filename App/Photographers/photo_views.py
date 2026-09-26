@@ -1,10 +1,11 @@
+import uuid
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.shortcuts import get_object_or_404, render
-from django.db.models import Q
+from django.db.models import Q, Count
 
 from .photo_models import (
     PhotoCategory,
@@ -200,7 +201,7 @@ class PhotographerProfileListView(APIView):
                 Q(address__icontains=search_query)
             )
 
-        serializer = PhotographerProfileSerializer(profiles, many=True)
+        serializer = PhotographerProfileSerializer(profiles, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -225,13 +226,13 @@ class PhotographerProfileCreateView(APIView):
         if 'user' not in data:
             data['user'] = user.id
 
-        serializer = PhotographerProfileSerializer(data=data)
+        serializer = PhotographerProfileSerializer(data=data, context={'request': request})
         if serializer.is_valid():
             profile = serializer.save()
             return Response(
                 {
                     "message": "Photographer profile created successfully",
-                    "data": PhotographerProfileSerializer(profile).data
+                    "data": PhotographerProfileSerializer(profile, context={'request': request}).data
                 },
                 status=status.HTTP_201_CREATED
             )
@@ -293,13 +294,13 @@ class MyPhotographerProfileGetView(APIView):
                         status=status.HTTP_403_FORBIDDEN
                     )
 
-        serializer = PhotographerProfileSerializer(profile, data=request.data)
+        serializer = PhotographerProfileSerializer(profile, data=request.data, context={'request': request})
         if serializer.is_valid():
             updated_profile = serializer.save()
             return Response(
                 {
                     "message": "Profile updated successfully",
-                    "data": PhotographerProfileSerializer(updated_profile).data
+                    "data": PhotographerProfileSerializer(updated_profile, context={'request': request}).data
                 },
                 status=status.HTTP_200_OK
             )
@@ -329,13 +330,13 @@ class MyPhotographerProfileGetView(APIView):
                         status=status.HTTP_403_FORBIDDEN
                     )
 
-        serializer = PhotographerProfileSerializer(profile, data=request.data, partial=True)
+        serializer = PhotographerProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             updated_profile = serializer.save()
             return Response(
                 {
                     "message": "Profile updated successfully",
-                    "data": PhotographerProfileSerializer(updated_profile).data
+                    "data": PhotographerProfileSerializer(updated_profile, context={'request': request}).data
                 },
                 status=status.HTTP_200_OK
             )
@@ -405,7 +406,7 @@ class MyPhotographerAvatarUploadView(APIView):
         return Response({
             "message": "Avatar uploaded successfully",
             "avatar_url": profile.get_avatar_url(),
-            "data": PhotographerProfileSerializer(profile).data
+            "data": PhotographerProfileSerializer(profile, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
     def delete(self, request):
@@ -444,7 +445,7 @@ class MyPhotographerAvatarUploadView(APIView):
         return Response({
             "message": "Profile photo removed successfully",
             "avatar_url": "",
-            "data": PhotographerProfileSerializer(profile).data
+            "data": PhotographerProfileSerializer(profile, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
 
@@ -474,7 +475,7 @@ class MyPhotographerWatermarkView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        serializer = WatermarkConfigSerializer(profile)
+        serializer = WatermarkConfigSerializer(profile, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def patch(self, request):
@@ -493,12 +494,12 @@ class MyPhotographerWatermarkView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        serializer = WatermarkConfigSerializer(profile, data=request.data, partial=True)
+        serializer = WatermarkConfigSerializer(profile, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             profile = serializer.save()
             return Response({
                 "message": "Watermark configuration updated successfully",
-                "data": WatermarkConfigSerializer(profile).data
+                "data": WatermarkConfigSerializer(profile, context={'request': request}).data
             }, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -533,7 +534,7 @@ class OnboardingCompleteView(APIView):
             "location": profile.location or "",
             "studio_name": profile.studio_name,
             "avatar_url": profile.get_avatar_url(),
-            "profile": PhotographerProfileSerializer(profile).data
+            "profile": PhotographerProfileSerializer(profile, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -615,7 +616,7 @@ class OnboardingCompleteView(APIView):
             "message": "Studio setup and onboarding completed successfully.",
             "is_onboarded": profile.is_onboarded,
             "onboarding_step": profile.onboarding_step,
-            "profile": PhotographerProfileSerializer(profile).data,
+            "profile": PhotographerProfileSerializer(profile, context={'request': request}).data,
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -711,7 +712,7 @@ class PhotographerPostListView(APIView):
                 Q(photo_category__name__icontains=search_query)
             )
 
-        serializer = PhotographerPostSerializer(posts, many=True)
+        serializer = PhotographerPostSerializer(posts, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -766,7 +767,7 @@ class PhotographerPostCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-        serializer = PhotographerPostSerializer(data=data)
+        serializer = PhotographerPostSerializer(data=data, context={'request': request})
         if serializer.is_valid():
             post = serializer.save()
 
@@ -779,7 +780,7 @@ class PhotographerPostCreateView(APIView):
             return Response(
                 {
                     "message": "Post created successfully",
-                    "data": PhotographerPostSerializer(refreshed_post).data
+                    "data": PhotographerPostSerializer(refreshed_post, context={'request': request}).data
                 },
                 status=status.HTTP_201_CREATED
             )
@@ -800,7 +801,7 @@ class PhotographerPostDetailView(APIView):
             ).prefetch_related('images', 'feedbacks', 'feedbacks__user'),
             pk=pk
         )
-        serializer = PhotographerPostSerializer(post)
+        serializer = PhotographerPostSerializer(post, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -834,7 +835,7 @@ class PhotographerPostUpdateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-        serializer = PhotographerPostSerializer(post, data=request.data)
+        serializer = PhotographerPostSerializer(post, data=request.data, context={'request': request})
         if serializer.is_valid():
             updated_post = serializer.save()
 
@@ -847,7 +848,7 @@ class PhotographerPostUpdateView(APIView):
             return Response(
                 {
                     "message": "Post updated successfully",
-                    "data": PhotographerPostSerializer(refreshed_post).data
+                    "data": PhotographerPostSerializer(refreshed_post, context={'request': request}).data
                 },
                 status=status.HTTP_200_OK
             )
@@ -887,7 +888,7 @@ class PhotographerPostPartialUpdateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-        serializer = PhotographerPostSerializer(post, data=request.data, partial=True)
+        serializer = PhotographerPostSerializer(post, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             updated_post = serializer.save()
 
@@ -900,7 +901,7 @@ class PhotographerPostPartialUpdateView(APIView):
             return Response(
                 {
                     "message": "Post updated successfully",
-                    "data": PhotographerPostSerializer(refreshed_post).data
+                    "data": PhotographerPostSerializer(refreshed_post, context={'request': request}).data
                 },
                 status=status.HTTP_200_OK
             )
@@ -954,7 +955,7 @@ class MyPhotographerPostsListView(APIView):
             photographer=profile
         ).select_related('photo_category').prefetch_related('images', 'feedbacks')
 
-        serializer = PhotographerPostSerializer(posts, many=True)
+        serializer = PhotographerPostSerializer(posts, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -968,7 +969,7 @@ class PostImageListView(APIView):
     def get(self, request, post_id):
         post = get_object_or_404(PhotographerPost, pk=post_id)
         images = post.images.all()
-        serializer = PostImageSerializer(images, many=True)
+        serializer = PostImageSerializer(images, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -1006,7 +1007,7 @@ class PostImageUploadView(APIView):
             for file in uploaded_files:
                 img_instance = PostImage.objects.create(post=post, image=file)
                 created_images.append(img_instance)
-            serializer = PostImageSerializer(created_images, many=True)
+            serializer = PostImageSerializer(created_images, many=True, context={'request': request})
             return Response(
                 {
                     "message": "Images uploaded successfully",
@@ -1018,13 +1019,13 @@ class PostImageUploadView(APIView):
 
         data = request.data.copy()
         data['post'] = post.id
-        serializer = PostImageSerializer(data=data)
+        serializer = PostImageSerializer(data=data, context={'request': request})
         if serializer.is_valid():
             img_instance = serializer.save()
             return Response(
                 {
                     "message": "Image uploaded successfully",
-                    "data": PostImageSerializer(img_instance).data
+                    "data": PostImageSerializer(img_instance, context={'request': request}).data
                 },
                 status=status.HTTP_201_CREATED
             )
@@ -1040,7 +1041,7 @@ class PostImageDetailView(APIView):
 
     def get(self, request, pk):
         image = get_object_or_404(PostImage.objects.select_related('post', 'post__photographer'), pk=pk)
-        serializer = PostImageSerializer(image)
+        serializer = PostImageSerializer(image, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -1394,8 +1395,75 @@ class InquiryListCreateView(APIView):
                 "access_tier": "random_sample" if is_restricted else "full_access",
                 "inquiry_limit": limit,
                 "total_available": total_available,
+                "total_inquiries": total_available,
+                "accessible_inquiries": len(serializer.data),
+                "has_full_inquiry_access": not is_restricted,
+                "upgrade_prompt": (
+                    f"You are viewing a random sample of {limit} inquiries. Upgrade to Standard Annual or Studio Premium Elite for full access to all client inquiries."
+                    if is_restricted else None
+                ),
                 "count": len(serializer.data),
                 "inquiries": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class InquiryAnalyticsView(APIView):
+    """
+    Real-time analytics for photographer inquiries and lead conversion metrics.
+    GET /api/inquiries/analytics/
+    """
+    def get(self, request):
+        user = get_current_user(request)
+        if not user:
+            return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        profile = get_photographer_profile(user)
+        if not profile and not (user.is_staff or user.is_superuser):
+            return Response({"message": "Photographer profile not found."}, status=status.HTTP_403_FORBIDDEN)
+
+        if user.is_staff or user.is_superuser:
+            qs = Inquiry.objects.all()
+        else:
+            qs = Inquiry.objects.filter(Q(photographer=profile) | Q(photographer__isnull=True))
+
+        total_inquiries = qs.count()
+        new_count = qs.filter(status='new').count()
+        contacted_count = qs.filter(status='contacted').count()
+        booked_count = qs.filter(status='booked').count()
+        archived_count = qs.filter(status='archived').count()
+
+        conversion_rate = round((booked_count / total_inquiries * 100), 1) if total_inquiries > 0 else 0.0
+
+        by_event_type = list(
+            qs.exclude(event_type='').values('event_type').annotate(count=Count('id')).order_by('-count')[:10]
+        )
+
+        recent_inquiries = InquirySerializer(qs.order_by('-created_at')[:5], many=True).data
+
+        return Response(
+            {
+                "total_inquiries": total_inquiries,
+                "total": total_inquiries,
+                "new": new_count,
+                "new_inquiries": new_count,
+                "contacted": contacted_count,
+                "contacted_inquiries": contacted_count,
+                "booked": booked_count,
+                "booked_inquiries": booked_count,
+                "archived": archived_count,
+                "archived_inquiries": archived_count,
+                "conversion_rate": conversion_rate,
+                "conversion_rate_percentage": f"{conversion_rate}%",
+                "status_breakdown": {
+                    "new": new_count,
+                    "contacted": contacted_count,
+                    "booked": booked_count,
+                    "archived": archived_count,
+                },
+                "by_event_type": by_event_type,
+                "recent_inquiries": recent_inquiries,
             },
             status=status.HTTP_200_OK
         )
@@ -1405,12 +1473,21 @@ class InquiryDetailView(APIView):
     """
     Detail, status update, or deletion of an inquiry.
     """
+    def _get_inquiry(self, pk):
+        try:
+            uuid_obj = uuid.UUID(str(pk))
+            return Inquiry.objects.get(pk=uuid_obj)
+        except (Inquiry.DoesNotExist, ValueError, TypeError, Exception):
+            return None
+
     def get(self, request, pk):
         user = get_current_user(request)
         if not user:
             return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
-        inquiry = get_object_or_404(Inquiry, pk=pk)
+        inquiry = self._get_inquiry(pk)
+        if not inquiry:
+            return Response({"message": "Inquiry not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(InquirySerializer(inquiry).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk):
@@ -1418,7 +1495,10 @@ class InquiryDetailView(APIView):
         if not user:
             return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
-        inquiry = get_object_or_404(Inquiry, pk=pk)
+        inquiry = self._get_inquiry(pk)
+        if not inquiry:
+            return Response({"message": "Inquiry not found."}, status=status.HTTP_404_NOT_FOUND)
+
         serializer = InquirySerializer(inquiry, data=request.data, partial=True)
         if serializer.is_valid():
             updated = serializer.save()
@@ -1430,6 +1510,9 @@ class InquiryDetailView(APIView):
         if not user:
             return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
-        inquiry = get_object_or_404(Inquiry, pk=pk)
+        inquiry = self._get_inquiry(pk)
+        if not inquiry:
+            return Response({"message": "Inquiry not found."}, status=status.HTTP_404_NOT_FOUND)
+
         inquiry.delete()
-        return Response({"message": "Inquiry deleted successfully."}, status=status.HTTP_200_OK)
+        return Response({"message": "Inquiry deleted successfully.", "success": True}, status=status.HTTP_200_OK)

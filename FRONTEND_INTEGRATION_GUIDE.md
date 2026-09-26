@@ -11,6 +11,7 @@
 ## Table of Contents
 
 1. [Network Configuration & Axios Instance](#1-network-configuration--axios-instance)
+   - [1.4 Test Usage Limitations & High-Capacity Upload Specifications](#14-test-usage-limitations--high-capacity-upload-specifications)
 2. [Complete TypeScript Domain Models & Types](#2-complete-typescript-domain-models--types)
 3. [Complete 1:1 API Client Services](#3-complete-11-api-client-services)
    - [3.1 Authentication & Passwordless OTP (`AuthApi.ts`)](#31-authentication--passwordless-otp-authapits)
@@ -173,6 +174,15 @@ export const CommonApi = async <T = any>(
 };
 ```
 
+### 1.4 Test Usage Limitations & High-Capacity Upload Specifications
+
+| Dimension | Specification | Error Code / Behavior |
+| :--- | :--- | :--- |
+| **Max Non-Superuser Accounts** | **5 Users Max** (`MAX_TEST_USERS = 5`) | `HTTP 403 Forbidden` with `code: "USER_LIMIT_REACHED"` when attempting to register a 6th test account. Existing users can log in freely. Superusers (`is_superuser=True`) are completely exempt. |
+| **Storage Quota (Test Users)** | **20 GB per User** (`TEST_USER_STORAGE_LIMIT_GB = 20`, `21,474,836,480` bytes) | `HTTP 413 Payload Too Large` with `code: "STORAGE_LIMIT_EXCEEDED"` when total allocated storage exceeds 20 GB. Superusers retain full unconstrained studio plan quota. |
+| **High-Capacity Batch Uploads** | Up to **10,000 files** per batch | Form field names accepted: `'photos'`, `'images'`, or `'files'`. Supports multi-gigabyte uploads up to 10 GB per request. Memory-safe streaming for files > 10 MB. |
+| **Session Verification** | `GET /api/auth/check-login/` | Always returns `HTTP 200 OK` with `{ is_logged_in: false, is_authenticated: false, user: null }` when unauthenticated. No 401 refresh loops. |
+
 ---
 
 ## 2. Complete TypeScript Domain Models & Types
@@ -212,19 +222,27 @@ export interface StudioPlan {
   tag_type: 'default' | 'popular' | 'current';
   cta_text: string;
   features: string[];
-  max_galleries: number; // 0 = unlimited
-  gallery_expiry_days: number; // 0 = permanent
-  face_search_enabled: boolean;
-  max_events: number;
-  allowed_templates: GalleryTemplateId[];
-  allowed_portfolio_templates: string[];
-  max_portfolio_posts: number;
-  max_inquiries: number;
-  has_full_inquiry_access: boolean;
-  can_upgrade_storage: boolean;
-  max_upgrade_image_gb: number;
+  max_galleries: number; // 15 for Standard 3M, 50 for Standard 1Y, 0 for unlimited
+  gallery_expiry_days: number; // 90 for Standard 3M, 365 for Standard 1Y, 0 for permanent
+  face_search_enabled: boolean; // false for Standard 3M, true for Standard 1Y & Premium
+  allowed_templates: GalleryTemplateId[]; // ['editorial', 'masonry'] or all 4 for Premium
+  allowed_portfolio_templates?: GalleryTemplateId[];
+  max_events: number; // 5 for Standard 3M, 25 for Standard 1Y, 0 for unlimited
+  max_portfolio_posts: number; // 10 for Standard 3M, 30 for Standard 1Y, 0 for unlimited
+  can_upgrade_storage?: boolean;
+  max_upgrade_image_gb?: number;
+  max_inquiries?: number;
+  has_full_inquiry_access: boolean; // false for Standard 3M, true for Standard 1Y & Premium
+  inquiry_access: string; // e.g. "All Inquiries" or "Random 10 Inquiries"
   is_active: boolean;
   sort_order: number;
+}
+
+export interface UsageQuotaMetric {
+  used: number;
+  limit: number;
+  remaining: number | null; // null when is_unlimited: true
+  is_unlimited: boolean;
 }
 
 export interface CurrentSubscription {
@@ -235,9 +253,16 @@ export interface CurrentSubscription {
     name: string;
     tier: PlanTier;
     billing_cycle: BillingCycle;
-    duration_months: number;
-    total_price: string;
-    currency: string;
+    max_galleries: number;
+    allowed_templates: GalleryTemplateId[];
+    face_search_enabled: boolean;
+    gallery_expiry_days?: number;
+    max_events?: number;
+    max_portfolio_posts?: number;
+    has_full_inquiry_access?: boolean;
+    duration_months?: number;
+    total_price?: string | number;
+    currency?: string;
   };
   start_date: string;
   expiry_date: string;
@@ -248,6 +273,11 @@ export interface CurrentSubscription {
     used_gb: number;
     limit_gb: number;
     used_percentage: number;
+  };
+  usage: {
+    galleries: UsageQuotaMetric;
+    events: UsageQuotaMetric;
+    portfolio_posts: UsageQuotaMetric;
   };
   auto_renew: boolean;
   payment_gateway_ref: string;
@@ -408,19 +438,24 @@ export interface PortfolioInquiry {
 }
 
 // ---------------------------------------------------------------------------
-// Plan Enforcement Error Structure
+// Plan & Quota Enforcement Error Structure
 // ---------------------------------------------------------------------------
 export interface PlanEnforcementError {
-  error_code:
+  error_code?:
     | 'NO_ACTIVE_SUBSCRIPTION'
     | 'GALLERY_LIMIT_EXCEEDED'
     | 'TEMPLATE_TIER_LOCKED'
+    | 'TEMPLATE_NOT_ALLOWED'
     | 'FACE_SEARCH_LOCKED'
     | 'EVENT_LIMIT_EXCEEDED'
+    | 'EVENT_LIMIT_REACHED'
     | 'STORAGE_LIMIT_EXCEEDED'
-    | 'STORAGE_UPGRADE_LIMIT_EXCEEDED';
-  message: string;
-  upgrade_required: boolean;
+    | 'STORAGE_UPGRADE_LIMIT_EXCEEDED'
+    | 'USER_LIMIT_REACHED';
+  code?: string;
+  message?: string;
+  detail?: string;
+  upgrade_required?: boolean;
 }
 ```
 
@@ -434,6 +469,23 @@ Save to `src/service/auth/AuthApi.ts`:
 ```typescript
 import { CommonApi } from '@/lib/CommonApi';
 
+export interface CheckLoginResponse {
+  is_logged_in: boolean;
+  is_authenticated: boolean;
+  user_id?: number | null;
+  username?: string | null;
+  role?: 'admin' | 'staff' | 'user' | 'photographer' | null;
+  user?: {
+    id: number;
+    username: string;
+    email: string;
+    phone?: string | null;
+    role: string;
+    fullname?: string | null;
+  } | null;
+  message?: string;
+}
+
 export const SendLoginOtpApi = async (email: string) => {
   return CommonApi('POST', '/auth/passwordless/login/send-otp/', { email });
 };
@@ -442,6 +494,10 @@ export const VerifyLoginOtpApi = async (email: string, otp: string) => {
   return CommonApi('POST', '/auth/passwordless/login/verify-otp/', { email, otp });
 };
 
+/**
+ * Send OTP for New Account Registration
+ * Returns HTTP 403 Forbidden with code 'USER_LIMIT_REACHED' if max 5 test users already exist.
+ */
 export const SendRegisterOtpApi = async (email: string) => {
   return CommonApi('POST', '/auth/passwordless/reg/send-otp/', { email });
 };
@@ -456,8 +512,14 @@ export const VerifyRegisterOtpApi = async (payload: {
   return CommonApi('POST', '/auth/passwordless/reg/verify-otp/', payload);
 };
 
-export const CheckLoginStatusApi = async () => {
-  return CommonApi<{ is_logged_in: boolean; user?: any }>('GET', '/auth/check-login/');
+/**
+ * Check Current User Session State
+ * Always returns HTTP 200 OK.
+ * If logged in: { is_logged_in: true, is_authenticated: true, user_id: 1, role: 'photographer', user: {...} }
+ * If not logged in: { is_logged_in: false, is_authenticated: false, user: null }
+ */
+export const CheckLoginStatusApi = async (): Promise<CheckLoginResponse> => {
+  return CommonApi<CheckLoginResponse>('GET', '/auth/check-login/');
 };
 
 export const LogoutApi = async () => {
@@ -569,6 +631,62 @@ export const AddStorageAddonApi = async (additional_gb: number): Promise<{ statu
 };
 ```
 
+#### Real-Time Aggregated Usage Response Sample (`GET /api/plans/current/`)
+```json
+{
+  "id": "7b0933fa-c255-46eb-8a5d-16f3805820ee",
+  "status": "active",
+  "plan": {
+    "id": "plan-standard-1y",
+    "name": "Standard Annual",
+    "tier": "standard",
+    "billing_cycle": "annual",
+    "max_galleries": 50,
+    "allowed_templates": ["editorial", "masonry"],
+    "face_search_enabled": true,
+    "gallery_expiry_days": 365,
+    "max_events": 25,
+    "max_portfolio_posts": 30,
+    "has_full_inquiry_access": true,
+    "duration_months": 12,
+    "total_price": "9600.00",
+    "currency": "INR"
+  },
+  "start_date": "2026-09-01T00:00:00Z",
+  "expiry_date": "2027-09-01T00:00:00Z",
+  "days_remaining": 342,
+  "storage": {
+    "used_bytes": 0,
+    "limit_bytes": 225485783040,
+    "used_gb": 0.0,
+    "limit_gb": 210.0,
+    "used_percentage": 0.0
+  },
+  "usage": {
+    "galleries": {
+      "used": 0,
+      "limit": 50,
+      "remaining": 50,
+      "is_unlimited": false
+    },
+    "events": {
+      "used": 0,
+      "limit": 25,
+      "remaining": 25,
+      "is_unlimited": false
+    },
+    "portfolio_posts": {
+      "used": 0,
+      "limit": 30,
+      "remaining": 30,
+      "is_unlimited": false
+    }
+  },
+  "auto_renew": true,
+  "payment_gateway_ref": ""
+}
+```
+
 ---
 
 ### 3.4 Client Galleries & Cloud Drive (`GalleryApi.ts`)
@@ -580,8 +698,11 @@ import type { Gallery, MediaItem, GalleryTemplateId } from '@/types/atelier';
 
 export const GetGalleriesApi = async (params?: {
   search?: string;
-  status?: string;
-  date_filter?: string;
+  status?: 'active' | 'delivered';
+  date_filter?: 'this-year' | 'last-year' | 'last-30-days' | 'last-3-months' | 'last-6-months' | 'custom' | string;
+  date_from?: string;
+  date_to?: string;
+  sort?: 'date-desc' | 'date-asc' | 'name' | 'photos';
 }): Promise<Gallery[]> => {
   return CommonApi<Gallery[]>('GET', '/galleries/', params);
 };
@@ -608,6 +729,14 @@ export const GetGalleryDetailApi = async (idOrSlug: string): Promise<Gallery> =>
 
 export const UpdateGalleryApi = async (id: string, updates: Partial<Gallery>): Promise<Gallery> => {
   return CommonApi<Gallery>('PATCH', `/galleries/${id}/`, updates);
+};
+
+/** Toggle Gallery Status ('active' ⇄ 'delivered') */
+export const UpdateGalleryStatusApi = async (
+  galleryId: string,
+  status: 'active' | 'delivered'
+): Promise<Gallery> => {
+  return CommonApi<Gallery>('PATCH', `/galleries/${galleryId}/`, { status });
 };
 
 export const DeleteGalleryApi = async (id: string): Promise<{ success: boolean; message: string }> => {
@@ -641,7 +770,12 @@ export const UploadGalleryMediaApi = async (
   return res.media[0];
 };
 
-/** Batch Upload Multiple Photos */
+/** 
+ * High-Capacity Batch Upload (Supports up to 2,000+ photos per request)
+ * Supported multipart fields: 'photos', 'images', or 'files'.
+ * Max batch: up to 10,000 files / 10 GB payload.
+ * Returns HTTP 413 STORAGE_LIMIT_EXCEEDED if test account exceeds 20 GB.
+ */
 export const BulkUploadGalleryMediaApi = async (
   galleryId: string,
   files: File[],
@@ -650,7 +784,21 @@ export const BulkUploadGalleryMediaApi = async (
   const formData = new FormData();
   files.forEach((f) => formData.append('photos', f));
   if (sectionTitle) formData.append('section_title', sectionTitle);
-  return CommonApi('POST', `/galleries/${galleryId}/upload/`, formData);
+  return CommonApi('POST', `/galleries/${galleryId}/upload/`, formData, {
+    timeout: 300000, // 5 minutes for high-volume batches
+  });
+};
+
+/**
+ * Switch Gallery Editorial Template
+ * Validates template against photographer's active plan.
+ * Returns HTTP 403 Forbidden with code 'TEMPLATE_NOT_ALLOWED' if not permitted.
+ */
+export const SwitchGalleryTemplateApi = async (
+  galleryId: string,
+  templateId: GalleryTemplateId
+): Promise<{ status: string; template_id: GalleryTemplateId; message: string }> => {
+  return CommonApi('POST', `/galleries/${galleryId}/template/`, { template_id: templateId });
 };
 
 export const DeleteGalleryMediaApi = async (mediaId: string): Promise<{ success: boolean }> => {
@@ -679,6 +827,53 @@ export const SetMasonrySlotBannerApi = async (
     media_url: mediaUrl,
   });
 };
+```
+
+#### Gallery Server-Side Query Parameters (`GET /api/galleries/`)
+
+| Parameter | Type / Format | Options / Values | Description |
+| :--- | :--- | :--- | :--- |
+| `search` | `string` | Any text (e.g. `"Wedding"`, `"Sharma"`) | Case-insensitive search matching `title` OR `client_name`. |
+| `status` | `string` | `'active'`, `'delivered'` | Filters galleries by current status. |
+| `date_filter` | `string` | `'this-year'`, `'last-year'`, `'last-30-days'`, `'last-3-months'`, `'last-6-months'`, `'year-YYYY'`, `'custom'` | Preset or custom date filtering applied against `event_date`. |
+| `date_from` | `string` | `YYYY-MM-DD` (e.g. `"2026-01-01"`) | Lower bound for event date (used with `date_filter=custom` or directly). |
+| `date_to` | `string` | `YYYY-MM-DD` (e.g. `"2026-12-31"`) | Upper bound for event date (used with `date_filter=custom` or directly). |
+| `sort` | `string` | `'date-desc'` (default), `'date-asc'`, `'name'`, `'photos'` | Ordering key: `date-desc` (newest events), `date-asc` (oldest events), `name` (alphabetical A-Z by title), `photos` (highest photo count first). |
+
+#### Gallery Status Transition (`PATCH /api/galleries/{id}/`)
+To switch a gallery status (e.g. between active client proofing and final delivery):
+```http
+PATCH /api/galleries/2293a0e9-6fdd-4b5d-bf71-c23fc625823b/ HTTP/1.1
+Content-Type: application/json
+
+{
+  "status": "delivered"
+}
+```
+**Response (`HTTP 200 OK`):**
+```json
+{
+  "id": "2293a0e9-6fdd-4b5d-bf71-c23fc625823b",
+  "title": "Aria & Marcus Wedding",
+  "client_name": "Aria & Marcus",
+  "status": "delivered",
+  "photos_count": 240,
+  "views_count": 52,
+  "template_id": "editorial"
+}
+```
+
+#### Quota Enforcement on Gallery Creation (`POST /api/galleries/`)
+If the photographer has reached their active subscription plan's `max_galleries` limit (e.g. 15 for Standard Quarterly, 50 for Standard Annual):
+**Response (`HTTP 403 Forbidden`):**
+```json
+{
+  "upgrade_required": true,
+  "code": "GALLERY_LIMIT_EXCEEDED",
+  "error_code": "GALLERY_LIMIT_EXCEEDED",
+  "message": "Gallery quota reached for your Standard Quarterly (15/15). Upgrade to unlock more client galleries.",
+  "detail": "Your plan allows up to 15 active galleries. Please upgrade to unlock more."
+}
 ```
 
 ---
@@ -716,6 +911,11 @@ export const GetEventsApi = async (): Promise<LiveEvent[]> => {
   return CommonApi<LiveEvent[]>('GET', '/events/');
 };
 
+/**
+ * Create Live Shared Event
+ * Enforces active plan max_events limit.
+ * Returns HTTP 403 Forbidden with code 'EVENT_LIMIT_REACHED' if quota is exceeded.
+ */
 export const CreateEventApi = async (payload: {
   title: string;
   event_type: string;
@@ -806,6 +1006,20 @@ export const GetInquiriesApi = async (): Promise<{
   inquiries: PortfolioInquiry[];
 }> => {
   return CommonApi('GET', '/inquiries/');
+};
+
+export const GetInquiryAnalyticsApi = async (): Promise<{
+  total_inquiries: number;
+  new_inquiries: number;
+  contacted_inquiries: number;
+  booked_inquiries: number;
+  archived_inquiries: number;
+  conversion_rate: number;
+  status_breakdown: Record<string, number>;
+  by_event_type: Array<{ event_type: string; count: number }>;
+  recent_inquiries: PortfolioInquiry[];
+}> => {
+  return CommonApi('GET', '/inquiries/analytics/');
 };
 
 export const UpdateInquiryStatusApi = async (
@@ -927,7 +1141,17 @@ export const useUpdateInquiryStatus = () => {
 
 ## 5. Plan Enforcement, Quota Guards & Upgrade Modals
 
-When a photographer hits tier limits, the backend returns HTTP 403 with `upgrade_required: true`. Use this global interceptor / modal dispatcher:
+### 5.1 Quota & Limitation Error Code Reference
+
+| Backend Error Code | HTTP Status | Trigger Endpoint | Root Cause & Resolution |
+| :--- | :--- | :--- | :--- |
+| `USER_LIMIT_REACHED` | `403 Forbidden` | `POST /auth/passwordless/reg/send-otp/`, `/auth/register/` | Test environment account limit reached (**max 5 non-superusers**). Inform user or contact administrator. |
+| `STORAGE_LIMIT_EXCEEDED` | `413 Payload Too Large` | `POST /galleries/{id}/upload/` | Total storage used + reserved exceeds photographer limit (**20 GB** for test accounts). Prompt upgrade or storage cleanup. |
+| `EVENT_LIMIT_REACHED` | `403 Forbidden` | `POST /events/` | Active studio plan's `max_events` quota reached. Prompt studio plan upgrade. |
+| `TEMPLATE_NOT_ALLOWED` | `403 Forbidden` | `POST /galleries/{id}/template/` | Requested editorial template is not allowed under photographer's current plan. Prompt upgrade. |
+| `NO_ACTIVE_SUBSCRIPTION` | `403 Forbidden` | Gated features | Photographer does not have an active subscription. Redirect to `/plans/`. |
+
+When a photographer hits tier limits, the backend returns HTTP 403 or 413 with an error code and detail message. Use this global interceptor / modal dispatcher:
 
 ```typescript
 // src/components/billing/PlanUpgradeModal.tsx

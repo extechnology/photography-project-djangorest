@@ -53,6 +53,7 @@ from .photo_views import (
 
     # Inquiries
     InquiryListCreateView,
+    InquiryAnalyticsView,
     InquiryDetailView,
 )
 
@@ -130,6 +131,7 @@ urlpatterns = [
     # -------------------------------------------------------------------------
     # Inquiries & Leads
     # -------------------------------------------------------------------------
+    path('inquiries/analytics/', InquiryAnalyticsView.as_view(), name='inquiry-analytics'),
     path('inquiries/', InquiryListCreateView.as_view(), name='inquiry-list-create'),
-    path('inquiries/<uuid:pk>/', InquiryDetailView.as_view(), name='inquiry-detail'),
+    path('inquiries/<str:pk>/', InquiryDetailView.as_view(), name='inquiry-detail'),
 ]

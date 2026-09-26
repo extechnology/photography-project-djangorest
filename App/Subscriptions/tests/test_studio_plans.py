@@ -437,5 +437,105 @@ class StudioPlansAPITests(TestCase):
         self.assertEqual(resp.data["total_available"], 15)
         self.assertEqual(resp.data["count"], 15)
 
+        # 3. Direct route /api/inquiries/ matching REST specification
+        direct_resp = self.client.get("/api/inquiries/")
+        self.assertEqual(direct_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(direct_resp.data["total_inquiries"], 15)
+        self.assertEqual(direct_resp.data["accessible_inquiries"], 15)
+        self.assertTrue(direct_resp.data["has_full_inquiry_access"])
+        self.assertEqual(len(direct_resp.data["inquiries"]), 15)
+
+        # 4. Patch inquiry status
+        inquiry_id = direct_resp.data["inquiries"][0]["id"]
+        patch_resp = self.client.patch(f"/api/inquiries/{inquiry_id}/", {"status": "contacted"})
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_resp.data["status"], "contacted")
+
+        # 5. Delete inquiry
+        del_resp = self.client.delete(f"/api/inquiries/{inquiry_id}/")
+        self.assertEqual(del_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(del_resp.data.get("success"))
+
+        # 6. Direct route /api/inquiries/analytics/
+        analytics_resp = self.client.get("/api/inquiries/analytics/")
+        self.assertEqual(analytics_resp.status_code, status.HTTP_200_OK)
+        self.assertIn("total_inquiries", analytics_resp.data)
+        self.assertIn("status_breakdown", analytics_resp.data)
+        self.assertIn("conversion_rate", analytics_resp.data)
+        self.assertEqual(analytics_resp.data["total_inquiries"], 14)  # 15 minus 1 deleted
+
+    def test_current_subscription_aggregated_usage(self):
+        """Verify GET /api/plans/current/ returns aggregated usage metrics for galleries, events, and portfolio posts."""
+        from App.Storage.storage_models import Gallery, SharedEvent
+        from App.Photographers.photo_models import PhotographerPost, PhotoCategory
+
+        plan_1y = Plan.objects.get(id="plan-standard-1y")
+        sub, _ = PhotographerSubscription.objects.update_or_create(
+            photographer=self.profile,
+            defaults={
+                "plan": plan_1y,
+                "status": "active",
+                "started_at": timezone.now(),
+                "expires_at": timezone.now() + timedelta(days=365),
+                "auto_renew": True,
+            }
+        )
+
+        resp = self.client.get("/api/plans/current/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn("usage", resp.data)
+
+        # Plan fields
+        self.assertEqual(resp.data["plan"]["id"], "plan-standard-1y")
+        self.assertEqual(resp.data["plan"]["max_galleries"], 50)
+        self.assertEqual(resp.data["plan"]["allowed_templates"], ["editorial", "masonry"])
+        self.assertTrue(resp.data["plan"]["face_search_enabled"])
+
+        # Initial zero usage
+        usage = resp.data["usage"]
+        self.assertEqual(usage["galleries"]["used"], 0)
+        self.assertEqual(usage["galleries"]["limit"], 50)
+        self.assertEqual(usage["galleries"]["remaining"], 50)
+        self.assertFalse(usage["galleries"]["is_unlimited"])
+
+        self.assertEqual(usage["events"]["used"], 0)
+        self.assertEqual(usage["events"]["limit"], 25)
+        self.assertEqual(usage["events"]["remaining"], 25)
+        self.assertFalse(usage["events"]["is_unlimited"])
+
+        self.assertEqual(usage["portfolio_posts"]["used"], 0)
+        self.assertEqual(usage["portfolio_posts"]["limit"], 30)
+        self.assertEqual(usage["portfolio_posts"]["remaining"], 30)
+        self.assertFalse(usage["portfolio_posts"]["is_unlimited"])
+
+        # Create 1 gallery, 1 event, 1 post
+        Gallery.objects.create(photographer=self.profile, title="Wedding 1", template_id="editorial")
+        SharedEvent.objects.create(photographer=self.profile, title="Live Reception 1")
+        category = PhotoCategory.objects.create(name="Portraits Test")
+        PhotographerPost.objects.create(photographer=self.profile, photo_category=category, caption="Sample Post")
+
+        resp_after = self.client.get("/api/plans/current/")
+        usage_after = resp_after.data["usage"]
+        self.assertEqual(usage_after["galleries"]["used"], 1)
+        self.assertEqual(usage_after["galleries"]["remaining"], 49)
+        self.assertEqual(usage_after["events"]["used"], 1)
+        self.assertEqual(usage_after["events"]["remaining"], 24)
+        self.assertEqual(usage_after["portfolio_posts"]["used"], 1)
+        self.assertEqual(usage_after["portfolio_posts"]["remaining"], 29)
+
+        # Test Premium Elite (Unlimited)
+        premium_plan = Plan.objects.get(id="plan-premium-elite")
+        sub.plan = premium_plan
+        sub.save(update_fields=['plan'])
+
+        resp_prem = self.client.get("/api/plans/current/")
+        usage_prem = resp_prem.data["usage"]
+        self.assertTrue(usage_prem["galleries"]["is_unlimited"])
+        self.assertIsNone(usage_prem["galleries"]["remaining"])
+        self.assertTrue(usage_prem["events"]["is_unlimited"])
+        self.assertIsNone(usage_prem["events"]["remaining"])
+        self.assertTrue(usage_prem["portfolio_posts"]["is_unlimited"])
+        self.assertIsNone(usage_prem["portfolio_posts"]["remaining"])
+
 
 

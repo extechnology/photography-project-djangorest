@@ -128,7 +128,7 @@ class FaceService:
         return created_count
 
     @classmethod
-    def search_gallery_faces(cls, gallery: Gallery, selfie_bytes: bytes, threshold: float = None) -> dict:
+    def search_gallery_faces(cls, gallery: Gallery, selfie_bytes: bytes, threshold: float = None, request=None) -> dict:
         """
         Searches ONLY within the given gallery using a selfie image.
         Strict isolation: never searches outside the target gallery.
@@ -192,12 +192,20 @@ class FaceService:
             thumb_key = media.thumbnail_storage_key or media.storage_key
             prev_key = media.preview_storage_key or media.storage_key
 
+            t_url = storage.generate_cdn_url(thumb_key) if thumb_key else ""
+            p_url = storage.generate_cdn_url(prev_key) if prev_key else ""
+            if request:
+                if t_url and t_url.startswith('/'):
+                    t_url = request.build_absolute_uri(t_url)
+                if p_url and p_url.startswith('/'):
+                    p_url = request.build_absolute_uri(p_url)
+
             results.append({
                 "media_id": str(media.id),
                 "original_filename": media.original_filename,
                 "similarity_score": match["score"],
-                "thumbnail_url": storage.generate_cdn_url(thumb_key),
-                "preview_url": storage.generate_cdn_url(prev_key),
+                "thumbnail_url": t_url,
+                "preview_url": p_url,
                 "file_size": media.file_size,
                 "width": media.width,
                 "height": media.height,

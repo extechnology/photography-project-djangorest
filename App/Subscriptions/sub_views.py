@@ -10,6 +10,7 @@ from App.Auth.auth_utils import get_user_from_request
 from .sub_models import Plan, SubscriptionPlans, PhotographerSubscription, SubscriptionPayment
 from .sub_serializers import (
     PlanSerializer,
+    StudioPlanSerializer,
     CurrentSubscriptionSerializer,
     CheckoutRequestSerializer,
     VerifyPaymentRequestSerializer,
@@ -72,7 +73,7 @@ class PlanListView(APIView):
             if legacy_plans.exists():
                 return Response(SubscriptionPlansSerializer(legacy_plans, many=True).data, status=status.HTTP_200_OK)
 
-        serializer = PlanSerializer(plans, many=True)
+        serializer = StudioPlanSerializer(plans, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 

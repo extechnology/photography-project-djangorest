@@ -119,26 +119,22 @@ class PhotographerProfile(models.Model):
         from django.conf import settings
         test_storage_limit = getattr(settings, 'TEST_USER_STORAGE_LIMIT_BYTES', None)
 
-        # Superusers are exempt from the test storage limit
-        is_super = False
-        try:
-            if hasattr(self, 'user') and self.user and self.user.is_superuser:
-                is_super = True
-        except Exception:
-            pass
-
-        if not is_super and test_storage_limit:
-            return test_storage_limit
-
-        if hasattr(self, 'studio_plan') and self.studio_plan and self.studio_plan.storage_limit_bytes:
-            return self.studio_plan.storage_limit_bytes
         if hasattr(self, 'subscription') and self.subscription:
             sub = self.subscription
             if sub.plan and sub.plan.storage_limit_bytes:
-                return sub.plan.storage_limit_bytes
+                base_bytes = sub.plan.storage_limit_bytes
+                if getattr(sub.plan, 'can_upgrade_storage', False) and getattr(sub, 'extra_storage_gb', 0) > 0:
+                    base_bytes += (sub.extra_storage_gb * 1024 * 1024 * 1024)
+                return base_bytes
+        if hasattr(self, 'studio_plan') and self.studio_plan and self.studio_plan.storage_limit_bytes:
+            return self.studio_plan.storage_limit_bytes
         if self.plan and self.plan.storage_limit_bytes:
             return self.plan.storage_limit_bytes
-        return 128849018880  # Default 120 GB
+
+        if test_storage_limit:
+            return test_storage_limit
+
+        return 21474836480  # Default 20 GB (20 * 1024^3)
 
 
     def get_storage_remaining(self):
