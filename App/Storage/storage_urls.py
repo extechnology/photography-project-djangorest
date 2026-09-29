@@ -38,6 +38,7 @@ from App.Storage.storage_views import (
     GalleryAnalyticsEventTrackView,
     GalleryAnalyticsExportCsvView,
     GalleryShareDetailsView,
+    GalleryMediaListView,
 
     # Enterprise Media Uploads & Management
     DirectUploadInitView,
@@ -135,6 +136,9 @@ urlpatterns = [
     path('galleries/<uuid:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore-uuid'),
     path('galleries/<str:pk>/', GalleryDetailView.as_view(), name='gallery-detail'),
 
+    # Gallery Media Items List
+    path('galleries/<str:gallery_id>/media/', GalleryMediaListView.as_view(), name='gallery-media-list'),
+
     # Individual Photo / Media Deletion in Gallery
     path('galleries/<str:gallery_id>/media/<uuid:media_id>/', MediaDetailDeleteView.as_view(), name='gallery-media-delete'),
     path('galleries/<str:gallery_id>/photos/<uuid:photo_id>/', MediaDetailDeleteView.as_view(), name='gallery-photo-delete'),
@@ -178,7 +182,8 @@ urlpatterns = [
     # -------------------------------------------------------------------------
     # Enterprise Face-Based Discovery
     # -------------------------------------------------------------------------
-    path('galleries/<uuid:gallery_id>/face-search/', GalleryFaceSearchView.as_view(), name='gallery-face-search'),
+    path('galleries/<str:gallery_id>/face-search/', GalleryFaceSearchView.as_view(), name='gallery-face-search'),
+    path('public/galleries/<str:gallery_id>/face-search/', GalleryFaceSearchView.as_view(), name='public-gallery-face-search'),
 
     # -------------------------------------------------------------------------
     # Enterprise Storage Usage & Quota API

@@ -14,14 +14,14 @@ STUDIO_PLANS = [
         "original_monthly_price": 1100.00,
         "total_price": 2400.00,
         "currency": "INR",
-        "image_storage_gb": 200,
+        "image_storage_gb": 20,
         "video_storage_gb": 10,
-        "storage_limit_bytes": (200 + 10) * 1024 * 1024 * 1024,
+        "storage_limit_bytes": (20 + 10) * 1024 * 1024 * 1024,
         "tag": "",
         "tag_type": "default",
         "cta_text": "Choose Standard (3 Months)",
         "features": [
-            "200 GB High-Speed Image Storage",
+            "20 GB High-Speed Image Storage",
             "10 GB 4K Video Delivery",
             "For 03 Months Hosting",
             "Up to 15 Active Client Galleries",
@@ -43,7 +43,7 @@ STUDIO_PLANS = [
         "max_inquiries": 10,
         "has_full_inquiry_access": False,
         "can_upgrade_storage": False,
-        "max_upgrade_image_gb": 200,
+        "max_upgrade_image_gb": 0,
         "is_active": True,
         "sort_order": 1,
     },
@@ -58,14 +58,14 @@ STUDIO_PLANS = [
         "original_monthly_price": 1100.00,
         "total_price": 9600.00,
         "currency": "INR",
-        "image_storage_gb": 200,
+        "image_storage_gb": 20,
         "video_storage_gb": 10,
-        "storage_limit_bytes": (200 + 10) * 1024 * 1024 * 1024,
+        "storage_limit_bytes": (20 + 10) * 1024 * 1024 * 1024,
         "tag": "MOST POPULAR",
         "tag_type": "popular",
         "cta_text": "Choose Standard (1 Year)",
         "features": [
-            "200 GB High-Speed Image Storage",
+            "20 GB High-Speed Image Storage",
             "10 GB 4K Video Delivery",
             "For 01 Year Uninterrupted Hosting",
             "Up to 50 Active Client Galleries",
@@ -88,7 +88,7 @@ STUDIO_PLANS = [
         "max_inquiries": 0,
         "has_full_inquiry_access": True,
         "can_upgrade_storage": False,
-        "max_upgrade_image_gb": 200,
+        "max_upgrade_image_gb": 0,
         "is_active": True,
         "sort_order": 2,
     },
@@ -103,15 +103,15 @@ STUDIO_PLANS = [
         "original_monthly_price": 2200.00,
         "total_price": 21600.00,
         "currency": "INR",
-        "image_storage_gb": 600,
-        "video_storage_gb": 50,
-        "storage_limit_bytes": (600 + 50) * 1024 * 1024 * 1024,
+        "image_storage_gb": 20,
+        "video_storage_gb": 10,
+        "storage_limit_bytes": (20 + 10) * 1024 * 1024 * 1024,
         "tag": "2xStandard Plan",
         "tag_type": "popular",
         "cta_text": "Choose Studio Premium Elite",
         "features": [
-            "600 GB Image Storage (Upgradeable to 1000 GB)",
-            "50 GB 4K Video Delivery",
+            "20 GB Image Storage",
+            "10 GB 4K Video Delivery",
             "2x Standard Plan Performance & Quota",
             "Unlimited Client Galleries (No Cap)",
             "Unlimited Gallery Expiry (Permanent)",
@@ -134,7 +134,7 @@ STUDIO_PLANS = [
         "max_inquiries": 0,
         "has_full_inquiry_access": True,
         "can_upgrade_storage": True,
-        "max_upgrade_image_gb": 1000,
+        "max_upgrade_image_gb": 0,
         "is_active": True,
         "sort_order": 3,
     },
@@ -160,6 +160,17 @@ class Command(BaseCommand):
             else:
                 updated_count += 1
                 self.stdout.write(self.style.SUCCESS(f"  * Updated: {plan.name} ({plan.id})"))
+
+        # Remove deprecated test plans if present
+        deprecated_plans = Plan.objects.filter(id='plan-test-20gb')
+        if deprecated_plans.exists():
+            from App.Subscriptions.sub_models import PhotographerSubscription
+            from App.Photographers.photo_models import PhotographerProfile
+            fallback_plan = Plan.objects.filter(id='plan-standard-1y').first() or Plan.objects.first()
+            PhotographerSubscription.objects.filter(plan__in=deprecated_plans).update(plan=fallback_plan)
+            PhotographerProfile.objects.filter(studio_plan__in=deprecated_plans).update(studio_plan=fallback_plan)
+            deprecated_plans.delete()
+            self.stdout.write(self.style.WARNING("  - Removed deprecated test plan: plan-test-20gb"))
 
         self.stdout.write(
             self.style.SUCCESS(f"Finished seeding Studio Plans: {created_count} created, {updated_count} updated.")

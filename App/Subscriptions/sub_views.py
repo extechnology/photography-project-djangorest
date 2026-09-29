@@ -66,7 +66,7 @@ class PlanListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        plans = Plan.objects.filter(is_active=True).order_by('sort_order', 'total_price')
+        plans = Plan.objects.filter(is_active=True).exclude(id='plan-test-20gb').order_by('sort_order', 'total_price')
         # If no new Plan records exist yet, fall back to seeding or legacy plans
         if not plans.exists():
             legacy_plans = SubscriptionPlans.objects.all().order_by('price_monthly')
@@ -90,7 +90,7 @@ class CurrentSubscriptionView(APIView):
             status_code = status.HTTP_401_UNAUTHORIZED if err == "Authentication required." else status.HTTP_404_NOT_FOUND
             return Response({"detail": err}, status=status_code)
 
-        default_plan = Plan.objects.filter(is_active=True).order_by('sort_order').first()
+        default_plan = Plan.objects.filter(is_active=True).exclude(id='plan-test-20gb').order_by('sort_order').first()
 
         subscription, created = PhotographerSubscription.objects.get_or_create(
             photographer=photographer,

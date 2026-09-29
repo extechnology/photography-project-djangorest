@@ -11,4 +11,9 @@ app.config_from_object(
     namespace="CELERY"
 )
 
+# Use ExShare queue
+app.conf.task_default_queue = "exshare"
+app.conf.task_default_exchange = "exshare"
+app.conf.task_default_routing_key = "exshare"
+
 app.autodiscover_tasks()

@@ -209,6 +209,7 @@ class MediaSerializer(serializers.ModelSerializer):
     gallery_id = serializers.UUIDField(source='gallery.id', read_only=True)
     type = serializers.CharField(source='media_type', read_only=True)
     sort_order = serializers.IntegerField(source='display_order', read_only=True)
+    size_mb = serializers.SerializerMethodField()
 
     class Meta:
         model = Media
@@ -223,6 +224,7 @@ class MediaSerializer(serializers.ModelSerializer):
             'caption',
             'original_filename',
             'file_size',
+            'size_mb',
             'width',
             'height',
             'aspect_ratio',
@@ -252,6 +254,7 @@ class MediaSerializer(serializers.ModelSerializer):
             'id',
             'gallery_id',
             'file_size',
+            'size_mb',
             'width',
             'height',
             'aspect_ratio',
@@ -270,6 +273,16 @@ class MediaSerializer(serializers.ModelSerializer):
             'download_url',
             'created_at',
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['file_size'] = instance.file_size or 0
+        data['size_mb'] = self.get_size_mb(instance)
+        return data
+
+    def get_size_mb(self, obj):
+        size = getattr(obj, 'file_size', 0) or (obj.file.size if getattr(obj, 'file', None) else 0)
+        return round((size or 0) / (1024 * 1024), 2)
 
     def get_url(self, obj):
         return self.get_file_url(obj)
@@ -386,11 +399,17 @@ class GallerySerializer(serializers.ModelSerializer):
     sections = serializers.JSONField(required=False, default=list)
     template_banners = serializers.SerializerMethodField()
     masonry_banner_images = serializers.SerializerMethodField()
-    photos_count = serializers.SerializerMethodField()
-    videos_count = serializers.SerializerMethodField()
+    photos_count = serializers.IntegerField(read_only=True)
+    videos_count = serializers.IntegerField(read_only=True)
+    total_media_count = serializers.SerializerMethodField()
+    total_size_bytes = serializers.IntegerField(read_only=True)
+    total_size_mb = serializers.FloatField(read_only=True)
+    total_size_formatted = serializers.CharField(read_only=True)
     photographer_name = serializers.ReadOnlyField(source='photographer.name')
     studio_name = serializers.ReadOnlyField(source='photographer.studio_name')
     share_url = serializers.SerializerMethodField()
+    is_password_protected = serializers.BooleanField(required=False)
+    face_search_enabled = serializers.BooleanField(required=False)
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     expires_at = serializers.DateTimeField(allow_null=True, required=False)
     is_expired = serializers.SerializerMethodField()
@@ -435,6 +454,10 @@ class GallerySerializer(serializers.ModelSerializer):
             'favorites_count',
             'photos_count',
             'videos_count',
+            'total_media_count',
+            'total_size_bytes',
+            'total_size_mb',
+            'total_size_formatted',
             'share_url',
             'media',
             'media_items',
@@ -448,13 +471,16 @@ class GallerySerializer(serializers.ModelSerializer):
             'studio_name',
             'slug',
             'share_token',
-            'is_password_protected',
             'is_expired',
             'views_count',
             'downloads_count',
             'favorites_count',
             'photos_count',
             'videos_count',
+            'total_media_count',
+            'total_size_bytes',
+            'total_size_mb',
+            'total_size_formatted',
             'share_url',
             'media',
             'media_items',
@@ -466,21 +492,28 @@ class GallerySerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         if not data.get('cover_image'):
             data['cover_image'] = self.get_cover_image(instance)
-        if hasattr(instance, 'photos_count') and instance.photos_count is not None:
-            data['photos_count'] = instance.photos_count
-        if hasattr(instance, 'videos_count') and instance.videos_count is not None:
-            data['videos_count'] = instance.videos_count
+        data['photos_count'] = instance.photos_count
+        data['videos_count'] = instance.videos_count
+        data['total_media_count'] = (
+            self.context.get('total_media_count')
+            if 'total_media_count' in self.context
+            else instance.total_media_count
+        )
+        data['total_size_bytes'] = instance.total_size_bytes
+        data['total_size_mb'] = instance.total_size_mb
+        data['total_size_formatted'] = instance.total_size_formatted
         data['sections'] = instance.sections_list
         data['is_expired'] = bool(instance.is_expired)
         if 'next_cursor' in self.context:
             data['next_cursor'] = self.context.get('next_cursor')
         if 'has_more' in self.context:
             data['has_more'] = self.context.get('has_more')
-        if 'total_media_count' in self.context:
-            data['total_media_count'] = self.context.get('total_media_count')
         if 'filtered_media_count' in self.context:
             data['filtered_media_count'] = self.context.get('filtered_media_count')
         return data
+
+    def get_total_media_count(self, obj):
+        return (getattr(obj, 'photos_count', 0) or 0) + (getattr(obj, 'videos_count', 0) or 0)
 
     def create(self, validated_data):
         cover_image = validated_data.pop('cover_image', None)
@@ -488,10 +521,48 @@ class GallerySerializer(serializers.ModelSerializer):
             validated_data['cover_image_url'] = cover_image
         return super().create(validated_data)
 
+    def validate_face_search_enabled(self, value):
+        if value:
+            request = self.context.get('request')
+            if request and getattr(request, 'user', None):
+                user = request.user
+                if not (user.is_staff or user.is_superuser):
+                    from App.Photographers.photo_models import PhotographerProfile
+                    profile = PhotographerProfile.objects.filter(user=user).first()
+                    if profile:
+                        sub = getattr(profile, 'subscription', None)
+                        plan = getattr(sub, 'plan', None) if sub else None
+                        if not plan:
+                            plan = getattr(profile, 'studio_plan', None) or getattr(profile, 'plan', None)
+                        plan_allowed = getattr(plan, 'face_search_enabled', False)
+                        if not plan_allowed:
+                            raise serializers.ValidationError(
+                                "AI Biometric Face Search is locked on your current subscription plan. Upgrade to enable."
+                            )
+        return value
+
     def update(self, instance, validated_data):
         cover_image = validated_data.pop('cover_image', None)
         if cover_image is not None:
             instance.cover_image_url = cover_image
+
+        # Explicit password wipe handling when is_password_protected is False
+        if 'is_password_protected' in validated_data:
+            is_prot = validated_data['is_password_protected']
+            instance.is_password_protected = is_prot
+            if not is_prot:
+                instance.password = ''
+                if instance.visibility == 'password_protected':
+                    instance.visibility = 'public'
+            elif 'password' in validated_data and validated_data['password']:
+                instance.set_access_password(validated_data['password'].strip())
+        elif 'password' in validated_data:
+            pwd = validated_data['password']
+            if pwd and instance.is_password_protected:
+                instance.set_access_password(pwd.strip())
+            elif not instance.is_password_protected:
+                instance.password = ''
+
         return super().update(instance, validated_data)
 
     def get_is_expired(self, obj):
@@ -588,7 +659,12 @@ class GallerySerializer(serializers.ModelSerializer):
 
 class PublicGallerySerializer(serializers.ModelSerializer):
     """Client/guest gallery serializer; excludes internal keys and sensitive tokens."""
-    photos_count = serializers.SerializerMethodField()
+    photos_count = serializers.IntegerField(read_only=True)
+    videos_count = serializers.IntegerField(read_only=True)
+    total_media_count = serializers.SerializerMethodField()
+    total_size_bytes = serializers.IntegerField(read_only=True)
+    total_size_mb = serializers.FloatField(read_only=True)
+    total_size_formatted = serializers.CharField(read_only=True)
     photographer_name = serializers.ReadOnlyField(source='photographer.name')
     studio_name = serializers.ReadOnlyField(source='photographer.studio_name')
     requires_password = serializers.SerializerMethodField()
@@ -619,6 +695,11 @@ class PublicGallerySerializer(serializers.ModelSerializer):
             'is_expired',
             'face_search_enabled',
             'photos_count',
+            'videos_count',
+            'total_media_count',
+            'total_size_bytes',
+            'total_size_mb',
+            'total_size_formatted',
             'favorites_count',
             'photographer_name',
             'studio_name',
@@ -628,6 +709,16 @@ class PublicGallerySerializer(serializers.ModelSerializer):
             'created_at',
         ]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['photos_count'] = instance.photos_count
+        data['videos_count'] = instance.videos_count
+        data['total_media_count'] = instance.total_media_count
+        data['total_size_bytes'] = instance.total_size_bytes
+        data['total_size_mb'] = instance.total_size_mb
+        data['total_size_formatted'] = instance.total_size_formatted
+        return data
+
     def get_template_banners(self, obj):
         return _sanitize_banner_dict(obj.template_banners, obj, self.context.get('request'))
 
@@ -635,7 +726,13 @@ class PublicGallerySerializer(serializers.ModelSerializer):
         return bool(obj.is_expired)
 
     def get_photos_count(self, obj):
-        return obj.media_items.filter(deleted_at__isnull=True).count()
+        return obj.photos_count
+
+    def get_videos_count(self, obj):
+        return obj.videos_count
+
+    def get_total_media_count(self, obj):
+        return obj.total_media_count
 
     def get_requires_password(self, obj):
         return obj.is_password_protected or obj.visibility == 'password_protected'
@@ -781,6 +878,7 @@ class GallerySettingsUpdateSerializer(serializers.ModelSerializer):
             'allow_downloads',
             'download_pin',
             'allow_favorites',
+            'face_search_enabled',
             'expires_at',
             'is_expired',
             'status',
@@ -792,16 +890,58 @@ class GallerySettingsUpdateSerializer(serializers.ModelSerializer):
             'client_name': {'required': False},
             'password': {'required': False, 'allow_blank': True},
             'download_pin': {'required': False, 'allow_blank': True},
+            'face_search_enabled': {'required': False},
         }
 
+    def validate_face_search_enabled(self, value):
+        if value:
+            request = self.context.get('request')
+            if request and getattr(request, 'user', None):
+                user = request.user
+                if not (user.is_staff or user.is_superuser):
+                    from App.Photographers.photo_models import PhotographerProfile
+                    profile = PhotographerProfile.objects.filter(user=user).first()
+                    if profile:
+                        sub = getattr(profile, 'subscription', None)
+                        plan = getattr(sub, 'plan', None) if sub else None
+                        if not plan:
+                            plan = getattr(profile, 'studio_plan', None) or getattr(profile, 'plan', None)
+                        plan_allowed = getattr(plan, 'face_search_enabled', False)
+                        if not plan_allowed:
+                            raise serializers.ValidationError(
+                                "AI Biometric Face Search is locked on your current subscription plan. Upgrade to enable."
+                            )
+        return value
+
     def update(self, instance, validated_data):
-        password = validated_data.pop('password', None)
-        if password is not None:
-            instance.set_access_password(password)
+        if 'is_password_protected' in validated_data:
+            is_prot = validated_data['is_password_protected']
+            instance.is_password_protected = is_prot
+            if not is_prot:
+                instance.password = ''
+                if instance.visibility == 'password_protected':
+                    instance.visibility = 'public'
+            elif 'password' in validated_data and validated_data['password']:
+                instance.set_access_password(validated_data['password'].strip())
+        elif 'password' in validated_data:
+            pwd = validated_data['password']
+            if pwd and instance.is_password_protected:
+                instance.set_access_password(pwd.strip())
+            elif not instance.is_password_protected:
+                instance.password = ''
+
         for attr, val in validated_data.items():
-            setattr(instance, attr, val)
+            if attr not in ['is_password_protected', 'password']:
+                setattr(instance, attr, val)
         instance.save()
         return instance
+
+
+# Aliases for specification consistency
+GalleryUpdateSerializer = GallerySettingsUpdateSerializer
+GalleryDetailSerializer = GalleryDetailResponseSerializer
+MediaItemSerializer = MediaSerializer
+
 
 
 class GallerySectionSerializer(serializers.ModelSerializer):
@@ -942,3 +1082,9 @@ class StorageUsageSerializer(serializers.Serializer):
     storage_limit_bytes = serializers.IntegerField()
     storage_remaining_bytes = serializers.IntegerField()
     usage_percentage = serializers.FloatField()
+
+
+# Explicit Aliases matching Frontend / Specification Naming
+GalleryListSerializer = GallerySerializer
+GalleryDetailSerializer = GalleryDetailResponseSerializer
+MediaItemSerializer = MediaSerializer

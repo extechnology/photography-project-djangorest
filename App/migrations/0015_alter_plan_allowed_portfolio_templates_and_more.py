@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('App', '0014_merge_20260925_1253'),
+        ('App', '0014_photographersubscription_extra_storage_gb_and_more'),
     ]
 
     operations = [

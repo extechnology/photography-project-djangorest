@@ -675,10 +675,12 @@ class GalleryListCreateView(APIView):
         else:
             queryset = Gallery.objects.filter(photographer=profile)
 
-        # Annotate photos_count and videos_count for efficient sorting and counting
+        from django.db.models.functions import Coalesce
+        # Annotate photos_count, videos_count, and total_size_bytes for efficient sorting and counting
         queryset = queryset.annotate(
             photos_count=Count('media_items', filter=Q(media_items__deleted_at__isnull=True, media_items__media_type='photo'), distinct=True),
             videos_count=Count('media_items', filter=Q(media_items__deleted_at__isnull=True, media_items__media_type='video'), distinct=True),
+            total_size_bytes=Coalesce(Sum('media_items__file_size', filter=Q(media_items__deleted_at__isnull=True)), 0),
         )
 
         # ─── 1. Search Filter (Title or Client Name) ───
@@ -794,8 +796,6 @@ class GalleryListCreateView(APIView):
             if active_plan:
                 if getattr(active_plan, 'gallery_expiry_days', 0) > 0 and 'expires_at' not in request.data:
                     extra_kwargs['expires_at'] = timezone.now() + timedelta(days=active_plan.gallery_expiry_days)
-                if hasattr(active_plan, 'face_search_enabled') and 'face_search_enabled' not in request.data:
-                    extra_kwargs['face_search_enabled'] = active_plan.face_search_enabled
 
             gallery = serializer.save(photographer=profile, **extra_kwargs)
             StorageAuditLog.objects.create(
@@ -847,13 +847,30 @@ class GalleryDetailView(APIView):
 
     def get(self, request, pk):
         user = get_current_user(request)
-        gallery = _get_gallery_or_404(pk, user)
-        if not gallery:
-            unfiltered_gallery = _get_gallery_or_404(pk)
-            if not unfiltered_gallery:
-                return Response({'detail': 'Gallery not found.'}, status=status.HTTP_404_NOT_FOUND)
-            if not (user and (user.is_staff or user.is_superuser or unfiltered_gallery.photographer.user_id == user.id)):
+        unfiltered_gallery = _get_gallery_or_404(pk)
+        if not unfiltered_gallery:
+            return Response({'detail': 'Gallery not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        is_owner = user and (user.is_staff or user.is_superuser or unfiltered_gallery.photographer.user_id == user.id)
+        if user and user.is_authenticated:
+            if not is_owner:
                 return Response({'code': 'GALLERY_ACCESS_DENIED', 'detail': 'You do not own this gallery.'}, status=status.HTTP_403_FORBIDDEN)
+            gallery = unfiltered_gallery
+        else:
+            # Unauthenticated public visitor
+            if unfiltered_gallery.visibility == 'private':
+                return Response({'code': 'GALLERY_ACCESS_DENIED', 'detail': 'This gallery is private.'}, status=status.HTTP_403_FORBIDDEN)
+
+            is_locked = unfiltered_gallery.is_password_protected or unfiltered_gallery.visibility == 'password_protected'
+            if is_locked:
+                provided_pwd = request.headers.get("X-Gallery-Password") or request.query_params.get("password")
+                if not provided_pwd or not unfiltered_gallery.check_access_password(provided_pwd):
+                    return Response({
+                        "code": "PASSWORD_REQUIRED",
+                        "error_code": "PASSWORD_REQUIRED",
+                        "detail": "This gallery is password-protected. Please enter the password.",
+                        "is_password_protected": True
+                    }, status=status.HTTP_403_FORBIDDEN)
             gallery = unfiltered_gallery
 
         # ----------------------------------------------------------------------
@@ -993,7 +1010,27 @@ class GalleryDetailView(APIView):
                 return Response({'code': 'GALLERY_ACCESS_DENIED', 'detail': 'You do not own this gallery.'}, status=status.HTTP_403_FORBIDDEN)
             return Response({'detail': 'Gallery not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # If template_id is being updated, check allowed_templates
+        # 1. Enforce plan restriction if enabling face_search_enabled
+        if 'face_search_enabled' in request.data:
+            val = request.data.get('face_search_enabled')
+            is_enabling = val in [True, 'true', 'True', 1, '1']
+            if is_enabling and not (user.is_staff or user.is_superuser):
+                profile = gallery.photographer
+                sub = getattr(profile, 'subscription', None)
+                plan = getattr(sub, 'plan', None) if sub else None
+                if not plan:
+                    plan = getattr(profile, 'studio_plan', None) or getattr(profile, 'plan', None)
+                plan_allowed = getattr(plan, 'face_search_enabled', False)
+                if not plan_allowed:
+                    return Response({
+                        "error_code": "FACE_SEARCH_LOCKED",
+                        "code": "FACE_SEARCH_LOCKED",
+                        "detail": "Your subscription plan does not include AI Face Search.",
+                        "message": "AI Biometric Face Search is locked on your current subscription plan. Upgrade to enable.",
+                        "upgrade_required": True
+                    }, status=status.HTTP_403_FORBIDDEN)
+
+        # 2. Check template_id allowed_templates
         if 'template_id' in request.data:
             template_id = request.data['template_id']
             profile = gallery.photographer
@@ -1010,6 +1047,24 @@ class GalleryDetailView(APIView):
                         "error_code": "TEMPLATE_NOT_ALLOWED",
                         "detail": f"Template '{template_id}' is not included in your current subscription tier."
                     }, status=status.HTTP_403_FORBIDDEN)
+
+        # 3. Explicit password handling & wiping
+        if 'is_password_protected' in request.data:
+            raw_prot = request.data.get('is_password_protected')
+            is_prot = raw_prot in [True, 'true', 'True', 1, '1']
+            gallery.is_password_protected = is_prot
+            if not is_prot:
+                gallery.password = ''
+                if gallery.visibility == 'password_protected':
+                    gallery.visibility = 'public'
+            elif 'password' in request.data and request.data.get('password'):
+                gallery.set_access_password(request.data.get('password').strip())
+        elif 'password' in request.data:
+            pwd = request.data.get('password')
+            if pwd and gallery.is_password_protected:
+                gallery.set_access_password(pwd.strip())
+            elif not gallery.is_password_protected:
+                gallery.password = ''
 
         serializer = GallerySerializer(gallery, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
@@ -1184,6 +1239,26 @@ class GalleryViewSet(viewsets.ModelViewSet):
             queryset = queryset.order_by('-event_date', '-created_at')
 
         return queryset
+
+    def get_object(self):
+        """Supports retrieving galleries by either UUID primary key OR slug."""
+        queryset = self.filter_queryset(self.get_queryset())
+        lookup_val = self.kwargs.get(self.lookup_url_kwarg or self.lookup_field)
+        try:
+            uuid.UUID(str(lookup_val))
+            obj = queryset.filter(id=lookup_val).first()
+        except (ValueError, AttributeError):
+            obj = queryset.filter(slug=lookup_val).first()
+
+        if not obj:
+            raise NotFound({"detail": f"Gallery '{lookup_val}' not found."})
+
+        self.check_object_permissions(self.request, obj)
+        return obj
+
+    @action(detail=True, methods=['post'], url_path='face-search', permission_classes=[permissions.AllowAny])
+    def face_search(self, request, pk=None):
+        return GalleryFaceSearchView().post(request, pk)
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -1621,6 +1696,16 @@ class StandardMediaUploadView(APIView):
             gallery.sections = gallery_sections
             gallery.save(update_fields=['sections'])
 
+        section_obj = None
+        try:
+            section_obj, _ = GallerySection.objects.get_or_create(
+                gallery=gallery,
+                title=section_title,
+                defaults={'order': gallery.section_items.count()}
+            )
+        except Exception:
+            section_obj = None
+
         # 3. Pre-Upload Storage Quota Enforcement
         batch_bytes = sum(getattr(f, 'size', 0) for f in files)
         profile = gallery.photographer
@@ -1710,6 +1795,7 @@ class StandardMediaUploadView(APIView):
                 gallery=gallery,
                 media_type=media_type,
                 title=base_title,
+                section=section_obj,
                 section_title=section_title,
                 original_filename=safe_name,
                 storage_key=key,
@@ -2026,6 +2112,29 @@ class GalleryMoveMediaSectionView(APIView):
 
 
 MoveMediaSectionView = GalleryMoveMediaSectionView
+
+
+class GalleryMediaListView(APIView):
+    """
+    List active media items for a specific gallery.
+    Endpoint: GET /api/galleries/<gallery_id>/media/
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, gallery_id):
+        user = get_current_user(request)
+        gallery = _get_gallery_or_404(gallery_id, user)
+        if not gallery:
+            unfiltered_gallery = _get_gallery_or_404(gallery_id)
+            if not unfiltered_gallery:
+                return Response({'detail': 'Gallery not found.'}, status=status.HTTP_404_NOT_FOUND)
+            if not (user and (user.is_staff or user.is_superuser or unfiltered_gallery.photographer.user_id == user.id)):
+                return Response({'code': 'GALLERY_ACCESS_DENIED', 'detail': 'You do not own this gallery.'}, status=status.HTTP_403_FORBIDDEN)
+            gallery = unfiltered_gallery
+
+        media_qs = gallery.media_items.filter(deleted_at__isnull=True).order_by('display_order', '-created_at', 'id')
+        serializer = MediaSerializer(media_qs, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 def _cleanup_gallery_media_references(gallery, deleted_media_ids):
@@ -2362,46 +2471,111 @@ class GalleryFaceSearchView(APIView):
     """
     Accepts a selfie image, extracts face embedding, and returns matching photos
     strictly isolated within the target gallery.
+    Supports both UUID and string slug lookup.
     """
     permission_classes = [AllowAny]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     throttle_classes = [FaceSearchRateThrottle]
 
     def post(self, request, gallery_id):
-        gallery = get_object_or_404(Gallery, id=gallery_id)
+        # 1. Resolve gallery by UUID or string slug
+        is_uuid = False
+        try:
+            uuid.UUID(str(gallery_id))
+            is_uuid = True
+        except (ValueError, AttributeError):
+            is_uuid = False
 
+        if is_uuid:
+            gallery = Gallery.objects.select_related('photographer', 'photographer__user').filter(id=gallery_id).first()
+        else:
+            gallery = Gallery.objects.select_related('photographer', 'photographer__user').filter(slug=gallery_id).first()
+
+        if not gallery:
+            return Response({"detail": f"Gallery '{gallery_id}' not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 2. Check if photographer enabled AI Face Search for this gallery
         if not gallery.face_search_enabled:
-            return Response({"code": "FACE_SEARCH_DISABLED", "detail": "Face search is disabled for this gallery."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {
+                    "error_code": "FACE_SEARCH_DISABLED",
+                    "code": "FACE_SEARCH_DISABLED",
+                    "detail": "AI Face Search has been disabled for this gallery by the photographer."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-        # Plan Feature Enforcement
-        if gallery.photographer:
-            try:
-                from App.Subscriptions.sub_enforcer import PlanFeatureEnforcer
-                PlanFeatureEnforcer.check_face_search_permission(gallery.photographer)
-            except Exception as e:
-                err_detail = getattr(e, 'detail', str(e))
-                return Response(
-                    err_detail if isinstance(err_detail, dict) else {
-                        "error_code": "FACE_SEARCH_LOCKED",
-                        "message": "AI Biometric Face Search is not included in Standard Quarterly. Upgrade to Standard Annual or Studio Premium Elite.",
-                        "upgrade_required": True
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
+        # 3. Check photographer's subscription plan entitlement
+        photographer = gallery.photographer
+        sub = getattr(photographer, 'subscription', None)
+        plan = getattr(sub, 'plan', None) if sub else None
+        if not plan:
+            plan = getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)
 
-        password = request.headers.get("X-Gallery-Password") or request.data.get("password")
-        if gallery.visibility == "password_protected" and not gallery.check_access_password(password):
-            return Response({"code": "PASSWORD_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+        plan_allowed = getattr(plan, 'face_search_enabled', False)
+        user = getattr(photographer, 'user', None)
+        is_staff = user and (user.is_staff or user.is_superuser)
 
-        selfie = request.FILES.get("selfie") or request.FILES.get("image") or request.FILES.get("file")
-        if not selfie:
-            return Response({"code": "SELFIE_REQUIRED", "detail": "Upload a selfie image under 'selfie'."}, status=status.HTTP_400_BAD_REQUEST)
+        if not plan_allowed and not is_staff:
+            return Response(
+                {
+                    "error_code": "FACE_SEARCH_LOCKED",
+                    "code": "FACE_SEARCH_LOCKED",
+                    "detail": "AI Biometric Face Search is locked on the photographer's current plan tier."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-        # Read into memory
-        selfie_bytes = selfie.read()
+        # 4. Check gallery password if locked
+        password = request.headers.get("X-Gallery-Password") or request.data.get("password") or request.query_params.get("password")
+        if (gallery.is_password_protected or gallery.visibility == "password_protected") and not gallery.check_access_password(password):
+            return Response({
+                "error_code": "PASSWORD_REQUIRED",
+                "code": "PASSWORD_REQUIRED",
+                "detail": "This gallery is password-protected. Please enter the password."
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # 5. Read uploaded selfie image
+        selfie_file = (
+            request.FILES.get("selfie")
+            or request.FILES.get("image")
+            or request.FILES.get("photo")
+            or request.FILES.get("file")
+        )
+        selfie_bytes = None
+        if selfie_file:
+            selfie_bytes = selfie_file.read()
+        else:
+            raw_val = request.data.get("selfie") or request.data.get("photo") or request.data.get("image") or request.data.get("file")
+            if isinstance(raw_val, str) and len(raw_val) > 20:
+                import base64
+                try:
+                    if ';base64,' in raw_val:
+                        b64_str = raw_val.split(';base64,', 1)[1]
+                    else:
+                        b64_str = raw_val
+                    selfie_bytes = base64.b64decode(b64_str)
+                except Exception:
+                    selfie_bytes = None
+
+        if not selfie_bytes:
+            return Response(
+                {
+                    "error_code": "SELFIE_REQUIRED",
+                    "code": "SELFIE_REQUIRED",
+                    "detail": "No selfie image provided. Key 'selfie' is required."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Optional threshold
+        try:
+            threshold = float(request.query_params.get('threshold') or request.data.get('threshold') or 0.65)
+        except (ValueError, TypeError):
+            threshold = None
 
         # Execute search strictly within target gallery
-        search_result = FaceService.search_gallery_faces(gallery, selfie_bytes, request=request)
+        search_result = FaceService.search_gallery_faces(gallery, selfie_bytes, threshold=threshold, request=request)
 
         if "error" in search_result:
             return Response(search_result, status=status.HTTP_400_BAD_REQUEST)
@@ -3196,8 +3370,10 @@ class PublicGallerySlugOrIdView(APIView):
                 'code': 'gallery_expired',
                 'status': 'expired',
                 'title': gallery.title,
+                'client_name': gallery.client_name,
                 'is_expired': True,
-                'detail': 'The access period for this private collection has expired.'
+                'detail': 'The access period for this private collection has expired.',
+                'error': 'The access period for this private collection has expired.',
             }, status=status.HTTP_410_GONE)
 
         # Track views and trigger studio notification

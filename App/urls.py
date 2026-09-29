@@ -15,6 +15,7 @@ urlpatterns = [
     path('inquiries/analytics/', InquiryAnalyticsView.as_view(), name='inquiry-analytics-direct'),
     path('inquiries/', InquiryListCreateView.as_view(), name='inquiry-list-create-direct'),
     path('inquiries/<str:pk>/', InquiryDetailView.as_view(), name='inquiry-detail-direct'),
+    path('', include('App.LiveEvents.event_urls')),
     path('', include('App.Storage.storage_urls')),
 ]
 

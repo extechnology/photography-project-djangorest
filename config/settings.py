@@ -89,6 +89,16 @@ DATABASES = {
     }
 }
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': config('DB_NAME'),
+#         'USER': config('DB_USER'),
+#         'PASSWORD': config('DB_PASSWORD'),
+#         'HOST': '127.0.0.1',
+#         'PORT': '5432',
+#     }
+# }
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
@@ -206,6 +216,10 @@ CSRF_TRUSTED_ORIGINS = [
     "http://www.exshare.ai",
     "https://exshare.ai",
     "http://exshare.ai",
+    "http://server.exshare.ai",
+    "https://server.exshare.ai",
+
+    
 ]
 
 

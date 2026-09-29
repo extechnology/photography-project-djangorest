@@ -6,6 +6,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from App.Auth.auth_models import User
 from App.Photographers.photo_models import PhotographerProfile
+from App.utils import format_bytes_human
 
 
 def generate_event_access_code():
@@ -251,7 +252,7 @@ class Gallery(models.Model):
     downloads_enabled = models.BooleanField(default=True)
     allow_downloads = models.BooleanField(default=True)
     allow_favorites = models.BooleanField(default=True)
-    face_search_enabled = models.BooleanField(default=True)
+    face_search_enabled = models.BooleanField(default=False)
 
     # Analytics & Engagements
     views_count = models.PositiveIntegerField(default=0)
@@ -286,8 +287,15 @@ class Gallery(models.Model):
                 unique_slug = f"{base_slug}-{secrets.token_hex(3)}"
             self.slug = unique_slug
 
-        if self.password:
+        # Ensure password is wiped when protection is inactive
+        if not self.is_password_protected:
+            self.password = ''
+            if self.visibility == 'password_protected':
+                self.visibility = 'public'
+        elif self.password:
             self.is_password_protected = True
+            if self.visibility == 'public':
+                self.visibility = 'password_protected'
 
         super().save(*args, **kwargs)
 
@@ -307,7 +315,12 @@ class Gallery(models.Model):
             return True
         if not raw_password:
             return False
-        return check_password(raw_password, self.password)
+        try:
+            if check_password(raw_password, self.password):
+                return True
+        except Exception:
+            pass
+        return self.password == raw_password
 
     @property
     def is_expired(self):
@@ -344,12 +357,67 @@ class Gallery(models.Model):
     def media(self):
         return self.media_items.filter(deleted_at__isnull=True).order_by('display_order', '-created_at')
 
+    @property
+    def total_size_bytes(self) -> int:
+        """Sum of file_size across all active media in this gallery."""
+        if hasattr(self, '_total_size_bytes') and self._total_size_bytes is not None:
+            return self._total_size_bytes
+        aggregate_res = self.media_items.filter(deleted_at__isnull=True).aggregate(total=models.Sum('file_size'))
+        return aggregate_res['total'] or 0
+
+    @total_size_bytes.setter
+    def total_size_bytes(self, value):
+        self._total_size_bytes = value
+
+    @property
+    def total_size_mb(self) -> float:
+        """Total size in megabytes rounded to 2 decimals."""
+        return round(self.total_size_bytes / (1024 * 1024), 2)
+
+    @property
+    def total_size_formatted(self) -> str:
+        """Formatted display string e.g. '124.5 MB' or '1.45 GB'."""
+        return format_bytes_human(self.total_size_bytes)
+
+    @property
+    def photos_count(self) -> int:
+        """Count of active photo media."""
+        if hasattr(self, '_photos_count') and self._photos_count is not None:
+            return self._photos_count
+        return self.media_items.filter(deleted_at__isnull=True).exclude(media_type='video').count()
+
+    @photos_count.setter
+    def photos_count(self, value):
+        self._photos_count = value
+
+    @property
+    def videos_count(self) -> int:
+        """Count of active video media."""
+        if hasattr(self, '_videos_count') and self._videos_count is not None:
+            return self._videos_count
+        return self.media_items.filter(deleted_at__isnull=True, media_type='video').count()
+
+    @videos_count.setter
+    def videos_count(self, value):
+        self._videos_count = value
+
+    @property
+    def total_media_count(self) -> int:
+        """Total count of active media items."""
+        if hasattr(self, '_total_media_count') and self._total_media_count is not None:
+            return self._total_media_count
+        return (self.photos_count or 0) + (self.videos_count or 0)
+
+    @total_media_count.setter
+    def total_media_count(self, value):
+        self._total_media_count = value
+
 
 class GallerySection(models.Model):
     """
     Custom Sections / Event Parts inside a Gallery (e.g. CEREMONY, RECEPTION, PORTRAITS).
     """
-    id = models.BigAutoField(primary_key=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     gallery = models.ForeignKey(
         Gallery, on_delete=models.CASCADE, related_name='section_items', db_index=True
     )
@@ -475,6 +543,11 @@ class Media(models.Model):
     @sort_order.setter
     def sort_order(self, val):
         self.display_order = val
+
+    @property
+    def size_mb(self) -> float:
+        size = getattr(self, 'file_size', 0) or (self.file.size if getattr(self, 'file', None) else 0)
+        return round((size or 0) / (1024 * 1024), 2)
 
 
 class GalleryAnalyticsEvent(models.Model):
