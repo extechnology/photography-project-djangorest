@@ -14,6 +14,8 @@ from .views import (
     notify_gallery_published,
     notify_plan_activated,
     notify_plan_cancelled,
+    notify_plan_expiry_warning,
+    notify_plan_expired,
     notify_storage_alert,
     notify_event_activity,
     seed_initial_studio_notifications,

@@ -24,6 +24,8 @@ THIS SINGLE FILE CONTAINS:
    - notify_gallery_published(user, gallery_title, gallery_id)
    - notify_plan_activated(user, plan_name, duration_months)
    - notify_plan_cancelled(user, plan_name, expiry_date)
+   - notify_plan_expiry_warning(user, plan_name, expiry_date, days_remaining)
+   - notify_plan_expired(user, plan_name)
    - notify_storage_alert(user, pct_used, used_gb, limit_gb)
    - notify_event_activity(user, event_title, guest_name, photo_count)
 5. Initial Seeder Utility (seeds realistic studio notifications for testing)
@@ -566,6 +568,70 @@ def notify_plan_cancelled(user, plan_name, expiry_date):
         action_url="/dashboard/settings",
         action_label="Restart Membership",
         metadata={"expiry_date": str(expiry_date)},
+    )
+
+
+def notify_plan_expiry_warning(user, plan_name, expiry_date, days_remaining):
+    """
+    Call when a subscription is approaching expiry (e.g., 7 days or 1 day before).
+    Triggered by the periodic Celery beat task `check_subscription_expiry_task`.
+    Respects:
+      - settings.inapp_billing_alerts
+      - settings.email_billing_alerts
+    """
+    user = _resolve_user_instance(user)
+    settings = get_or_create_user_notification_settings(user)
+    if settings.email_billing_alerts:
+        # send_renewal_reminder_email(...)
+        pass
+
+    if not settings.inapp_billing_alerts:
+        return None
+
+    expiry_str = expiry_date.strftime('%B %d, %Y') if hasattr(expiry_date, 'strftime') else str(expiry_date)
+    days_label = f"{days_remaining} day{'s' if days_remaining != 1 else ''}"
+    priority = 'urgent' if days_remaining <= 1 else 'high'
+    return create_studio_notification(
+        user=user,
+        notif_type='plan',
+        priority=priority,
+        title=f"Plan Expiring in {days_label}: {plan_name}",
+        message=f"Your {plan_name} studio plan expires on {expiry_str} ({days_label} remaining). Renew now to keep your galleries, events, and face search active.",
+        action_url="/dashboard/settings",
+        action_label="Renew Plan",
+        metadata={"plan_name": plan_name, "expiry_date": str(expiry_date), "days_remaining": days_remaining},
+    )
+
+
+def notify_plan_expired(user, plan_name):
+    """
+    Call when a subscription has actually expired (expiry_date has passed).
+    Triggered by the periodic Celery beat task `check_subscription_expiry_task`.
+    Respects:
+      - settings.inapp_billing_alerts
+      - settings.email_billing_alerts
+    """
+    user = _resolve_user_instance(user)
+    settings = get_or_create_user_notification_settings(user)
+    if settings.email_billing_alerts:
+        # send_expiry_email(...)
+        pass
+
+    if not settings.inapp_billing_alerts:
+        return None
+
+    return create_studio_notification(
+        user=user,
+        notif_type='plan',
+        priority='urgent',
+        title=f"Studio Plan Expired: {plan_name}",
+        message=(
+            f"Your {plan_name} studio plan has expired. All public galleries, events, and face-search "
+            "links have been locked for your clients. Renew immediately to restore full studio access."
+        ),
+        action_url="/dashboard/settings",
+        action_label="Renew Now",
+        metadata={"plan_name": plan_name},
     )
 
 

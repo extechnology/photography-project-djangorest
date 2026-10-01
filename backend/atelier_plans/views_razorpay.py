@@ -43,6 +43,14 @@ from decouple import config
 from App.Auth.auth_utils import CookieJWTAuthentication, get_user_from_request
 from App.Subscriptions.sub_models import Plan as StudioPlan, PhotographerSubscription, SubscriptionPayment
 from App.Photographers.photo_models import PhotographerProfile
+try:
+    from backend.atelier_notifications import notify_plan_activated, notify_plan_cancelled
+except ImportError:
+    try:
+        from atelier_notifications import notify_plan_activated, notify_plan_cancelled
+    except ImportError:
+        notify_plan_activated = None
+        notify_plan_cancelled = None
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -954,6 +962,18 @@ class PlanVerifyView(APIView):
                 logger.warning(f"Could not record SubscriptionPayment: {e}")
 
         serializer = CurrentSubscriptionSerializer(new_sub)
+
+        # Fire plan-activated in-app notification
+        try:
+            if notify_plan_activated:
+                notify_plan_activated(
+                    user=user,
+                    plan_name=target_plan.name,
+                    duration_months=duration_months,
+                )
+        except Exception as notify_exc:
+            logger.warning(f"notify_plan_activated failed (non-critical): {notify_exc}")
+
         return Response({
             "status": "success",
             "message": f"Successfully activated {target_plan.name}.",
@@ -1005,6 +1025,17 @@ class CancelAutoRenewView(APIView):
 
         expiry_str = sub.expiry_date.strftime('%B %d, %Y') if sub.expiry_date else 'the end of your period'
         serializer = CurrentSubscriptionSerializer(sub)
+
+        # Fire plan-cancelled in-app notification
+        try:
+            if notify_plan_cancelled:
+                notify_plan_cancelled(
+                    user=user,
+                    plan_name=sub.plan.name if sub.plan else 'Studio Plan',
+                    expiry_date=sub.expiry_date or sub.expires_at,
+                )
+        except Exception as notify_exc:
+            logger.warning(f"notify_plan_cancelled failed (non-critical): {notify_exc}")
 
         return Response({
             "status": "success",

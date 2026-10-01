@@ -11,6 +11,9 @@ from App.Storage.tasks import (
     process_media_derivatives_and_faces_task,
     generate_bulk_download_archive_task,
 )
+from App.Subscriptions.tasks import (
+    check_subscription_expiry_task,
+)
 
 __all__ = [
     'process_face_embeddings_task',
@@ -18,4 +21,6 @@ __all__ = [
     'purge_expired_trash_events_task',
     'process_media_derivatives_and_faces_task',
     'generate_bulk_download_archive_task',
+    'check_subscription_expiry_task',
 ]
+

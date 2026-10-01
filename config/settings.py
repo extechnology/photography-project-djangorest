@@ -293,6 +293,21 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "Asia/Kolkata"
 
 # ------------------------------------------------------------------------------
+# CELERY BEAT SCHEDULE — Periodic background tasks
+# ------------------------------------------------------------------------------
+CELERY_BEAT_SCHEDULE = {
+    # Runs daily at 00:05 IST to check subscription expirations:
+    #   - Sends 7-day advance warning notifications
+    #   - Sends 1-day final warning notifications
+    #   - Marks lapsed subscriptions as 'expired' and sends urgent in-app alerts
+    'check-subscription-expiry-daily': {
+        'task': 'App.Subscriptions.tasks.check_subscription_expiry_task',
+        'schedule': 60 * 60 * 24,  # Every 24 hours (86400 seconds)
+        'options': {'queue': 'exshare'},
+    },
+}
+
+# ------------------------------------------------------------------------------
 # NUDENET CONTENT MODERATION SETTINGS
 # ------------------------------------------------------------------------------
 NUDE_DETECTION_ENABLED = config('NUDE_DETECTION_ENABLED', default=True, cast=bool)
