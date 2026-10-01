@@ -8,10 +8,12 @@ import hashlib
 import base64
 import json
 import logging
+import requests
+import functools
 
 from django.conf import settings
 from django.shortcuts import get_object_or_404
-from django.http import HttpResponse, FileResponse
+from django.http import HttpResponse, FileResponse, Http404
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import F, Q, Count, Max, Sum, Case, When
@@ -20,8 +22,9 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from datetime import timedelta
 from rest_framework import status, viewsets, permissions
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.views import APIView
+from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -44,6 +47,11 @@ from App.Storage.storage_models import (
     UploadReservation,
     BulkDownloadJob,
     StorageAuditLog,
+)
+from backend.atelier_plans.subscription_enforcement import (
+    enforce_active_subscription,
+    is_studio_active,
+    IsActiveStudioSubscriber,
 )
 from App.Storage.storage_serializers import (
     SharedEventListSerializer,
@@ -197,6 +205,8 @@ class SharedEventListCreateView(APIView):
         if not user:
             return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
+        enforce_active_subscription(user, "live events")
+
         profile = get_photographer_profile(user)
         if not profile:
             return Response({"message": "Only registered photographers can create shared events."}, status=status.HTTP_403_FORBIDDEN)
@@ -308,6 +318,8 @@ class EventBulkPhotoUploadView(APIView):
         if not user:
             return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
+        enforce_active_subscription(user, "media uploads")
+
         event = get_object_or_404(SharedEvent.objects.select_related('photographer__user'), pk=event_id)
         if event.photographer.user != user and not (user.is_staff or user.is_superuser):
             return Response({"message": "You do not have permission to upload photos to this event."}, status=status.HTTP_403_FORBIDDEN)
@@ -373,6 +385,8 @@ class EventZipPhotoUploadView(APIView):
         user = get_current_user(request)
         if not user:
             return Response({"message": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        enforce_active_subscription(user, "media uploads")
 
         event = get_object_or_404(SharedEvent.objects.select_related('photographer__user'), pk=event_id)
         if event.photographer.user != user and not (user.is_staff or user.is_superuser):
@@ -487,7 +501,25 @@ class PublicEventGalleryView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, access_code):
-        event = get_object_or_404(SharedEvent.objects.select_related('photographer'), access_code=access_code)
+        event = get_object_or_404(SharedEvent.objects.select_related('photographer', 'photographer__user'), access_code=access_code)
+
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = event.user
+        if host_user and not is_studio_active(host_user):
+            studio_profile = getattr(host_user, 'profile', None)
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "This photo gallery is temporarily locked because the host studio's EX SHARE membership has expired.",
+                    "is_studio_plan_expired": True,
+                    "title": getattr(event, 'title', ''),
+                    "studio_name": getattr(studio_profile, 'studio_name', 'Studio') if studio_profile else 'Studio',
+                    "studio_email": getattr(host_user, 'email', ''),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if not event.is_public:
             return Response({"message": "This photo gallery is currently private or inactive."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -528,7 +560,21 @@ class PublicEventVerifyPinView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, access_code):
-        event = get_object_or_404(SharedEvent, access_code=access_code)
+        event = get_object_or_404(SharedEvent.objects.select_related('photographer', 'photographer__user'), access_code=access_code)
+
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = event.user
+        if host_user and not is_studio_active(host_user):
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "This photo gallery is locked because the host studio's subscription has expired.",
+                    "is_studio_plan_expired": True,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         pin = request.data.get('pin') or request.query_params.get('pin', '')
         if event.verify_pin(pin):
             return Response({"valid": True, "message": "PIN verified successfully."}, status=status.HTTP_200_OK)
@@ -539,8 +585,21 @@ class PublicPhotoDownloadView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, photo_id):
-        photo = get_object_or_404(EventPhoto.objects.select_related('event'), pk=photo_id)
+        photo = get_object_or_404(EventPhoto.objects.select_related('event', 'event__photographer', 'event__photographer__user'), pk=photo_id)
         event = photo.event
+
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = event.user
+        if host_user and not is_studio_active(host_user):
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "Photo downloads are locked because the host studio's subscription has expired.",
+                    "is_studio_plan_expired": True,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         if not event.allow_downloads:
             return Response({"message": "Downloads are disabled for this event."}, status=status.HTTP_403_FORBIDDEN)
@@ -570,7 +629,21 @@ class PublicEventDownloadAllZipView(APIView):
         return self._generate_zip(request, access_code)
 
     def _generate_zip(self, request, access_code):
-        event = get_object_or_404(SharedEvent, access_code=access_code)
+        event = get_object_or_404(SharedEvent.objects.select_related('photographer', 'photographer__user'), access_code=access_code)
+
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = event.user
+        if host_user and not is_studio_active(host_user):
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "ZIP downloads are offline because the host studio's subscription has expired.",
+                    "is_studio_plan_expired": True,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if not event.allow_downloads:
             return Response({"message": "Downloads are disabled for this event."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -756,6 +829,8 @@ class GalleryListCreateView(APIView):
         user = get_current_user(request)
         if not user:
             return Response({"code": "AUTHENTICATION_REQUIRED", "detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        enforce_active_subscription(user, "client galleries")
 
         profile = get_photographer_profile(user)
         if not profile and not (user.is_staff or user.is_superuser):
@@ -1262,6 +1337,7 @@ class GalleryViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
+        enforce_active_subscription(user, "client galleries")
         profile = get_photographer_profile(user)
         active_plan = getattr(profile, 'studio_plan', None) if profile else None
         if profile and not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
@@ -1497,6 +1573,8 @@ class DirectUploadInitView(APIView):
         if not user:
             return Response({"code": "AUTHENTICATION_REQUIRED"}, status=status.HTTP_401_UNAUTHORIZED)
 
+        enforce_active_subscription(user, "media uploads")
+
         gallery = get_object_or_404(Gallery.objects.select_related('photographer'), id=gallery_id)
         if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
             return Response({"code": "GALLERY_ACCESS_DENIED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1654,6 +1732,8 @@ class StandardMediaUploadView(APIView):
         user = get_current_user(request)
         if not user:
             return Response({"code": "AUTHENTICATION_REQUIRED", "error": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        enforce_active_subscription(user, "media uploads")
 
         gallery = get_object_or_404(Gallery.objects.select_related('photographer'), id=gallery_id)
         if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
@@ -2136,6 +2216,9 @@ class GalleryMediaListView(APIView):
         serializer = MediaSerializer(media_qs, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def post(self, request, gallery_id):
+        return StandardMediaUploadView().post(request, gallery_id)
+
 
 def _cleanup_gallery_media_references(gallery, deleted_media_ids):
     """
@@ -2493,6 +2576,19 @@ class GalleryFaceSearchView(APIView):
 
         if not gallery:
             return Response({"detail": f"Gallery '{gallery_id}' not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = gallery.user
+        if host_user and not is_studio_active(host_user):
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "AI Face Search is disabled because the host studio's subscription has expired.",
+                    "is_studio_plan_expired": True,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # 2. Check if photographer enabled AI Face Search for this gallery
         if not gallery.face_search_enabled:
@@ -3354,6 +3450,24 @@ class PublicGallerySlugOrIdView(APIView):
                 'detail': 'This collection does not exist or has been permanently removed.'
             }, status=status.HTTP_404_NOT_FOUND)
 
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = gallery.user
+        if host_user and not is_studio_active(host_user):
+            studio_profile = getattr(host_user, 'profile', None)
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "This gallery is temporarily locked because the host studio's EX SHARE membership has expired.",
+                    "is_studio_plan_expired": True,
+                    "title": gallery.title,
+                    "client_name": getattr(gallery, 'client_name', ''),
+                    "studio_name": getattr(studio_profile, 'studio_name', 'Studio') if studio_profile else 'Studio',
+                    "studio_email": getattr(host_user, 'email', ''),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # 3. Block Archived Gallery Access
         if gallery.status == 'archived':
             return Response({
@@ -3407,6 +3521,282 @@ class PublicGallerySlugOrIdView(APIView):
 PublicGalleryDetailView = PublicGallerySlugOrIdView
 
 
+def robust_api_view(view_func):
+    """
+    Decorator ensuring download_gallery_zip works seamlessly whether called
+    via Django HttpRequest routing, DRF request wrapper, or directly in tests.
+    """
+    wrapped = api_view(['GET'])(permission_classes([AllowAny])(view_func))
+    @functools.wraps(view_func)
+    def inner(request, *args, **kwargs):
+        if isinstance(request, Request):
+            request = request._request
+        return wrapped(request, *args, **kwargs)
+    return inner
+
+
+@robust_api_view
+def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwargs):
+    """
+    Streams a full ZIP archive containing all high-resolution media for a gallery.
+    Handles both local and remote file storages (S3, Cloudinary, devtunnel, local disk).
+    Supports lookup by integer ID, UUID, or slug.
+    """
+    # 1. Lookup gallery by either ID or Slug (supports int ID, UUID, and slug)
+    target_identifier = id_or_slug if id_or_slug is not None else (slug_or_id or kwargs.get('pk') or kwargs.get('slug'))
+    if not target_identifier:
+        raise Http404("Gallery not found.")
+
+    target_str = str(target_identifier).strip()
+    gallery = None
+
+    try:
+        if target_str.isdigit():
+            gallery = Gallery.objects.filter(Q(id=int(target_str)) | Q(slug=target_str)).first()
+        else:
+            try:
+                val_uuid = uuid.UUID(target_str)
+                gallery = Gallery.objects.filter(Q(id=val_uuid) | Q(slug=target_str)).first()
+            except (ValueError, AttributeError):
+                gallery = Gallery.objects.filter(slug=target_str).first()
+    except Exception:
+        gallery = None
+
+    if not gallery:
+        try:
+            gallery = Gallery.objects.filter(slug=target_str).first()
+        except Exception:
+            pass
+
+    if not gallery:
+        try:
+            gallery = Gallery.objects.filter(Q(slug=target_str) | Q(id=target_str)).first()
+        except Exception:
+            pass
+
+    if not gallery:
+        raise Http404("Gallery not found.")
+
+    # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+    host_user = gallery.user
+    if host_user and not is_studio_active(host_user):
+        studio_profile = getattr(host_user, 'profile', None)
+        return Response(
+            {
+                "code": "studio_plan_expired",
+                "error_code": "PLAN_EXPIRED",
+                "detail": "ZIP downloads are offline because the host studio's subscription has expired.",
+                "is_studio_plan_expired": True,
+                "title": getattr(gallery, 'title', ''),
+                "client_name": getattr(gallery, 'client_name', ''),
+                "studio_name": getattr(studio_profile, 'studio_name', 'Studio') if studio_profile else 'Studio',
+                "studio_email": getattr(host_user, 'email', ''),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # 0. Block Archived Gallery Access
+    if getattr(gallery, 'status', None) == 'archived':
+        return Response({
+            'code': 'gallery_archived',
+            'status': 'archived',
+            'title': getattr(gallery, 'title', ''),
+            'client_name': getattr(gallery, 'client_name', ''),
+            'detail': 'This collection has been archived by the studio and is currently unavailable.'
+        }, status=status.HTTP_410_GONE)
+
+    # 1. Enforce Expiration
+    if getattr(gallery, 'is_expired', False):
+        return Response(
+            {
+                "error": "Gallery access window has expired. Bulk downloads are disabled.",
+                "code": "gallery_expired",
+                "is_expired": True,
+            },
+            status=status.HTTP_410_GONE
+        )
+
+    # 2. Check if downloads are permitted (allowed if either allow_downloads or downloads_enabled is True)
+    downloads_allowed = getattr(gallery, 'allow_downloads', True) or getattr(gallery, 'downloads_enabled', True)
+    if not downloads_allowed:
+        return Response(
+            {"error": "Downloads are disabled for this gallery.", "code": "downloads_disabled"},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    # 3. Get all photos / media items (support related_names: media_items, media, photos, images)
+    media_queryset = (
+        getattr(gallery, 'media_items', None) or 
+        getattr(gallery, 'media', None) or 
+        getattr(gallery, 'photos', None) or 
+        getattr(gallery, 'images', None)
+    )
+
+    if hasattr(media_queryset, 'all'):
+        qs = media_queryset.all()
+        model_fields = [f.name for f in qs.model._meta.fields] if hasattr(qs, 'model') else []
+        if 'deleted_at' in model_fields:
+            qs = qs.filter(deleted_at__isnull=True)
+        if 'upload_status' in model_fields:
+            qs = qs.exclude(upload_status='failed')
+
+        media_ids = request.GET.get('media_ids') or (hasattr(request, 'query_params') and request.query_params.get('media_ids'))
+        if media_ids:
+            id_list = [i.strip() for i in str(media_ids).split(',') if i.strip()]
+            qs = qs.filter(id__in=id_list)
+
+        media_list = list(qs)
+    else:
+        media_list = []
+
+    # Optional: Filter by section if requested via ?section=
+    section_filter = request.GET.get('section') or (hasattr(request, 'query_params') and request.query_params.get('section'))
+    if section_filter and section_filter.lower() != 'all':
+        media_list = [
+            m for m in media_list 
+            if getattr(m, 'section_title', None) == section_filter or 
+               getattr(m, 'section', None) == section_filter or 
+               (getattr(m, 'section', None) and getattr(m.section, 'title', None) == section_filter)
+        ]
+
+    # 4. Storage provider instance
+    try:
+        storage = get_storage_provider()
+    except Exception:
+        storage = None
+
+    # 5. Create an in-memory ZIP file
+    zip_buffer = io.BytesIO()
+    used_filenames = set()
+
+    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for idx, item in enumerate(media_list, start=1):
+            file_field = getattr(item, 'file', None) or getattr(item, 'image', None)
+            file_url = getattr(item, 'file_url', None) or getattr(item, 'url', None)
+            storage_key = getattr(item, 'storage_key', None) or getattr(item, 'original_storage_key', None)
+
+            # Determine clean unique filename inside ZIP
+            raw_title = getattr(item, 'title', None) or getattr(item, 'original_filename', None) or f"photo_{idx:03d}"
+            base_name, ext = os.path.splitext(raw_title)
+            ext = ext if ext else getattr(item, 'file_extension', None) or '.jpg'
+            clean_base = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_', '.')).strip() or f"photo_{idx:03d}"
+            filename = f"{idx:03d}_{clean_base}{ext}".replace('/', '_').replace('\\', '_')
+            
+            while filename in used_filenames:
+                filename = f"{idx:03d}_{clean_base}_{idx}{ext}"
+            used_filenames.add(filename)
+
+            # Read file content safely across all storage backends:
+            file_bytes = None
+
+            # Attempt A: Custom Storage Provider (LocalStorageProvider, S3, Cloudinary, etc.)
+            if storage and storage_key:
+                try:
+                    if hasattr(storage, 'download'):
+                        file_bytes = storage.download(storage_key)
+                    elif hasattr(storage, 'download_bytes'):
+                        file_bytes = storage.download_bytes(storage_key)
+                except Exception:
+                    file_bytes = None
+
+            # Attempt B: Open via Django Storage backend (works with S3, Cloudinary, FileSystemStorage)
+            if not file_bytes and file_field and hasattr(file_field, 'open'):
+                try:
+                    if getattr(file_field, 'name', None):
+                        file_field.open('rb')
+                        file_bytes = file_field.read()
+                        file_field.close()
+                except Exception:
+                    file_bytes = None
+
+            # Attempt C: Local filesystem path if exists on disk (handles NotImplementedError on S3)
+            if not file_bytes and file_field and hasattr(file_field, 'path'):
+                try:
+                    if getattr(file_field, 'name', None) and os.path.exists(file_field.path):
+                        with open(file_field.path, 'rb') as f:
+                            file_bytes = f.read()
+                except (NotImplementedError, ValueError, Exception):
+                    file_bytes = None
+
+            # Attempt D: Direct local media_root path fallback for storage_key
+            if not file_bytes and storage_key and hasattr(settings, 'MEDIA_ROOT'):
+                try:
+                    clean_k = storage_key.lstrip('/')
+                    local_obj_path = os.path.join(settings.MEDIA_ROOT, 'storage_objects', clean_k)
+                    if os.path.exists(local_obj_path):
+                        with open(local_obj_path, 'rb') as f:
+                            file_bytes = f.read()
+                    else:
+                        local_path = os.path.join(settings.MEDIA_ROOT, clean_k)
+                        if os.path.exists(local_path):
+                            with open(local_path, 'rb') as f:
+                                file_bytes = f.read()
+                except Exception:
+                    file_bytes = None
+
+            # Attempt E: Fetch from URL if remote storage URL is available (S3, Cloudinary, CDN, DevTunnel)
+            if not file_bytes:
+                target_url = None
+                if file_field and getattr(file_field, 'name', None) and hasattr(file_field, 'url'):
+                    try:
+                        target_url = file_field.url
+                    except Exception:
+                        target_url = None
+                elif file_url:
+                    target_url = file_url
+                elif storage and storage_key and hasattr(storage, 'generate_cdn_url'):
+                    try:
+                        target_url = storage.generate_cdn_url(storage_key)
+                    except Exception:
+                        target_url = None
+
+                if target_url:
+                    if str(target_url).startswith('/'):
+                        try:
+                            if hasattr(request, 'build_absolute_uri'):
+                                target_url = request.build_absolute_uri(target_url)
+                        except Exception:
+                            pass
+                    try:
+                        resp = requests.get(target_url, timeout=12)
+                        if resp.status_code == 200:
+                            file_bytes = resp.content
+                    except Exception:
+                        file_bytes = None
+
+            # Attempt F: Fallback to preview_storage_key if original missing
+            if not file_bytes and storage and getattr(item, 'preview_storage_key', None):
+                try:
+                    file_bytes = storage.download(item.preview_storage_key)
+                except Exception:
+                    file_bytes = None
+
+            # Write file bytes into the ZIP archive
+            if file_bytes:
+                zip_file.writestr(filename, file_bytes)
+
+    # Update gallery downloads count telemetry
+    try:
+        Gallery.objects.filter(id=gallery.id).update(downloads_count=F('downloads_count') + 1)
+        GalleryAnalyticsEvent.objects.create(
+            gallery=gallery,
+            event_type='download',
+            device='desktop'
+        )
+    except Exception:
+        pass
+
+    # 6. Prepare response
+    zip_buffer.seek(0)
+    gallery_slug = getattr(gallery, 'slug', None) or slugify(getattr(gallery, 'title', 'gallery')) or 'gallery'
+    zip_filename = f"{gallery_slug}_photos.zip"
+    
+    response = HttpResponse(zip_buffer.getvalue(), content_type='application/zip')
+    response['Content-Disposition'] = f'attachment; filename="{zip_filename}"'
+    response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+    return response
+
+
 class PublicGalleryDownloadZipView(APIView):
     """
     Stream high-speed ZIP download for public gallery.
@@ -3414,84 +3804,9 @@ class PublicGalleryDownloadZipView(APIView):
     """
     permission_classes = [AllowAny]
 
-    def get(self, request, slug_or_id):
-        gallery = get_public_gallery(slug_or_id)
-
-        # 0. Block Archived Gallery Access
-        if gallery.status == 'archived':
-            return Response({
-                'code': 'gallery_archived',
-                'status': 'archived',
-                'title': gallery.title,
-                'client_name': gallery.client_name,
-                'detail': 'This collection has been archived by the studio and is currently unavailable.'
-            }, status=status.HTTP_410_GONE)
-
-        # 1. Enforce Expiration:
-        if gallery.is_expired:
-            return Response(
-                {
-                    "error": "Gallery access window has expired. Bulk downloads are disabled.",
-                    "code": "gallery_expired",
-                    "is_expired": True,
-                },
-                status=status.HTTP_410_GONE
-            )
-
-        # 2. Check if downloads are permitted:
-        if not gallery.allow_downloads or not getattr(gallery, 'downloads_enabled', True):
-            return Response(
-                {"error": "Downloads are disabled for this gallery.", "code": "downloads_disabled"},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        # 3. Stream ZIP archive
-        storage = get_storage_provider()
-        photos = gallery.media_items.filter(deleted_at__isnull=True, upload_status='completed')
-
-        media_ids = request.query_params.get('media_ids')
-        if media_ids:
-            id_list = [i.strip() for i in media_ids.split(',') if i.strip()]
-            photos = photos.filter(id__in=id_list)
-
-        if not photos.exists():
-            return Response({"error": "No media available for download in this gallery.", "code": "no_media"}, status=status.HTTP_404_NOT_FOUND)
-
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            used_names = set()
-            for photo in photos:
-                try:
-                    if photo.file:
-                        data = photo.file.read()
-                    elif photo.storage_key:
-                        data = storage.download_bytes(photo.storage_key)
-                    else:
-                        continue
-                except Exception:
-                    continue
-
-                raw_name = photo.original_filename or f"photo_{photo.id}.jpg"
-                base_name, ext = os.path.splitext(raw_name)
-                if not ext:
-                    ext = ".jpg"
-
-                clean_name = f"{base_name}{ext}"
-                counter = 1
-                while clean_name in used_names:
-                    clean_name = f"{base_name}_{counter}{ext}"
-                    counter += 1
-                used_names.add(clean_name)
-                zip_file.writestr(clean_name, data)
-
-        Gallery.objects.filter(id=gallery.id).update(downloads_count=F('downloads_count') + 1)
-
-        zip_buffer.seek(0)
-        zip_filename = f"{slugify(gallery.title) or 'gallery'}_photos.zip"
-        response = HttpResponse(zip_buffer.getvalue(), content_type='application/zip')
-        response['Content-Disposition'] = f'attachment; filename="{zip_filename}"'
-        return response
-
+    def get(self, request, slug_or_id=None, id_or_slug=None, *args, **kwargs):
+        target = slug_or_id or id_or_slug or kwargs.get('pk')
+        return download_gallery_zip(request, id_or_slug=target)
 
 class PublicGalleryVerifyPinView(APIView):
     """
@@ -3503,6 +3818,24 @@ class PublicGalleryVerifyPinView(APIView):
 
     def post(self, request, slug_or_id):
         gallery = get_public_gallery(slug_or_id)
+
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = gallery.user
+        if host_user and not is_studio_active(host_user):
+            studio_profile = getattr(host_user, 'profile', None)
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "This gallery is locked because the host studio's subscription has expired.",
+                    "is_studio_plan_expired": True,
+                    "title": gallery.title,
+                    "client_name": getattr(gallery, 'client_name', ''),
+                    "studio_name": getattr(studio_profile, 'studio_name', 'Studio') if studio_profile else 'Studio',
+                    "studio_email": getattr(host_user, 'email', ''),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # 0. Block Archived Gallery Access
         if gallery.status == 'archived':

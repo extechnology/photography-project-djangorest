@@ -1,0 +1,1 @@
+from backend.atelier_notifications.urls import urlpatterns

@@ -52,6 +52,7 @@ from App.Storage.storage_views import (
     PublicGallerySlugOrIdView,
     PublicGalleryDetailView,
     PublicGalleryDownloadZipView,
+    download_gallery_zip,
     PublicGalleryVerifyPinView,
     VerifyGalleryPinView,
     PublicGalleryTrackView,
@@ -130,6 +131,11 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/upload-init/', DirectUploadInitView.as_view(), name='direct-upload-init'),
     path('galleries/<str:gallery_id>/upload-confirm/', DirectUploadConfirmView.as_view(), name='direct-upload-confirm'),
     path('galleries/<str:gallery_id>/upload/', StandardMediaUploadView.as_view(), name='standard-media-upload'),
+
+    # Public Gallery endpoints (No login required - locked when studio subscription expired)
+    path('galleries/<str:slug_or_id>/public/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-detail-direct'),
+    path('galleries/<str:slug_or_id>/verify-pin/', PublicGalleryVerifyPinView.as_view(), name='public-gallery-verify-pin-direct'),
+    path('galleries/<str:slug_or_id>/download-zip/', download_gallery_zip, name='public-gallery-download-zip-direct'),
 
     # Gallery Detail & Settings (placed after sub-routes so <str:pk> matches clean gallery IDs or slugs)
     path('galleries/<str:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore'),

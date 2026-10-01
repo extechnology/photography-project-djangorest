@@ -18,6 +18,9 @@ class BaseStorageProvider:
     def download(self, key: str) -> bytes:
         raise NotImplementedError
 
+    def download_bytes(self, key: str) -> bytes:
+        return self.download(key)
+
     def delete(self, key: str) -> bool:
         raise NotImplementedError
 

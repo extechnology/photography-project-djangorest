@@ -9,6 +9,7 @@ urlpatterns = [
     # 1. Public Guest Portal (accessible via QR code link without authentication)
     path('public/events/<str:id_or_slug>/', PublicEventDetailView.as_view(), name='public-event-detail'),
     path('events/public/<str:id_or_slug>/', PublicEventDetailView.as_view(), name='events-public-detail'),
+    path('events/<str:id_or_slug>/public/', PublicEventDetailView.as_view(), name='events-detail-public-direct'),
 
     # 2. Face search routes (UUID and string slug)
     path('events/<uuid:event_id>/face-search/', EventFaceSearchView.as_view(), name='event-face-search'),

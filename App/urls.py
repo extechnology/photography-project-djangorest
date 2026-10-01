@@ -7,6 +7,8 @@ urlpatterns = [
     path('photographers/', include('App.Photographers.photo_urls')),
     path('plans/', include('App.Subscriptions.sub_urls')),
     path('subscriptions/', include('App.Subscriptions.sub_urls')),
+    path('notifications/', include('backend.atelier_notifications.urls')),
+    path('billing/', include('backend.billing.urls')),
     path('storage/', include('App.Storage.storage_urls')),
     path('payments/verify/', VerifyPaymentView.as_view(), name='payment-verify-direct'),
     path('payments/razorpay/webhook/', RazorpayWebhookView.as_view(), name='payment-webhook-direct'),

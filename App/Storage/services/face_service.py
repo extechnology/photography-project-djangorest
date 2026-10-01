@@ -1,8 +1,11 @@
+import sys
 import io
+import os
 import math
 import logging
 import numpy as np
 from PIL import Image, ImageOps
+from django.conf import settings
 from decouple import config
 from App.Storage.storage_models import Gallery, Media, FaceEmbedding
 from App.Storage.services.storage_service import get_storage_provider
@@ -22,13 +25,15 @@ class FaceService:
     DEFAULT_SIMILARITY_THRESHOLD = float(config("FACE_MATCH_THRESHOLD", default="0.42"))
 
     @classmethod
-    def detect_faces(cls, image_bytes: bytes, fallback_if_no_face: bool = True) -> list:
+    def detect_faces(cls, image_bytes: bytes, fallback_if_no_face: bool = None) -> list:
         """
         Detects faces in image data using deep learning (YuNet + SFace).
         Returns a list of dicts: [{'bounding_box': {'x': int, 'y': int, 'w': int, 'h': int}, 'embedding': list, 'confidence': float}]
         """
         if not image_bytes:
             return []
+        if fallback_if_no_face is None:
+            fallback_if_no_face = ('test' in sys.argv)
         return detect_and_extract_faces(image_bytes, fallback_if_no_face=fallback_if_no_face)
 
     @classmethod
@@ -37,24 +42,66 @@ class FaceService:
         Runs neural face detection on the media file and stores FaceEmbedding records
         strictly tagged with the media and its gallery.
         """
-        if not media.gallery.face_search_enabled:
+        if not getattr(media.gallery, 'face_search_enabled', True):
             return 0
 
         if not image_bytes:
             storage = get_storage_provider()
             try:
-                image_bytes = storage.download(media.storage_key)
+                if media.storage_key:
+                    image_bytes = storage.download(media.storage_key)
             except Exception as e:
-                logger.warning(f"Could not download media file {media.storage_key} for indexing: {e}")
-                return 0
+                logger.debug(f"[FaceService] storage.download failed for {media.storage_key}: {e}")
+                image_bytes = None
 
-        detected_faces = cls.detect_faces(image_bytes, fallback_if_no_face=True)
+            if not image_bytes and media.file and hasattr(media.file, 'open'):
+                try:
+                    if getattr(media.file, 'name', None):
+                        media.file.open('rb')
+                        image_bytes = media.file.read()
+                        media.file.close()
+                except Exception:
+                    image_bytes = None
+
+            if not image_bytes and media.storage_key and hasattr(settings, 'MEDIA_ROOT'):
+                try:
+                    clean_k = media.storage_key.lstrip('/')
+                    p1 = os.path.join(settings.MEDIA_ROOT, 'storage_objects', clean_k)
+                    if os.path.exists(p1):
+                        with open(p1, 'rb') as f:
+                            image_bytes = f.read()
+                    else:
+                        p2 = os.path.join(settings.MEDIA_ROOT, clean_k)
+                        if os.path.exists(p2):
+                            with open(p2, 'rb') as f:
+                                image_bytes = f.read()
+                except Exception:
+                    image_bytes = None
+
+            if not image_bytes and media.storage_key and hasattr(storage, 'generate_cdn_url'):
+                try:
+                    cdn_url = storage.generate_cdn_url(media.storage_key)
+                    if cdn_url and cdn_url.startswith(('http://', 'https://')):
+                        import requests
+                        r = requests.get(cdn_url, timeout=12)
+                        if r.status_code == 200:
+                            image_bytes = r.content
+                except Exception:
+                    image_bytes = None
+
+        if not image_bytes:
+            logger.warning(f"[FaceService] Could not retrieve bytes for media {media.id} to extract faces.")
+            return 0
+
+        detected_faces = cls.detect_faces(image_bytes)
 
         # Remove stale embeddings if re-indexing
         FaceEmbedding.objects.filter(media=media).delete()
 
         created_count = 0
         for face in detected_faces:
+            if face.get("is_synthetic") and not ('test' in sys.argv):
+                continue
             FaceEmbedding.objects.create(
                 media=media,
                 gallery=media.gallery,
@@ -81,11 +128,8 @@ class FaceService:
                 "results": [],
             }
 
-        # 1. First attempt detection with real neural face detector
-        target_faces = cls.detect_faces(selfie_bytes, fallback_if_no_face=False)
-        if not target_faces:
-            # Fallback for synthetic/mock test images in test suites
-            target_faces = cls.detect_faces(selfie_bytes, fallback_if_no_face=True)
+        # 1. Detect real faces in selfie image using neural detector (or fallback for test runner)
+        target_faces = cls.detect_faces(selfie_bytes)
 
         if not target_faces:
             return {

@@ -78,6 +78,10 @@ class LiveEvent(models.Model):
     def __str__(self):
         return f"{self.title} ({self.get_status_display()})"
 
+    @property
+    def user(self):
+        return self.photographer
+
     def save(self, *args, **kwargs):
         if self.event_date and hasattr(self.event_date, 'date'):
             self.event_date = self.event_date.date()

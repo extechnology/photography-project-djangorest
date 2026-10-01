@@ -90,6 +90,10 @@ class SharedEvent(models.Model):
         super().save(*args, **kwargs)
 
     @property
+    def user(self):
+        return getattr(self.photographer, 'user', None)
+
+    @property
     def is_pin_protected(self):
         return bool(self.pin_code and self.pin_code.strip())
 
@@ -321,6 +325,10 @@ class Gallery(models.Model):
         except Exception:
             pass
         return self.password == raw_password
+
+    @property
+    def user(self):
+        return getattr(self.photographer, 'user', None)
 
     @property
     def is_expired(self):

@@ -95,8 +95,8 @@ DATABASES = {
 #         'NAME': config('DB_NAME'),
 #         'USER': config('DB_USER'),
 #         'PASSWORD': config('DB_PASSWORD'),
-#         'HOST': '127.0.0.1',
-#         'PORT': '5432',
+#         'HOST': config('DB_HOST'),
+#         'PORT': config('DB_PORT'),
 #     }
 # }
 
@@ -308,9 +308,9 @@ NUDE_DETECTION_PROHIBITED_CLASSES = [
 # ------------------------------------------------------------------------------
 # PAYMENT GATEWAY (RAZORPAY) SETTINGS
 # ------------------------------------------------------------------------------
-RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='rzp_test_placeholder')
-RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='rzp_secret_placeholder')
-RAZORPAY_WEBHOOK_SECRET = config('RAZORPAY_WEBHOOK_SECRET', default='')
+RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='rzp_test_TdPGMrKMJ0xp2j')
+RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='N36y6tQ5Vq9sbC4SeYvbVaAG')
+RAZORPAY_WEBHOOK_SECRET = config('RAZORPAY_WEBHOOK_SECRET', default='N36y6tQ5Vq9sbC4SeYvbVaAG')
 
 # ------------------------------------------------------------------------------
 # HIGH-CAPACITY MULTI-FILE UPLOAD CONFIGURATION (Supports 2,000+ files per batch)

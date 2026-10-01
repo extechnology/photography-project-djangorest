@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
 from django.utils import timezone
+from django.conf import settings
 
 
 def default_allowed_templates():
@@ -103,6 +104,10 @@ class Plan(models.Model):
         return f"{curr_symbol}{monthly:,} / Month • Billed {cycle_name} ({curr_symbol}{total:,})"
 
 
+# Alias for compatibility with StudioPlan references
+StudioPlan = Plan
+
+
 # =============================================================================
 # 2. Legacy SubscriptionPlans (Kept for Backward Compatibility)
 # =============================================================================
@@ -177,9 +182,18 @@ class PhotographerSubscription(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='subscriptions'
+    )
     photographer = models.OneToOneField(
         'App.PhotographerProfile',
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='subscription'
     )
     plan = models.ForeignKey(
@@ -200,10 +214,21 @@ class PhotographerSubscription(models.Model):
     started_at = models.DateTimeField(default=timezone.now)
     expires_at = models.DateTimeField(null=True, blank=True)
     auto_renew = models.BooleanField(default=True)
+    cancel_at_period_end = models.BooleanField(default=False)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
     payment_gateway_ref = models.CharField(max_length=255, blank=True, default='')
+    razorpay_subscription_id = models.CharField(max_length=128, blank=True, default='')
+    storage_limit_bytes = models.BigIntegerField(default=16106127360, null=True, blank=True)
     extra_storage_gb = models.PositiveIntegerField(default=0, help_text="For Elite Plan storage add-on")
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
+
+    def save(self, *args, **kwargs):
+        if self.photographer and not self.user:
+            self.user = getattr(self.photographer, 'user', None)
+        if self.plan and (self.storage_limit_bytes is None or self.storage_limit_bytes == 16106127360):
+            self.storage_limit_bytes = self.effective_storage_limit_bytes
+        super().save(*args, **kwargs)
 
     def __str__(self):
         plan_name = self.plan.name if self.plan else (self.legacy_plan.name if self.legacy_plan else "No Plan")
@@ -233,6 +258,12 @@ class PhotographerSubscription(models.Model):
         if self.expires_at <= now:
             return 0
         return (self.expires_at - now).days
+
+    @property
+    def is_expired(self):
+        if not self.expires_at:
+            return False
+        return timezone.now() > self.expires_at
 
     @property
     def is_active(self):

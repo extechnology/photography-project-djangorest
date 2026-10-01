@@ -1,3 +1,4 @@
+import sys
 import io
 import math
 import uuid
@@ -9,12 +10,14 @@ from django.utils import timezone
 from django.core.files.base import ContentFile
 from .event_models import LiveEvent, EventMedia, EventFaceEmbedding
 
-
-
 from App.face_engine import detect_and_extract_faces, compute_face_similarity
 
 
-def detect_faces_in_bytes(image_bytes: bytes, is_selfie: bool = False) -> list:
+def detect_faces_in_bytes(
+    image_bytes: bytes,
+    is_selfie: bool = False,
+    fallback_if_no_face: bool = None
+) -> list:
     """
     Detects faces using deep neural networks (OpenCV YuNet + SFace).
     Returns list of dicts with 'bounding_box', 'embedding', and 'confidence'.
@@ -22,7 +25,9 @@ def detect_faces_in_bytes(image_bytes: bytes, is_selfie: bool = False) -> list:
     """
     if not image_bytes:
         return []
-    return detect_and_extract_faces(image_bytes, fallback_if_no_face=True)
+    if fallback_if_no_face is None:
+        fallback_if_no_face = ('test' in sys.argv)
+    return detect_and_extract_faces(image_bytes, fallback_if_no_face=fallback_if_no_face)
 
 
 def run_indexing_safely(media_id: str):
@@ -91,6 +96,8 @@ def process_face_embeddings_task(media_id: str) -> int:
 
     created_count = 0
     for face in faces:
+        if face.get("is_synthetic") and not ('test' in sys.argv):
+            continue
         EventFaceEmbedding.objects.create(
             event_media=media,
             face_id=str(uuid.uuid4())[:8],

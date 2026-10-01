@@ -125,6 +125,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     def is_staff_role(self):
         return self.role == self.Role.STAFF
 
+    @property
+    def profile(self):
+        return getattr(self, 'photographer_profile', None)
+
     def clean(self):
         super().clean()
         if not self.pk and not self.is_superuser:

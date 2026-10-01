@@ -26,6 +26,7 @@ import threading
 from .event_tasks import process_face_embeddings_task, compare_selfie_faces_task, run_indexing_safely
 from App.Storage.storage_models import Gallery, Media as GalleryMedia, GallerySection
 from App.Photographers.photo_models import PhotographerProfile
+from backend.atelier_plans.subscription_enforcement import enforce_active_subscription, is_studio_active
 
 
 def _trigger_face_indexing(media_id_str: str):
@@ -148,6 +149,8 @@ class LiveEventViewSet(viewsets.ModelViewSet):
         return self.update(request, *args, **kwargs)
 
     def create(self, request, *args, **kwargs):
+        enforce_active_subscription(request.user, "live events")
+
         # 1. Enforce Plan Limits
         subscription = getattr(request.user, 'subscription', None)
         if not subscription and hasattr(request.user, 'photographer_profile'):
@@ -270,6 +273,8 @@ class LiveEventViewSet(viewsets.ModelViewSet):
         Ingest endpoint for camera shots, folder watcher, and single manual uploads.
         Accepts BOTH photos and video files (mp4, mov, webm, etc.).
         """
+        enforce_active_subscription(request.user, "media uploads")
+
         event = self.get_object()
         file_obj = request.FILES.get('photo') or request.FILES.get('video') or request.FILES.get('file')
 
@@ -333,6 +338,8 @@ class LiveEventViewSet(viewsets.ModelViewSet):
         Batch upload endpoint matching the Studio Gallery upload experience.
         Ingests lists of photos and videos with section categorization in a single request.
         """
+        enforce_active_subscription(request.user, "media uploads")
+
         event = self.get_object()
         photos = request.FILES.getlist('photos')
         videos = request.FILES.getlist('videos')
@@ -677,6 +684,24 @@ class PublicEventDetailView(APIView):
         if not event:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = event.user
+        if host_user and not is_studio_active(host_user):
+            studio_profile = getattr(host_user, 'profile', None)
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "This live event stream is temporarily locked because the host studio's EX SHARE membership has expired.",
+                    "is_studio_plan_expired": True,
+                    "title": getattr(event, 'title', ''),
+                    "venue": getattr(event, 'venue', ''),
+                    "studio_name": getattr(studio_profile, 'studio_name', 'Studio') if studio_profile else 'Studio',
+                    "studio_email": getattr(host_user, 'email', ''),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         event.guest_views += 1
         event.save(update_fields=['guest_views'])
         return Response(PublicEventPortalSerializer(event, context={'request': request}).data)
@@ -705,6 +730,24 @@ class EventFaceSearchView(APIView):
 
         if not event:
             return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # ─── LOCK CHECK: Host Studio Subscription Expiry ───
+        host_user = event.user
+        if host_user and not is_studio_active(host_user):
+            studio_profile = getattr(host_user, 'profile', None)
+            return Response(
+                {
+                    "code": "studio_plan_expired",
+                    "error_code": "PLAN_EXPIRED",
+                    "detail": "AI Face Search is disabled because the host studio's subscription has expired.",
+                    "is_studio_plan_expired": True,
+                    "title": getattr(event, 'title', ''),
+                    "venue": getattr(event, 'venue', ''),
+                    "studio_name": getattr(studio_profile, 'studio_name', 'Studio') if studio_profile else 'Studio',
+                    "studio_email": getattr(host_user, 'email', ''),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # 1. Resolve selfie image bytes from multipart upload or base64 string
         selfie_bytes = None
