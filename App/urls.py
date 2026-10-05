@@ -10,6 +10,7 @@ urlpatterns = [
     path('notifications/', include('backend.atelier_notifications.urls')),
     path('billing/', include('backend.billing.urls')),
     path('storage/', include('App.Storage.storage_urls')),
+    path('culling/', include('App.Culling.culling_urls')),
     path('payments/verify/', VerifyPaymentView.as_view(), name='payment-verify-direct'),
     path('payments/razorpay/webhook/', RazorpayWebhookView.as_view(), name='payment-webhook-direct'),
 

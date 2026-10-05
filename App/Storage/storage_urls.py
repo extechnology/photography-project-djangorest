@@ -137,10 +137,17 @@ urlpatterns = [
     path('galleries/<str:slug_or_id>/verify-pin/', PublicGalleryVerifyPinView.as_view(), name='public-gallery-verify-pin-direct'),
     path('galleries/<str:slug_or_id>/download-zip/', download_gallery_zip, name='public-gallery-download-zip-direct'),
 
+    # Bulk Delete Media (Global / Collection Routes - MUST come before <str:gallery_id> and <str:pk>)
+    path('galleries/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='media-bulk-delete'),
+    path('galleries/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-bulk-delete-alias'),
+
     # Gallery Detail & Settings (placed after sub-routes so <str:pk> matches clean gallery IDs or slugs)
     path('galleries/<str:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore'),
     path('galleries/<uuid:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore-uuid'),
-    path('galleries/<str:pk>/', GalleryDetailView.as_view(), name='gallery-detail'),
+
+    # Gallery-specific Bulk Delete
+    path('galleries/<str:gallery_id>/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-media-bulk-delete'),
+    path('galleries/<str:gallery_id>/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-id-bulk-delete-alias'),
 
     # Gallery Media Items List
     path('galleries/<str:gallery_id>/media/', GalleryMediaListView.as_view(), name='gallery-media-list'),
@@ -150,7 +157,9 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/photos/<uuid:photo_id>/', MediaDetailDeleteView.as_view(), name='gallery-photo-delete'),
     path('galleries/<str:gallery_id>/media/<uuid:media_id>/delete/', MediaDetailDeleteView.as_view(), name='gallery-media-delete-action'),
     path('galleries/<str:gallery_id>/photos/<uuid:photo_id>/delete/', MediaDetailDeleteView.as_view(), name='gallery-photo-delete-action'),
-    path('galleries/<str:gallery_id>/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-media-bulk-delete'),
+
+    # Gallery Detail View
+    path('galleries/<str:pk>/', GalleryDetailView.as_view(), name='gallery-detail'),
 
     # Direct Media & Photo Deletion Routes
     path('galleries/media/<uuid:media_id>/', MediaDetailDeleteView.as_view(), name='media-detail-delete'),
@@ -162,7 +171,6 @@ urlpatterns = [
     path('photos/<uuid:photo_id>/', MediaDetailDeleteView.as_view(), name='photo-direct-delete'),
     path('photos/<uuid:photo_id>/delete/', MediaDetailDeleteView.as_view(), name='photo-direct-delete-action'),
 
-    path('galleries/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='media-bulk-delete'),
     path('galleries/media/<uuid:media_id>/favorite/', MediaToggleFavoriteView.as_view(), name='media-toggle-favorite'),
 
     # -------------------------------------------------------------------------

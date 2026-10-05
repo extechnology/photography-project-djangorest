@@ -1,3 +1,4 @@
+from django.db import models
 from rest_framework import serializers
 from App.Storage.storage_models import (
     SharedEvent,
@@ -208,6 +209,7 @@ class MediaSerializer(serializers.ModelSerializer):
     download_url = serializers.SerializerMethodField()
     gallery_id = serializers.UUIDField(source='gallery.id', read_only=True)
     type = serializers.CharField(source='media_type', read_only=True)
+    size_bytes = serializers.IntegerField(source='file_size', read_only=True)
     sort_order = serializers.IntegerField(source='display_order', read_only=True)
     size_mb = serializers.SerializerMethodField()
 
@@ -224,6 +226,7 @@ class MediaSerializer(serializers.ModelSerializer):
             'caption',
             'original_filename',
             'file_size',
+            'size_bytes',
             'size_mb',
             'width',
             'height',
@@ -254,6 +257,7 @@ class MediaSerializer(serializers.ModelSerializer):
             'id',
             'gallery_id',
             'file_size',
+            'size_bytes',
             'size_mb',
             'width',
             'height',
@@ -277,6 +281,7 @@ class MediaSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['file_size'] = instance.file_size or 0
+        data['size_bytes'] = instance.file_size or 0
         data['size_mb'] = self.get_size_mb(instance)
         return data
 
@@ -410,9 +415,15 @@ class GallerySerializer(serializers.ModelSerializer):
     share_url = serializers.SerializerMethodField()
     is_password_protected = serializers.BooleanField(required=False)
     face_search_enabled = serializers.BooleanField(required=False)
+    watermark_enabled = serializers.BooleanField(required=False)
+    watermark_text = serializers.CharField(max_length=120, required=False, allow_null=True, allow_blank=True)
+    watermark_opacity = serializers.FloatField(required=False, allow_null=True)
+    watermark_position = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
+    watermark_image = serializers.SerializerMethodField()
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     expires_at = serializers.DateTimeField(allow_null=True, required=False)
     is_expired = serializers.SerializerMethodField()
+    section_counts = serializers.SerializerMethodField()
     media = serializers.SerializerMethodField()
     media_items = serializers.SerializerMethodField()
 
@@ -434,6 +445,7 @@ class GallerySerializer(serializers.ModelSerializer):
             'template_banners',
             'masonry_banner_images',
             'sections',
+            'section_counts',
             'status',
             'visibility',
             'share_token',
@@ -449,6 +461,11 @@ class GallerySerializer(serializers.ModelSerializer):
             'allow_downloads',
             'allow_favorites',
             'face_search_enabled',
+            'watermark_enabled',
+            'watermark_text',
+            'watermark_opacity',
+            'watermark_position',
+            'watermark_image',
             'views_count',
             'downloads_count',
             'favorites_count',
@@ -504,6 +521,13 @@ class GallerySerializer(serializers.ModelSerializer):
         data['total_size_formatted'] = instance.total_size_formatted
         data['sections'] = instance.sections_list
         data['is_expired'] = bool(instance.is_expired)
+        data['favorites_count'] = self.get_favorites_count(instance)
+        data['section_counts'] = self.get_section_counts(instance)
+        data['watermark_enabled'] = bool(instance.watermark_enabled)
+        data['watermark_text'] = self.get_watermark_text(instance)
+        data['watermark_opacity'] = self.get_watermark_opacity(instance)
+        data['watermark_position'] = self.get_watermark_position(instance)
+        data['watermark_image'] = self.get_watermark_image(instance)
         if 'next_cursor' in self.context:
             data['next_cursor'] = self.context.get('next_cursor')
         if 'has_more' in self.context:
@@ -511,6 +535,21 @@ class GallerySerializer(serializers.ModelSerializer):
         if 'filtered_media_count' in self.context:
             data['filtered_media_count'] = self.context.get('filtered_media_count')
         return data
+
+    def get_section_counts(self, obj):
+        counts = (
+            obj.media_items.filter(deleted_at__isnull=True)
+            .values('section_title')
+            .annotate(count=models.Count('id'))
+        )
+        return {
+            (item['section_title'] or 'UNASSIGNED').upper(): item['count']
+            for item in counts
+        }
+
+    def get_favorites_count(self, obj):
+        count = obj.media_items.filter(deleted_at__isnull=True, is_favorite=True).count()
+        return count if count > 0 else getattr(obj, 'favorites_count', 0)
 
     def get_total_media_count(self, obj):
         return (getattr(obj, 'photos_count', 0) or 0) + (getattr(obj, 'videos_count', 0) or 0)
@@ -540,6 +579,69 @@ class GallerySerializer(serializers.ModelSerializer):
                                 "AI Biometric Face Search is locked on your current subscription plan. Upgrade to enable."
                             )
         return value
+
+    def validate_watermark_enabled(self, value):
+        if value:
+            request = self.context.get('request')
+            if request and getattr(request, 'user', None):
+                user = request.user
+                if not (user.is_staff or user.is_superuser):
+                    from App.Photographers.photo_models import PhotographerProfile
+                    from rest_framework.exceptions import PermissionDenied
+                    profile = getattr(user, 'photographer_profile', None) or PhotographerProfile.objects.filter(user=user).first()
+                    sub = getattr(profile, 'subscription', None) if profile else None
+                    if not sub and hasattr(user, 'subscription'):
+                        sub = user.subscription
+                    plan = getattr(sub, 'plan', None) if sub and getattr(sub, 'is_active', True) else None
+                    if not plan and profile:
+                        plan = getattr(profile, 'studio_plan', None) or getattr(profile, 'plan', None)
+
+                    if not plan or not getattr(plan, 'watermark_enabled', False):
+                        raise PermissionDenied({
+                            "error_code": "WATERMARK_LOCKED",
+                            "upgrade_required": True,
+                            "detail": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries.",
+                            "message": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries."
+                        })
+        return value
+
+    def get_watermark_text(self, obj):
+        legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
+        if obj.watermark_text and str(obj.watermark_text).strip():
+            txt = str(obj.watermark_text).strip()
+            if txt.lower() not in legacy_placeholders:
+                return txt if txt.startswith('©') else f"© {txt}"
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and hasattr(profile, 'get_effective_watermark_text'):
+            return profile.get_effective_watermark_text()
+        user = getattr(profile, 'user', None) or getattr(obj, 'user', None)
+        full_name = user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else ''
+        name = full_name or (getattr(profile, 'name', '') if profile else '') or (getattr(user, 'username', '') if user else '') or 'Photographer'
+        return f"© {name}"
+
+    def get_watermark_opacity(self, obj):
+        if obj.watermark_opacity is not None:
+            return obj.watermark_opacity
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        return getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45
+
+    def get_watermark_position(self, obj):
+        if obj.watermark_position:
+            return obj.watermark_position
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        pos = getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'
+        return pos.replace('_', '-') if pos else 'bottom-right'
+
+    def get_watermark_image(self, obj):
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and getattr(profile, 'watermark_image', None):
+            request = self.context.get('request')
+            try:
+                url = profile.watermark_image.url
+                return request.build_absolute_uri(url) if request else url
+            except Exception:
+                return None
+        return None
 
     def update(self, instance, validated_data):
         cover_image = validated_data.pop('cover_image', None)
@@ -665,8 +767,8 @@ class PublicGallerySerializer(serializers.ModelSerializer):
     total_size_bytes = serializers.IntegerField(read_only=True)
     total_size_mb = serializers.FloatField(read_only=True)
     total_size_formatted = serializers.CharField(read_only=True)
-    photographer_name = serializers.ReadOnlyField(source='photographer.name')
-    studio_name = serializers.ReadOnlyField(source='photographer.studio_name')
+    photographer_name = serializers.SerializerMethodField()
+    studio_name = serializers.SerializerMethodField()
     requires_password = serializers.SerializerMethodField()
     cover_image = serializers.SerializerMethodField()
     media = serializers.SerializerMethodField()
@@ -674,6 +776,12 @@ class PublicGallerySerializer(serializers.ModelSerializer):
     template_banners = serializers.SerializerMethodField()
     expires_at = serializers.DateTimeField(read_only=True)
     is_expired = serializers.SerializerMethodField()
+    section_counts = serializers.SerializerMethodField()
+    watermark_enabled = serializers.SerializerMethodField()
+    watermark_text = serializers.SerializerMethodField()
+    watermark_opacity = serializers.SerializerMethodField()
+    watermark_position = serializers.SerializerMethodField()
+    watermark_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Gallery
@@ -694,6 +802,11 @@ class PublicGallerySerializer(serializers.ModelSerializer):
             'expires_at',
             'is_expired',
             'face_search_enabled',
+            'watermark_enabled',
+            'watermark_text',
+            'watermark_opacity',
+            'watermark_position',
+            'watermark_image',
             'photos_count',
             'videos_count',
             'total_media_count',
@@ -705,6 +818,7 @@ class PublicGallerySerializer(serializers.ModelSerializer):
             'studio_name',
             'cover_image',
             'sections',
+            'section_counts',
             'media',
             'created_at',
         ]
@@ -717,7 +831,107 @@ class PublicGallerySerializer(serializers.ModelSerializer):
         data['total_size_bytes'] = instance.total_size_bytes
         data['total_size_mb'] = instance.total_size_mb
         data['total_size_formatted'] = instance.total_size_formatted
+        data['favorites_count'] = self.get_favorites_count(instance)
+        data['section_counts'] = self.get_section_counts(instance)
+        data['watermark_enabled'] = self.get_watermark_enabled(instance)
+        data['watermark_text'] = self.get_watermark_text(instance)
+        data['watermark_opacity'] = self.get_watermark_opacity(instance)
+        data['watermark_position'] = self.get_watermark_position(instance)
+        data['watermark_image'] = self.get_watermark_image(instance)
+        data['photographer_name'] = self.get_photographer_name(instance)
+        data['studio_name'] = self.get_studio_name(instance)
         return data
+
+    def get_watermark_enabled(self, obj) -> bool:
+        """
+        Returns True if the gallery has watermarking enabled AND
+        the photographer's current subscription plan allows watermarking.
+        """
+        if not getattr(obj, 'watermark_enabled', False):
+            return False
+
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        user = getattr(profile, 'user', None) or getattr(obj, 'user', None) or getattr(obj.photographer, 'user', None)
+
+        from App.Subscriptions.sub_models import PhotographerSubscription
+        if user:
+            curr_sub = PhotographerSubscription.objects.filter(photographer__user=user, status='active').first()
+            if curr_sub and curr_sub.plan and hasattr(curr_sub.plan, 'watermark_enabled'):
+                return bool(curr_sub.plan.watermark_enabled)
+        return True
+
+    def get_section_counts(self, obj):
+        counts = (
+            obj.media_items.filter(deleted_at__isnull=True)
+            .values('section_title')
+            .annotate(count=models.Count('id'))
+        )
+        return {
+            (item['section_title'] or 'UNASSIGNED').upper(): item['count']
+            for item in counts
+        }
+
+    def get_photographer_name(self, obj) -> str:
+        if not obj.photographer:
+            return 'Photographer'
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and getattr(profile, 'name', None) and str(profile.name).strip():
+            return str(profile.name).strip()
+        user = getattr(profile, 'user', None) or getattr(obj, 'user', None) or getattr(obj.photographer, 'user', None)
+        if user and hasattr(user, 'get_full_name') and user.get_full_name().strip():
+            return user.get_full_name().strip()
+        return getattr(user, 'username', 'Photographer') if user else 'Photographer'
+
+    def get_studio_name(self, obj) -> str:
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and getattr(profile, 'studio_name', None) and str(profile.studio_name).strip():
+            return str(profile.studio_name).strip()
+        return f"{self.get_photographer_name(obj)} Studio"
+
+    def get_watermark_text(self, obj) -> str:
+        """Returns the custom gallery watermark or defaults to photographer's name."""
+        legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
+        if obj.watermark_text and str(obj.watermark_text).strip():
+            txt = str(obj.watermark_text).strip()
+            if txt.lower() not in legacy_placeholders:
+                return txt if txt.startswith('©') else f"© {txt}"
+
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and hasattr(profile, 'get_effective_watermark_text'):
+            return profile.get_effective_watermark_text()
+
+        return f"© {self.get_photographer_name(obj)}"
+
+    def get_watermark_opacity(self, obj) -> float:
+        if obj.watermark_opacity is not None:
+            return float(obj.watermark_opacity)
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and getattr(profile, 'watermark_opacity', None) is not None:
+            return float(profile.watermark_opacity)
+        return 0.45
+
+    def get_watermark_position(self, obj) -> str:
+        if obj.watermark_position and str(obj.watermark_position).strip():
+            return str(obj.watermark_position).strip().replace('_', '-')
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and getattr(profile, 'watermark_position', None):
+            return str(profile.watermark_position).replace('_', '-')
+        return 'bottom-right'
+
+    def get_watermark_image(self, obj):
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if profile and getattr(profile, 'watermark_image', None):
+            request = self.context.get('request')
+            try:
+                url = profile.watermark_image.url
+                return request.build_absolute_uri(url) if request else url
+            except Exception:
+                return None
+        return None
+
+    def get_favorites_count(self, obj):
+        count = obj.media_items.filter(deleted_at__isnull=True, is_favorite=True).count()
+        return count if count > 0 else getattr(obj, 'favorites_count', 0)
 
     def get_template_banners(self, obj):
         return _sanitize_banner_dict(obj.template_banners, obj, self.context.get('request'))
@@ -828,6 +1042,9 @@ class GalleryDetailResponseSerializer(GallerySerializer):
     media = serializers.SerializerMethodField()
     photos_count = serializers.SerializerMethodField()
     videos_count = serializers.SerializerMethodField()
+    total_media_count = serializers.SerializerMethodField()
+    section_counts = serializers.SerializerMethodField()
+    favorites_count = serializers.SerializerMethodField()
 
     def get_media(self, obj):
         """
@@ -857,6 +1074,17 @@ class GalleryDetailResponseSerializer(GallerySerializer):
             return obj.videos_count
         return obj.media_items.filter(media_type='video', deleted_at__isnull=True).count()
 
+    def get_total_media_count(self, obj):
+        if 'total_media_count' in self.context:
+            return self.context['total_media_count']
+        return getattr(obj, '_total_media_count', None) or obj.total_media_count
+
+    def get_section_counts(self, obj):
+        return super().get_section_counts(obj)
+
+    def get_favorites_count(self, obj):
+        return super().get_favorites_count(obj)
+
 
 class GallerySettingsUpdateSerializer(serializers.ModelSerializer):
     expires_at = serializers.DateTimeField(allow_null=True, required=False)
@@ -879,6 +1107,10 @@ class GallerySettingsUpdateSerializer(serializers.ModelSerializer):
             'download_pin',
             'allow_favorites',
             'face_search_enabled',
+            'watermark_enabled',
+            'watermark_text',
+            'watermark_opacity',
+            'watermark_position',
             'expires_at',
             'is_expired',
             'status',
@@ -891,6 +1123,7 @@ class GallerySettingsUpdateSerializer(serializers.ModelSerializer):
             'password': {'required': False, 'allow_blank': True},
             'download_pin': {'required': False, 'allow_blank': True},
             'face_search_enabled': {'required': False},
+            'watermark_enabled': {'required': False},
         }
 
     def validate_face_search_enabled(self, value):
@@ -911,6 +1144,31 @@ class GallerySettingsUpdateSerializer(serializers.ModelSerializer):
                             raise serializers.ValidationError(
                                 "AI Biometric Face Search is locked on your current subscription plan. Upgrade to enable."
                             )
+        return value
+
+    def validate_watermark_enabled(self, value):
+        if value:
+            request = self.context.get('request')
+            if request and getattr(request, 'user', None):
+                user = request.user
+                if not (user.is_staff or user.is_superuser):
+                    from App.Photographers.photo_models import PhotographerProfile
+                    from rest_framework.exceptions import PermissionDenied
+                    profile = getattr(user, 'photographer_profile', None) or PhotographerProfile.objects.filter(user=user).first()
+                    sub = getattr(profile, 'subscription', None) if profile else None
+                    if not sub and hasattr(user, 'subscription'):
+                        sub = user.subscription
+                    plan = getattr(sub, 'plan', None) if sub and getattr(sub, 'is_active', True) else None
+                    if not plan and profile:
+                        plan = getattr(profile, 'studio_plan', None) or getattr(profile, 'plan', None)
+
+                    if not plan or not getattr(plan, 'watermark_enabled', False):
+                        raise PermissionDenied({
+                            "error_code": "WATERMARK_LOCKED",
+                            "upgrade_required": True,
+                            "detail": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries.",
+                            "message": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries."
+                        })
         return value
 
     def update(self, instance, validated_data):

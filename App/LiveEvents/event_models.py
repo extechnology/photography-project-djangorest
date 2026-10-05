@@ -220,6 +220,18 @@ class LiveEvent(models.Model):
     def total_media_count(self, value):
         self._total_media_count = value
 
+    @property
+    def section_counts(self) -> dict:
+        counts = (
+            self.media
+            .values('section_title')
+            .annotate(count=models.Count('id'))
+        )
+        return {
+            (item['section_title'] or 'UNASSIGNED').upper(): item['count']
+            for item in counts
+        }
+
 
 class EventMedia(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

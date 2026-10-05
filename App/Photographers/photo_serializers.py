@@ -34,6 +34,7 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     quick_info = serializers.SerializerMethodField()
     plan_details = serializers.SerializerMethodField()
+    fullname = serializers.CharField(write_only=True, required=False, allow_blank=True)
     avatar = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
     profile_image = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
 
@@ -50,6 +51,7 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
             'plan_details',
             'studio_name',
             'name',
+            'fullname',
             'occupation',
             'avatar',
             'avatar_url',
@@ -106,6 +108,19 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
                 ret['phone'] = user.phone or ''
         return ret
 
+    def to_internal_value(self, data):
+        if hasattr(data, '_mutable') and not data._mutable:
+            data = data.copy()
+        elif not isinstance(data, dict):
+            try:
+                data = data.copy()
+            except Exception:
+                pass
+        if isinstance(data, dict):
+            if 'fullname' in data and not data.get('name'):
+                data['name'] = data['fullname']
+        return super().to_internal_value(data)
+
     def update(self, instance, validated_data):
         user = getattr(instance, 'user', None)
         name = validated_data.get('name')
@@ -132,7 +147,22 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
             if user_updated_fields:
                 user.save(update_fields=user_updated_fields)
 
-        return super().update(instance, validated_data)
+        updated_instance = super().update(instance, validated_data)
+
+        # Automatically mark is_onboarded if both name and (phone or occupation) are populated
+        eff_name = updated_instance.name or (user.fullname if user else "")
+        eff_phone = updated_instance.phone or (user.phone if user else "")
+        eff_occ = updated_instance.occupation or ""
+        if (eff_name and eff_name.strip()) and (
+            (eff_phone and eff_phone.strip()) or 
+            (eff_occ and eff_occ.strip())
+        ):
+            if not updated_instance.is_onboarded:
+                updated_instance.is_onboarded = True
+                updated_instance.onboarding_step = max(updated_instance.onboarding_step, 3)
+                updated_instance.save(update_fields=['is_onboarded', 'onboarding_step'])
+
+        return updated_instance
 
     def get_avatar_url(self, obj):
         request = self.context.get('request')
@@ -357,16 +387,45 @@ class PhotographerPostSerializer(serializers.ModelSerializer):
         return instance
 
 
-class OnboardingSetupSerializer(serializers.Serializer):
-    name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-    phone = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
-    occupation = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-    studio_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-    location = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+class OnboardingSerializer(serializers.ModelSerializer):
+    fullname = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    avatar_url = serializers.CharField(required=False, allow_blank=True, default='')
     avatar = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
-    avatar_url = serializers.CharField(max_length=512, required=False, allow_blank=True, default='')
 
-    onboarding_step = serializers.IntegerField(required=False, default=3)
+    class Meta:
+        model = PhotographerProfile
+        fields = [
+            'id',
+            'name',
+            'fullname',
+            'phone',
+            'occupation',
+            'avatar',
+            'avatar_url',
+            'is_onboarded',
+            'onboarding_step',
+            'studio_name',
+            'location',
+        ]
+        read_only_fields = ['id', 'is_onboarded']
+
+    def validate(self, attrs):
+        name = attrs.get('name') or self.initial_data.get('fullname') or self.initial_data.get('name')
+        if not name or not str(name).strip():
+            raise serializers.ValidationError({"name": "Full name is required to complete onboarding."})
+        phone = attrs.get('phone') or self.initial_data.get('phone')
+        if not phone or not str(phone).strip():
+            raise serializers.ValidationError({"phone": "Phone number is required."})
+        occupation = attrs.get('occupation') or self.initial_data.get('occupation')
+        if not occupation or not str(occupation).strip():
+            raise serializers.ValidationError({"occupation": "Occupation is required."})
+        attrs['name'] = str(name).strip()
+        attrs['phone'] = str(phone).strip()
+        attrs['occupation'] = str(occupation).strip()
+        return attrs
+
+
+OnboardingSetupSerializer = OnboardingSerializer
 
 
 class InquirySerializer(serializers.ModelSerializer):

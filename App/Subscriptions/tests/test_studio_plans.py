@@ -52,6 +52,8 @@ class StudioPlansAPITests(TestCase):
         self.assertEqual(standard_1y["image_storage"], "200 GB")
         self.assertEqual(standard_1y["video_storage"], "10 GB")
         self.assertEqual(standard_1y["tag"], "MOST POPULAR")
+        self.assertEqual(standard_1y["tag_type"], "popular")
+        self.assertTrue(standard_1y["is_popular"])
         self.assertIn("200 GB High-Speed Image Storage", standard_1y["features"])
         self.assertIn("₹800 / Month", standard_1y["billing_text"])
         self.assertEqual(standard_1y["max_galleries"], 50)
@@ -62,12 +64,17 @@ class StudioPlansAPITests(TestCase):
         self.assertEqual(standard_1y["inquiry_access"], "All Inquiries")
 
         standard_3m = next(p for p in resp.data if p["id"] == "plan-standard-3m")
+        self.assertEqual(standard_3m["tag"], "")
+        self.assertEqual(standard_3m["tag_type"], "default")
+        self.assertFalse(standard_3m["is_popular"])
         self.assertEqual(standard_3m["max_inquiries"], 10)
         self.assertFalse(standard_3m["has_full_inquiry_access"])
         self.assertEqual(standard_3m["inquiry_access"], "Random 10 Inquiries")
 
         premium = next(p for p in resp.data if p["id"] == "plan-premium-elite")
         self.assertEqual(premium["tag"], "2xStandard Plan")
+        self.assertEqual(premium["tag_type"], "default")
+        self.assertFalse(premium["is_popular"])
         self.assertEqual(float(premium["original_monthly_price"]), 2200.00)
         self.assertEqual(float(premium["monthly_price"]), 1800.00)
         self.assertEqual(premium["image_storage"], "600 GB")
@@ -198,6 +205,17 @@ class StudioPlansAPITests(TestCase):
     def test_current_subscription_with_cookie_auth(self):
         """Authenticated request using only HTTP-only cookie 'access_token' succeeds without Authorization header."""
         from rest_framework_simplejwt.tokens import RefreshToken
+        plan_1y = Plan.objects.get(id="plan-standard-1y")
+        PhotographerSubscription.objects.create(
+            user=self.user,
+            photographer=self.profile,
+            plan=plan_1y,
+            status="active",
+            started_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(days=365),
+            auto_renew=True,
+        )
+
         refresh = RefreshToken.for_user(self.user)
         access_token = str(refresh.access_token)
 
@@ -207,6 +225,7 @@ class StudioPlansAPITests(TestCase):
         resp = cookie_client.get("/api/plans/current/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data["status"], "active")
+        self.assertTrue(resp.data["has_subscription"])
         self.assertIn("plan", resp.data)
         self.assertIn("storage", resp.data)
 
@@ -217,7 +236,7 @@ class StudioPlansAPITests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_auto_create_photographer_profile_on_current_subscription(self):
-        """A user without an existing PhotographerProfile gets one automatically created when requesting /api/plans/current/."""
+        """A user without an existing PhotographerProfile gets one created, with status no_plan (no free subscription auto-provisioned)."""
         from rest_framework_simplejwt.tokens import RefreshToken
         new_user = User.objects.create_user(
             username="new_photographer",
@@ -231,8 +250,32 @@ class StudioPlansAPITests(TestCase):
 
         resp = cookie_client.get("/api/plans/current/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["status"], "active")
+        self.assertEqual(resp.data["status"], "no_plan")
+        self.assertFalse(resp.data["has_subscription"])
+        self.assertIsNone(resp.data["plan"])
         self.assertTrue(PhotographerProfile.objects.filter(user=new_user).exists())
+
+    def test_new_user_has_no_plan_returns_200_clean_json(self):
+        """Newly registered user must return has_subscription: False, NOT 404 or 500."""
+        from rest_framework_simplejwt.tokens import RefreshToken
+        new_user = User.objects.create_user(
+            username='newphotographer_plain',
+            email='new_plain@photographer.com',
+            password='testpassword123'
+        )
+        refresh = RefreshToken.for_user(new_user)
+        client = APIClient()
+        client.cookies['access_token'] = str(refresh.access_token)
+        response = client.get('/api/plans/current/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data.get('has_subscription'), False)
+        self.assertEqual(response.data.get('status'), 'no_plan')
+        self.assertIsNone(response.data.get('plan'))
+        self.assertEqual(
+            response.data.get('message'),
+            "No active studio subscription found. Please choose a paid plan."
+        )
 
     def test_razorpay_checkout_order_creation(self):
         """POST /api/plans/checkout/ creates a Razorpay order structure and pending payment record."""

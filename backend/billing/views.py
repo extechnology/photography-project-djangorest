@@ -91,25 +91,9 @@ def is_studio_active(user) -> bool:
             return True
 
     sub = PhotographerSubscription.objects.filter(q).order_by('-created_at').first()
-
     if not sub:
-        # If photographer profile exists without any subscription row, auto-provision default active plan
-        if photographer:
-            default_plan = StudioPlan.objects.filter(is_active=True).exclude(id='plan-test-20gb').order_by('sort_order').first()
-            if default_plan:
-                sub = PhotographerSubscription.objects.create(
-                    user=user,
-                    photographer=photographer,
-                    plan=default_plan,
-                    status="active",
-                    started_at=now,
-                    expires_at=now + timedelta(days=365),
-                    auto_renew=True,
-                    storage_limit_bytes=getattr(default_plan, 'storage_limit_bytes', 16106127360),
-                )
-                photographer.studio_plan = default_plan
-                photographer.save(update_fields=['studio_plan'])
-                return True
+        if photographer and (getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)):
+            return True
         return False
 
     # Check status and past date

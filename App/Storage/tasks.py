@@ -10,6 +10,7 @@ from App.Storage.storage_models import Media, Gallery, BulkDownloadJob, UploadRe
 from App.Storage.services.storage_service import get_storage_provider
 from App.Storage.services.face_service import FaceService
 from App.Storage.services.watermark_service import WatermarkService
+from utils.watermark import stamp_watermark_on_image
 
 
 def run_or_queue_task(task_func, *args, **kwargs):
@@ -153,6 +154,38 @@ def generate_bulk_download_archive_task(job_id_str: str, photo_ids: list = None)
                     clean_name = f"{base}_{counter}{ext}"
                     counter += 1
                 used_filenames.add(clean_name)
+
+                # Bake watermark if enabled on gallery
+                if getattr(gallery, 'watermark_enabled', False) and getattr(media, 'media_type', 'photo') != 'video':
+                    try:
+                        profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
+                        legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
+                        wm_text = None
+                        if gallery.watermark_text and gallery.watermark_text.strip():
+                            raw = gallery.watermark_text.strip()
+                            if raw.lower() not in legacy_placeholders:
+                                wm_text = raw if raw.startswith('©') else f"© {raw}"
+
+                        if not wm_text:
+                            if profile and hasattr(profile, 'get_effective_watermark_text'):
+                                wm_text = profile.get_effective_watermark_text()
+                            else:
+                                user = getattr(gallery.photographer, 'user', None) or getattr(gallery, 'user', None) or gallery.photographer
+                                name = user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else ''
+                                name = name or (getattr(profile, 'name', '') if profile else '') or getattr(user, 'username', 'Photographer')
+                                wm_text = f"© {name}"
+
+                        logo_file = profile.watermark_image if (profile and getattr(profile, 'watermark_image', None)) else None
+                        watermarked_stream = stamp_watermark_on_image(
+                            io.BytesIO(file_bytes),
+                            watermark_text=wm_text,
+                            logo_file=logo_file,
+                            opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
+                            position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                        )
+                        file_bytes = watermarked_stream.getvalue()
+                    except Exception:
+                        pass
 
                 z.writestr(clean_name, file_bytes)
                 processed_count += 1

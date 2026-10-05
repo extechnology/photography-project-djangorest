@@ -5,11 +5,17 @@ from .event_models import LiveEvent, EventMedia, EventFaceEmbedding
 from App.utils import format_bytes_human
 
 
+from django.db import models
+
+
 class EventMediaSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
     file_url = serializers.SerializerMethodField()
     thumbnailUrl = serializers.SerializerMethodField()
     thumbnail_url = serializers.SerializerMethodField()
+    title = serializers.CharField(source='original_filename', read_only=True)
+    type = serializers.CharField(source='media_type', read_only=True)
+    size_bytes = serializers.IntegerField(source='file_size', read_only=True)
     sectionTitle = serializers.CharField(source='section_title', required=False)
     section_title = serializers.CharField(required=False)
     sizeMB = serializers.FloatField(source='size_mb', read_only=True)
@@ -22,15 +28,18 @@ class EventMediaSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventMedia
         fields = [
-            'id', 'original_filename', 'url', 'file_url', 'thumbnailUrl', 'thumbnail_url',
-            'sectionTitle', 'section_title', 'media_type', 'width', 'height', 'aspect_ratio',
-            'file_size', 'size_mb', 'sizeMB', 'is_favorite', 'is_cover', 'dateAdded', 'created_at'
+            'id', 'title', 'original_filename', 'url', 'file_url', 'thumbnailUrl', 'thumbnail_url',
+            'type', 'media_type', 'sectionTitle', 'section_title', 'width', 'height', 'aspect_ratio',
+            'file_size', 'size_bytes', 'size_mb', 'sizeMB', 'is_favorite', 'is_cover', 'dateAdded', 'created_at'
         ]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['file_size'] = instance.file_size or 0
+        data['size_bytes'] = instance.file_size or 0
         data['size_mb'] = self.get_size_mb(instance)
+        data['type'] = instance.media_type or 'photo'
+        data['title'] = instance.original_filename or ''
         return data
 
     def get_url(self, obj):
@@ -68,6 +77,7 @@ class LiveEventListSerializer(serializers.ModelSerializer):
     videos_count = serializers.IntegerField(read_only=True)
     total_media_count = serializers.IntegerField(read_only=True)
     media_count = serializers.IntegerField(source='media.count', read_only=True)
+    section_counts = serializers.SerializerMethodField()
     qrSettings = serializers.SerializerMethodField()
     qr_settings = serializers.SerializerMethodField()
     stats = serializers.SerializerMethodField()
@@ -79,7 +89,7 @@ class LiveEventListSerializer(serializers.ModelSerializer):
             'event_type', 'status', 'banner_url', 'event_date',
             'event_time', 'venue', 'city', 'description',
             'qrSettings', 'qr_settings', 'stats', 'photos_count', 'videos_count',
-            'total_media_count', 'media_count', 'total_size_bytes', 'total_size_mb',
+            'total_media_count', 'media_count', 'section_counts', 'total_size_bytes', 'total_size_mb',
             'total_size_formatted', 'created_at', 'updated_at'
         ]
 
@@ -91,7 +101,19 @@ class LiveEventListSerializer(serializers.ModelSerializer):
         data['total_size_bytes'] = instance.total_size_bytes
         data['total_size_mb'] = instance.total_size_mb
         data['total_size_formatted'] = instance.total_size_formatted
+        data['section_counts'] = self.get_section_counts(instance)
         return data
+
+    def get_section_counts(self, obj):
+        counts = (
+            obj.media
+            .values('section_title')
+            .annotate(count=models.Count('id'))
+        )
+        return {
+            (item['section_title'] or 'UNASSIGNED').upper(): item['count']
+            for item in counts
+        }
 
     def get_qrSettings(self, obj):
         return {
@@ -121,10 +143,26 @@ class LiveEventListSerializer(serializers.ModelSerializer):
 
 
 class LiveEventDetailSerializer(LiveEventListSerializer):
-    media = EventMediaSerializer(many=True, read_only=True)
+    media = serializers.SerializerMethodField()
+    section_counts = serializers.SerializerMethodField()
 
     class Meta(LiveEventListSerializer.Meta):
         fields = LiveEventListSerializer.Meta.fields + ['media']
+
+    def get_media(self, obj):
+        if 'filtered_media' in self.context:
+            return EventMediaSerializer(self.context['filtered_media'], many=True, context=self.context).data
+
+        request = self.context.get('request')
+        qs = obj.media.all().order_by('-created_at')
+        if request:
+            section = request.query_params.get('section', '').strip()
+            if section and section.lower() != 'all':
+                qs = qs.filter(section_title__iexact=section)
+        return EventMediaSerializer(qs, many=True, context=self.context).data
+
+    def get_section_counts(self, obj):
+        return super().get_section_counts(obj)
 
 
 class PublicEventPortalSerializer(serializers.ModelSerializer):

@@ -47,5 +47,10 @@ urlpatterns = [
     path('passwordless/login/verify-otp/', PasswordlessVerifyOTPView.as_view(), name='passwordless-login-verify-otp'),
     path('passwordless/login/resend-otp/', PasswordlessResendOTPView.as_view(), name='passwordless-login-resend-otp'),
 
+    # Direct routes specified in Frontend API Contract
+    path('registration-otp/', PasswordlessSendOTPView.as_view(), name='registration-otp'),
+    path('registration-otp/verify/', PasswordlessVerifyOTPView.as_view(), name='registration-otp-verify'),
+    path('login-otp/', PasswordlessLoginSendOTPView.as_view(), name='login-otp'),
+    path('login-otp/verify/', PasswordlessVerifyOTPView.as_view(), name='login-otp-verify'),
 ]
 

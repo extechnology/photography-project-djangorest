@@ -20,10 +20,15 @@ class PhotographerProfile(models.Model):
     ]
 
     WATERMARK_POSITION_CHOICES = [
-        ('center', 'Center'),
+        ('bottom-right', 'Bottom Right'),
         ('bottom_right', 'Bottom Right'),
+        ('bottom-left', 'Bottom Left'),
         ('bottom_left', 'Bottom Left'),
-        ('repeated', 'Repeated'),
+        ('top-right', 'Top Right'),
+        ('top_right', 'Top Right'),
+        ('center', 'Center'),
+        ('tiled', 'Tiled Pattern'),
+        ('repeated', 'Repeated Pattern'),
     ]
 
     user = models.OneToOneField(
@@ -74,15 +79,59 @@ class PhotographerProfile(models.Model):
     )
 
     # Watermark Suite
-    enable_watermark = models.BooleanField(default=False)
-    watermark_text = models.CharField(max_length=255, default='© Ex Studio')
+    enable_watermark = models.BooleanField(default=True)
+    watermark_text = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Custom watermark signature. If blank, defaults to photographer's name."
+    )
     watermark_image = models.ImageField(upload_to='watermarks/', null=True, blank=True)
-    watermark_opacity = models.FloatField(default=0.45)
+    watermark_opacity = models.FloatField(
+        default=0.45,
+        help_text="Opacity between 0.1 and 1.0 (default 0.45)"
+    )
     watermark_position = models.CharField(
         max_length=50,
         choices=WATERMARK_POSITION_CHOICES,
-        default='bottom_right'
+        default='bottom-right'
     )
+
+    def get_photographer_display_name(self) -> str:
+        """Returns the photographer's real name or username."""
+        full_name = self.user.get_full_name().strip() if self.user else ''
+        if full_name:
+            return full_name
+        if hasattr(self, 'name') and (self.name or '').strip():
+            return self.name.strip()
+        return self.user.username if self.user else 'Photographer'
+
+    def get_effective_watermark_text(self) -> str:
+        """
+        STRICT REQUIREMENT: The default watermark text must be the photographer's name.
+        Cleans legacy placeholders ('Ex Studio', '© Ex Studio', etc.) and returns '© <Photographer Name>'.
+        """
+        raw = (self.watermark_text or '').strip()
+        legacy_placeholders = {
+            'ex studio', '© ex studio', 'atelier studio',
+            '© atelier studio', 'studio', '© studio'
+        }
+        if raw and raw.lower() not in legacy_placeholders:
+            return raw if raw.startswith('©') else f"© {raw}"
+
+        name = self.get_photographer_display_name()
+        return f"© {name}"
+
+    def save(self, *args, **kwargs):
+        # Automatically populate watermark_text with photographer name on first creation or legacy placeholder
+        legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
+        if not self.watermark_text or self.watermark_text.strip().lower() in legacy_placeholders:
+            self.watermark_text = f"© {self.get_photographer_display_name()}"
+            if 'update_fields' in kwargs and kwargs['update_fields'] is not None:
+                fields_set = set(kwargs['update_fields'])
+                fields_set.add('watermark_text')
+                kwargs['update_fields'] = list(fields_set)
+        super().save(*args, **kwargs)
 
     # Onboarding & Quota Tracking
     is_onboarded = models.BooleanField(default=False)
@@ -98,6 +147,9 @@ class PhotographerProfile(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
+
+    def check_onboarded(self):
+        return bool((self.name or '').strip() and ((self.phone or '').strip() or (self.occupation or '').strip()))
 
     def get_avatar_url(self):
         if self.avatar:

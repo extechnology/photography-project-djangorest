@@ -21,9 +21,26 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/culling/', include('culling.urls')),
+    path('api/', include('gallery.urls')),
     path('api/', include('App.urls')),
 ]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+from django.views.static import serve
+from django.urls import re_path
+from django.http import HttpResponse
+
+def serve_media_with_cors(request, path, document_root=None, show_indexes=False):
+    if request.method == 'OPTIONS':
+        response = HttpResponse()
+    else:
+        response = serve(request, path, document_root=document_root, show_indexes=show_indexes)
+    response['Access-Control-Allow-Origin'] = '*'
+    response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response['Access-Control-Allow-Headers'] = '*'
+    return response
+
+urlpatterns += [
+    re_path(r'^media/(?P<path>.*)$', serve_media_with_cors, {'document_root': settings.MEDIA_ROOT}),
+]
 

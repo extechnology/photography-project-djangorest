@@ -13,3 +13,8 @@ def format_bytes_human(size_bytes: int | float | None) -> str:
     elif bytes_val >= 1024:
         return f"{round(bytes_val / 1024, 1)} KB"
     return f"{int(bytes_val)} B"
+
+
+# Re-export watermark utility
+from utils.watermark import stamp_watermark_on_image
+

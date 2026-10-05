@@ -334,13 +334,32 @@ class CheckLoginView(APIView):
                 'message': 'No active session or access token found'
             }, status=status.HTTP_200_OK)
 
+        profile = getattr(user, 'photographer_profile', None)
+        avatar_url = None
+        occupation = ""
+        is_onboarded = False
+        phone = getattr(user, 'phone', None) or ""
+        fullname = getattr(user, 'fullname', None) or ""
+        if profile:
+            raw_avatar = profile.get_avatar_url()
+            if raw_avatar:
+                avatar_url = request.build_absolute_uri(raw_avatar) if request else raw_avatar
+            occupation = profile.occupation or ""
+            is_onboarded = bool(profile.is_onboarded)
+            phone = profile.phone or phone
+            fullname = profile.name or fullname
+
         user_data = {
             'id': user.id,
+            'unique_id': str(user.unique_id),
             'username': user.username,
             'email': user.email,
-            'phone': getattr(user, 'phone', None),
+            'fullname': fullname,
+            'phone': phone,
+            'occupation': occupation,
+            'avatar_url': avatar_url,
+            'is_onboarded': is_onboarded,
             'role': getattr(user, 'role', 'photographer'),
-            'fullname': getattr(user, 'fullname', user.username),
         }
 
         return Response({
@@ -736,7 +755,7 @@ class PasswordlessVerifyOTPView(APIView):
                 candidate = f"{base_username}_{counter}"
                 counter += 1
 
-            user_fullname = fullname or base_username.replace('.', ' ').replace('_', ' ').title()
+            user_fullname = fullname or ""
             user = User(
                 username=candidate,
                 email=email,
@@ -749,52 +768,57 @@ class PasswordlessVerifyOTPView(APIView):
             user.set_unusable_password()
             user.save()
 
-        # If user is a photographer, ensure PhotographerProfile & subscription exist
+        # If user is a photographer, ensure PhotographerProfile exists
+        profile = getattr(user, 'photographer_profile', None)
         if user.role == User.Role.PHOTOGRAPHER:
-            from datetime import timedelta
             from App.Photographers.photo_models import PhotographerProfile, NotificationPreference
-            from App.Subscriptions.sub_models import SubscriptionPlans, PhotographerSubscription
 
             profile, _ = PhotographerProfile.objects.get_or_create(
                 user=user,
                 defaults={
-                    "name": user.fullname or user.username,
+                    "name": user.fullname or "",
                     "studio_name": "",
                     "location": "",
-                    "email": user.email,
+                    "email": user.email or "",
                     "is_onboarded": False,
-                    "onboarding_step": 1,
+                    "onboarding_step": 3,
                     "default_template": "editorial",
                 }
             )
             NotificationPreference.objects.get_or_create(photographer=profile)
 
-            # Assign default plan if not present
-            if not PhotographerSubscription.objects.filter(photographer=profile).exists():
-                plan = SubscriptionPlans.objects.filter(tier='pro').first() or SubscriptionPlans.objects.first()
-                if plan:
-                    PhotographerSubscription.objects.create(
-                        photographer=profile,
-                        plan=plan,
-                        status='active',
-                        expires_at=timezone.now() + timedelta(days=365)
-                    )
-
         # Issue JWT tokens
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
 
+        avatar_url = None
+        occupation = ""
+        is_onboarded = False
+        phone = getattr(user, 'phone', None) or ""
+        fullname_val = user.fullname or ""
+        if profile:
+            raw_avatar = profile.get_avatar_url()
+            if raw_avatar:
+                avatar_url = request.build_absolute_uri(raw_avatar) if request else raw_avatar
+            occupation = profile.occupation or ""
+            is_onboarded = bool(profile.is_onboarded)
+            phone = profile.phone or phone
+            fullname_val = user.fullname or profile.name or ""
+
         response_data = {
             "status": "success",
-            "message": "Account registered and logged in successfully." if is_new_user else "Login successful.",
+            "message": "OTP verified successfully",
             "is_new_user": is_new_user,
-
             "user": {
                 "id": user.id,
                 "unique_id": str(user.unique_id),
                 "username": user.username,
                 "email": user.email,
-                "fullname": user.fullname,
+                "fullname": fullname_val,
+                "phone": phone,
+                "occupation": occupation,
+                "avatar_url": avatar_url,
+                "is_onboarded": is_onboarded,
                 "role": user.role,
                 "is_email_verified": user.is_email_verified
             }

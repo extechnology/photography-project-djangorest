@@ -11,11 +11,25 @@ logger = logging.getLogger(__name__)
 _DETECTOR_INSTANCE = None
 
 
+def is_nude_detection_enabled() -> bool:
+    """
+    Checks if NudeNet content moderation is enabled in Django settings.
+    Checks ENABLE_NUDE_DETECTION or falls back to NUDE_DETECTION_ENABLED (defaults to True).
+    When False: all nudity checks are bypassed and no model is loaded.
+    """
+    if hasattr(settings, 'ENABLE_NUDE_DETECTION'):
+        return bool(settings.ENABLE_NUDE_DETECTION)
+    return bool(getattr(settings, 'NUDE_DETECTION_ENABLED', True))
+
+
 def get_nude_detector():
     """
     Returns a cached singleton instance of NudeDetector.
-    Initializes lazily upon first request.
+    Initializes lazily upon first request. If nude detection is disabled in settings, returns None.
     """
+    if not is_nude_detection_enabled():
+        return None
+
     global _DETECTOR_INSTANCE
     if _DETECTOR_INSTANCE is None:
         try:
@@ -41,8 +55,7 @@ def check_image_for_nudity(
     Returns:
         (is_nude: bool, violations: list[dict])
     """
-    is_enabled = getattr(settings, 'NUDE_DETECTION_ENABLED', True)
-    if not is_enabled:
+    if not is_nude_detection_enabled():
         return False, []
 
     if threshold is None:

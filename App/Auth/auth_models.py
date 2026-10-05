@@ -117,6 +117,21 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.username or self.email or self.phone or "User"
 
+    def get_full_name(self):
+        return (self.fullname or self.username or "").strip()
+
+    def get_short_name(self):
+        return (self.fullname or self.username or "").strip()
+
+    @property
+    def first_name(self):
+        return (self.fullname or '').split()[0] if self.fullname else (self.username or '')
+
+    @property
+    def last_name(self):
+        parts = (self.fullname or '').split()
+        return " ".join(parts[1:]) if len(parts) > 1 else ''
+
     @property
     def is_admin_role(self):
         return self.role == self.Role.ADMIN
@@ -128,6 +143,36 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def profile(self):
         return getattr(self, 'photographer_profile', None)
+
+    @property
+    def subscription(self):
+        profile = getattr(self, 'photographer_profile', None)
+        if profile and hasattr(profile, 'subscription') and profile.subscription:
+            return profile.subscription
+        if hasattr(self, 'subscriptions'):
+            active = self.subscriptions.filter(status='active').order_by('-created_at').first()
+            if active:
+                return active
+            return self.subscriptions.order_by('-created_at').first()
+        return None
+
+    @property
+    def is_onboarded(self):
+        profile = getattr(self, 'photographer_profile', None)
+        return bool(profile and profile.is_onboarded)
+
+    @is_onboarded.setter
+    def is_onboarded(self, value):
+        profile = getattr(self, 'photographer_profile', None)
+        if not profile and self.pk:
+            try:
+                from App.Photographers.photo_models import PhotographerProfile
+                profile, _ = PhotographerProfile.objects.get_or_create(user=self)
+            except Exception:
+                profile = None
+        if profile:
+            profile.is_onboarded = bool(value)
+            profile.save(update_fields=['is_onboarded'])
 
     def clean(self):
         super().clean()

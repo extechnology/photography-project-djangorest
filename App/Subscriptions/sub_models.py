@@ -39,6 +39,7 @@ class Plan(models.Model):
         ('default', 'Default'),
         ('popular', 'Popular'),
         ('current', 'Current'),
+        ('elite', 'Elite'),
     ]
 
     id = models.CharField(max_length=50, primary_key=True, help_text="e.g. 'plan-standard-3m', 'plan-standard-1y'")
@@ -63,6 +64,10 @@ class Plan(models.Model):
     max_galleries = models.PositiveIntegerField(default=0, help_text="Max active client galleries (0 for unlimited)")
     gallery_expiry_days = models.PositiveIntegerField(default=0, help_text="Gallery link/access validity in days (0 for unlimited)")
     face_search_enabled = models.BooleanField(default=True, help_text="Whether AI face search/discovery is enabled")
+    watermark_enabled = models.BooleanField(
+        default=False,
+        help_text="Whether photographers on this plan can apply watermarks to gallery photos"
+    )
     max_events = models.PositiveIntegerField(default=0, help_text="Max shared events allowed in event section (0 for unlimited)")
     max_portfolio_posts = models.PositiveIntegerField(default=0, help_text="Max showcase portfolio posts (0 for unlimited)")
     can_upgrade_storage = models.BooleanField(default=False, help_text="Whether this tier can purchase additional storage upgrades")
@@ -70,6 +75,7 @@ class Plan(models.Model):
     has_full_inquiry_access = models.BooleanField(default=True, help_text="Whether photographer can access all inquiries or only a sampled limit")
     max_inquiries = models.PositiveIntegerField(default=0, help_text="Max client inquiries accessible (0 for all/unlimited)")
     is_active = models.BooleanField(default=True)
+    is_popular = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -226,6 +232,22 @@ class PhotographerSubscription(models.Model):
     def save(self, *args, **kwargs):
         if self.photographer and not self.user:
             self.user = getattr(self.photographer, 'user', None)
+        if self.user and not self.photographer:
+            from App.Photographers.photo_models import PhotographerProfile
+            profile = getattr(self.user, 'photographer_profile', None) or PhotographerProfile.objects.filter(user=self.user).first()
+            if not profile:
+                profile, _ = PhotographerProfile.objects.get_or_create(
+                    user=self.user,
+                    defaults={
+                        'name': self.user.get_full_name() or self.user.username or 'Photographer',
+                        'email': self.user.email or '',
+                        'studio_name': f"{self.user.username} Studio",
+                    }
+                )
+            self.photographer = profile
+            if self.plan and not profile.studio_plan:
+                profile.studio_plan = self.plan
+                profile.save(update_fields=['studio_plan'])
         if self.plan and (self.storage_limit_bytes is None or self.storage_limit_bytes == 16106127360):
             self.storage_limit_bytes = self.effective_storage_limit_bytes
         super().save(*args, **kwargs)
@@ -296,6 +318,12 @@ class PhotographerSubscription(models.Model):
 
         return 21474836480  # Default 20 GB (20 * 1024^3)
 
+
+# Aliases for compatibility with UserSubscription and specification references
+UserSubscription = PhotographerSubscription
+CurrentSubscription = PhotographerSubscription
+SubscriptionPlan = Plan
+StudioPlan = Plan
 
 
 class SubscriptionPayment(models.Model):

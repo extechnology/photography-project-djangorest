@@ -118,25 +118,9 @@ def is_studio_active(user) -> bool:
                 return True
 
     sub = PhotographerSubscription.objects.filter(q).order_by('-created_at').first()
-
     if not sub:
-        # If photographer profile exists without any subscription row, auto-provision default active plan
-        if photographer:
-            default_plan = StudioPlan.objects.filter(is_active=True).exclude(id='plan-test-20gb').order_by('sort_order').first()
-            if default_plan:
-                sub = PhotographerSubscription.objects.create(
-                    user=user,
-                    photographer=photographer,
-                    plan=default_plan,
-                    status="active",
-                    started_at=now,
-                    expires_at=now + timedelta(days=365),
-                    auto_renew=True,
-                    storage_limit_bytes=getattr(default_plan, 'storage_limit_bytes', 16106127360),
-                )
-                photographer.studio_plan = default_plan
-                photographer.save(update_fields=['studio_plan'])
-                return True
+        if photographer and (getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)):
+            return True
         return False
 
     update_subscription_expiration_state(sub)
@@ -401,28 +385,14 @@ def enforce_active_subscription(user, feature_name="studio features"):
             })
         return subscription
 
-    # If photographer profile exists without any subscription row, auto-provision default active plan
-    if photographer:
-        default_plan = StudioPlan.objects.filter(is_active=True).exclude(id='plan-test-20gb').order_by('sort_order').first()
-        if default_plan:
-            subscription = PhotographerSubscription.objects.create(
-                user=user,
-                photographer=photographer,
-                plan=default_plan,
-                status="active",
-                started_at=now,
-                expires_at=now + timedelta(days=365),
-                auto_renew=True,
-                storage_limit_bytes=getattr(default_plan, 'storage_limit_bytes', 16106127360),
-            )
-            photographer.studio_plan = default_plan
-            photographer.save(update_fields=['studio_plan'])
-            return subscription
+    if photographer and getattr(photographer, 'studio_plan', None):
+        return photographer.studio_plan
 
     raise PermissionDenied(detail={
+        "code": "no_active_subscription",
         "error_code": "NO_SUBSCRIPTION",
         "upgrade_required": True,
-        "message": f"You do not have an active subscription to access {feature_name}. Please choose a plan."
+        "message": f"You do not have an active subscription to access {feature_name}. Please choose a paid plan."
     })
 
 

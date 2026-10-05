@@ -31,11 +31,13 @@ class PlanSerializer(serializers.ModelSerializer):
             'storage_limit_bytes',
             'tag',
             'tag_type',
+            'is_popular',
             'cta_text',
             'features',
             'max_galleries',
             'gallery_expiry_days',
             'face_search_enabled',
+            'watermark_enabled',
             'allowed_templates',
             'allowed_portfolio_templates',
             'max_events',
@@ -73,6 +75,9 @@ class PlanSerializer(serializers.ModelSerializer):
                 data['allowed_templates'] = json.loads(templates)
             except Exception:
                 data['allowed_templates'] = [templates]
+        data['price'] = float(instance.monthly_price) if instance.monthly_price is not None else 0.0
+        data['originalPrice'] = float(instance.original_monthly_price) if instance.original_monthly_price is not None else None
+        data['watermark_enabled'] = getattr(instance, 'watermark_enabled', False)
         return data
 
 
@@ -90,6 +95,7 @@ class PlanSummarySerializer(serializers.ModelSerializer):
             'max_galleries',
             'allowed_templates',
             'face_search_enabled',
+            'watermark_enabled',
             'gallery_expiry_days',
             'max_events',
             'max_portfolio_posts',
@@ -110,7 +116,11 @@ class PlanSummarySerializer(serializers.ModelSerializer):
                 data['allowed_templates'] = json.loads(templates)
             except Exception:
                 data['allowed_templates'] = [templates]
+        data['watermark_enabled'] = getattr(instance, 'watermark_enabled', False)
         return data
+
+
+CurrentSubscriptionPlanSummarySerializer = PlanSummarySerializer
 
 
 class CurrentSubscriptionSerializer(serializers.ModelSerializer):
@@ -118,6 +128,7 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
     start_date = serializers.DateTimeField(source='started_at', read_only=True)
     expiry_date = serializers.DateTimeField(source='expires_at', read_only=True)
     days_remaining = serializers.IntegerField(read_only=True)
+    has_subscription = serializers.SerializerMethodField()
     storage = serializers.SerializerMethodField()
     usage = serializers.SerializerMethodField()
 
@@ -125,6 +136,7 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
         model = PhotographerSubscription
         fields = [
             'id',
+            'has_subscription',
             'status',
             'plan',
             'start_date',
@@ -135,6 +147,9 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
             'auto_renew',
             'payment_gateway_ref',
         ]
+
+    def get_has_subscription(self, obj):
+        return True
 
     def get_storage(self, obj):
         photographer = obj.photographer

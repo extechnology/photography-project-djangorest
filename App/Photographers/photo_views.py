@@ -26,15 +26,19 @@ from .photo_serializers import (
     PostFeedbackSerializer,
     PhotographerPostSerializer,
     NotificationSerializer,
+    OnboardingSerializer,
     OnboardingSetupSerializer,
     InquirySerializer,
 )
+from App.Auth.auth_models import User
 from App.Auth.auth_utils import get_user_from_request
-from .photo_utils import check_image_for_nudity
+from .photo_utils import check_image_for_nudity, is_nude_detection_enabled
 
 
 def check_uploaded_files_for_nudity(files):
     """Helper to check a list of uploaded files for nudity violations."""
+    if not is_nude_detection_enabled():
+        return []
     rejected = []
     for f in files:
         is_nude, violations = check_image_for_nudity(f)
@@ -249,13 +253,13 @@ class MyPhotographerProfileGetView(APIView):
         profile, created = PhotographerProfile.objects.get_or_create(
             user=user,
             defaults={
-                "name": user.fullname or user.username or "Studio Owner",
+                "name": user.fullname or "",
                 "email": user.email or "",
                 "phone": user.phone or "",
                 "studio_name": "",
                 "occupation": "",
                 "is_onboarded": False,
-                "onboarding_step": 1,
+                "onboarding_step": 3,
                 "default_template": "editorial",
             }
         )
@@ -318,7 +322,11 @@ class MyPhotographerProfileGetView(APIView):
             )
 
         profile = self._get_or_create_profile(user)
-        template = request.data.get('default_template')
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        if 'fullname' in data and not data.get('name'):
+            data['name'] = data['fullname']
+
+        template = data.get('default_template')
         if template:
             active_plan = getattr(profile, 'studio_plan', None)
             if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
@@ -330,7 +338,7 @@ class MyPhotographerProfileGetView(APIView):
                         status=status.HTTP_403_FORBIDDEN
                     )
 
-        serializer = PhotographerProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
+        serializer = PhotographerProfileSerializer(profile, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
             updated_profile = serializer.save()
             return Response(
@@ -486,19 +494,24 @@ class MyPhotographerWatermarkView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        try:
-            profile = PhotographerProfile.objects.get(user=user)
-        except PhotographerProfile.DoesNotExist:
-            return Response(
-                {"message": "Photographer profile not found."},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        profile = getattr(user, 'photographer_profile', None) or PhotographerProfile.objects.filter(user=user).first()
+        if not profile:
+            try:
+                profile, _ = PhotographerProfile.objects.get_or_create(
+                    user=user,
+                    defaults={'name': user.get_full_name() or user.username, 'studio_name': f"{user.username} Studio"}
+                )
+            except Exception:
+                return Response(
+                    {"message": "Photographer profile not found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
         serializer = WatermarkConfigSerializer(profile, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             profile = serializer.save()
             return Response({
-                "message": "Watermark configuration updated successfully",
+                "message": "Watermark configuration saved successfully",
                 "data": WatermarkConfigSerializer(profile, context={'request': request}).data
             }, status=status.HTTP_200_OK)
 
@@ -508,6 +521,19 @@ class MyPhotographerWatermarkView(APIView):
 class OnboardingCompleteView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+    def get_profile(self, user):
+        profile, _ = PhotographerProfile.objects.get_or_create(
+            user=user,
+            defaults={
+                "name": user.fullname or "",
+                "email": user.email or "",
+                "phone": user.phone or "",
+                "is_onboarded": False,
+                "onboarding_step": 3,
+            }
+        )
+        return profile
+
     def get(self, request):
         user = get_current_user(request)
         if not user:
@@ -516,24 +542,24 @@ class OnboardingCompleteView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        try:
-            profile = PhotographerProfile.objects.get(user=user)
-        except PhotographerProfile.DoesNotExist:
-            return Response(
-                {"message": "Photographer profile not found."},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        profile = self.get_profile(user)
+        avatar_url = ""
+        if profile.avatar:
+            try:
+                avatar_url = request.build_absolute_uri(profile.avatar.url)
+            except Exception:
+                avatar_url = profile.avatar.url
+        elif profile.avatar_url:
+            avatar_url = profile.avatar_url
 
         return Response({
             "status": "success",
             "is_onboarded": profile.is_onboarded,
-            "onboarding_step": profile.onboarding_step,
+            "onboarding_step": profile.onboarding_step or 3,
             "name": profile.name or user.fullname or "",
-            "phone": profile.phone or user.phone or "",
+            "phone": profile.phone or getattr(user, 'phone', '') or "",
             "occupation": profile.occupation or "",
-            "location": profile.location or "",
-            "studio_name": profile.studio_name,
-            "avatar_url": profile.get_avatar_url(),
+            "avatar_url": avatar_url,
             "profile": PhotographerProfileSerializer(profile, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
@@ -545,86 +571,83 @@ class OnboardingCompleteView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        try:
-            profile = PhotographerProfile.objects.get(user=user)
-        except PhotographerProfile.DoesNotExist:
-            # Auto-create profile if missing
-            profile = PhotographerProfile.objects.create(
-                user=user,
-                name=user.fullname or user.username or "Studio Owner",
-                email=user.email or "",
-                studio_name="",
-                is_onboarded=False,
-                onboarding_step=1
-            )
+        profile = self.get_profile(user)
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
 
-        serializer = OnboardingSetupSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(
-                {"status": "error", "message": "Validation failed.", "errors": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # Handle alias 'fullname' -> 'name'
+        if 'fullname' in data and not data.get('name'):
+            data['name'] = data['fullname']
 
-        data = serializer.validated_data
-        name = data.get('name', '').strip()
-        phone = data.get('phone', '').strip()
-        occupation = data.get('occupation', '').strip()
-        studio_name = data.get('studio_name', '').strip()
-        location = data.get('location', '').strip()
-        avatar_file = request.FILES.get('avatar') or request.FILES.get('profile_image')
-        avatar_url = data.get('avatar_url', '').strip()
+        serializer = OnboardingSerializer(profile, data=data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            instance = serializer.save()
+            instance.is_onboarded = True
+            instance.onboarding_step = int(data.get('onboarding_step') or 3)
 
-        # Update Name (Your Name)
-        if name:
-            profile.name = name
-            user.fullname = name
-            user.save(update_fields=['fullname'])
+            # Custom avatar handling if uploaded or provided
+            avatar_file = request.FILES.get('avatar') or request.FILES.get('profile_image')
+            if avatar_file:
+                instance.avatar = avatar_file
+                instance.profile_image = avatar_file
+                instance.avatar_url = ""
+            elif data.get('avatar_url'):
+                instance.avatar_url = str(data.get('avatar_url')).strip()
 
-        # Update Phone Number (optional)
-        if phone:
-            profile.phone = phone
-            if not user.phone:
-                user.phone = phone
-                user.save(update_fields=['phone'])
+            instance.save()
 
-        # Update Occupation (e.g. Wedding Photographer)
-        if occupation:
-            profile.occupation = occupation
+            # Synchronize fields on User model
+            user_updated_fields = []
+            if hasattr(user, 'fullname') and user.fullname != instance.name:
+                user.fullname = instance.name
+                user_updated_fields.append('fullname')
 
-        # Update Studio Name / Location if provided
-        if studio_name:
-            profile.studio_name = studio_name
-            if not profile.watermark_text or profile.watermark_text == '© Ex Studio':
-                profile.watermark_text = f"© {studio_name}"
+            if hasattr(user, 'phone'):
+                cleaned_phone = instance.phone.strip() or None
+                if cleaned_phone and cleaned_phone != user.phone:
+                    if not User.objects.filter(phone=cleaned_phone).exclude(pk=user.pk).exists():
+                        user.phone = cleaned_phone
+                        user_updated_fields.append('phone')
 
-        if location:
-            profile.location = location
+            if user_updated_fields:
+                user.save(update_fields=user_updated_fields)
 
-        # Custom Profile Image (Avatar) - Optional
-        if avatar_file:
-            profile.avatar = avatar_file
-        elif avatar_url:
-            profile.avatar_url = avatar_url
+            avatar_url = ""
+            if instance.avatar:
+                try:
+                    avatar_url = request.build_absolute_uri(instance.avatar.url)
+                except Exception:
+                    avatar_url = instance.avatar.url
+            elif instance.avatar_url:
+                avatar_url = instance.avatar_url
 
-        # Mark onboarding complete
-        profile.is_onboarded = True
-        profile.onboarding_step = int(data.get('onboarding_step') or 3)
-        profile.save()
+            return Response({
+                "status": "success",
+                "message": "Profile onboarding completed successfully",
+                "is_onboarded": True,
+                "onboarding_step": instance.onboarding_step,
+                "profile": {
+                    "id": instance.id,
+                    "name": instance.name,
+                    "phone": instance.phone,
+                    "occupation": instance.occupation,
+                    "avatar_url": avatar_url,
+                    "is_onboarded": True,
+                    "onboarding_step": instance.onboarding_step,
+                    "storage_used_bytes": instance.storage_used_bytes,
+                    "storage_limit_bytes": instance.get_storage_limit()
+                },
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "fullname": instance.name,
+                    "phone": instance.phone,
+                    "avatar_url": avatar_url,
+                    "is_onboarded": True
+                }
+            }, status=status.HTTP_200_OK)
 
-        return Response({
-            "status": "success",
-            "message": "Studio setup and onboarding completed successfully.",
-            "is_onboarded": profile.is_onboarded,
-            "onboarding_step": profile.onboarding_step,
-            "profile": PhotographerProfileSerializer(profile, context={'request': request}).data,
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "fullname": user.fullname,
-                "phone": user.phone
-            }
-        }, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 PhotographerOnboardingView = OnboardingCompleteView

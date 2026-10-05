@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
+    'culling',
     'App',
 ]
 
@@ -55,6 +56,13 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+# ------------------------------------------------------------------------------
+# CORS CONFIGURATION (Crucial for Client Download Stamping & HTML5 Canvas)
+# ------------------------------------------------------------------------------
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Disposition', 'Content-Length', 'Content-Type']
 
 ROOT_URLCONF = 'config.urls'
 
@@ -305,12 +313,24 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 60 * 60 * 24,  # Every 24 hours (86400 seconds)
         'options': {'queue': 'exshare'},
     },
+    'cleanup-abandoned-culling-sessions-daily': {
+        'task': 'culling.tasks.cleanup_abandoned_culling_sessions',
+        'schedule': 86400.0,  # Every 24 hours
+        'options': {'queue': 'exshare'},
+    },
 }
 
 # ------------------------------------------------------------------------------
 # NUDENET CONTENT MODERATION SETTINGS
 # ------------------------------------------------------------------------------
-NUDE_DETECTION_ENABLED = config('NUDE_DETECTION_ENABLED', default=True, cast=bool)
+# When True: scans uploaded media for explicit nudity and rejects violations.
+# When False: skips/bypasses all nude detection checks immediately.
+ENABLE_NUDE_DETECTION = config(
+    'ENABLE_NUDE_DETECTION',
+    default=config('NUDE_DETECTION_ENABLED', default=True, cast=bool),
+    cast=bool,
+)
+NUDE_DETECTION_ENABLED = ENABLE_NUDE_DETECTION
 NUDE_DETECTION_THRESHOLD = config('NUDE_DETECTION_THRESHOLD', default=0.45, cast=float)
 NUDE_DETECTION_PROHIBITED_CLASSES = [
     'FEMALE_GENITALIA_EXPOSED',

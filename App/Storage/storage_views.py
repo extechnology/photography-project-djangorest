@@ -14,6 +14,7 @@ import functools
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse, FileResponse, Http404
+from utils.watermark import stamp_watermark_on_image
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import F, Q, Count, Max, Sum, Case, When
@@ -155,8 +156,24 @@ def get_photographer_profile(user):
     if not user:
         return None
     try:
+        profile = getattr(user, 'photographer_profile', None)
+        if profile:
+            return profile
         return PhotographerProfile.objects.get(user=user)
     except PhotographerProfile.DoesNotExist:
+        if getattr(user, 'is_authenticated', False):
+            try:
+                profile, _ = PhotographerProfile.objects.get_or_create(
+                    user=user,
+                    defaults={
+                        'name': user.get_full_name() or user.username or 'Photographer',
+                        'email': user.email or '',
+                        'studio_name': f"{user.username} Studio"
+                    }
+                )
+                return profile
+            except Exception:
+                return None
         return None
 
 
@@ -854,6 +871,19 @@ class GalleryListCreateView(APIView):
                     "detail": f"Template '{requested_template}' is not included in your current subscription tier."
                 }, status=status.HTTP_403_FORBIDDEN)
 
+        # Check watermark_enabled plan entitlement
+        if 'watermark_enabled' in request.data:
+            val = request.data.get('watermark_enabled')
+            is_enabling = val in [True, 'true', 'True', 1, '1']
+            if is_enabling and not (user.is_staff or user.is_superuser):
+                if not active_plan or not getattr(active_plan, 'watermark_enabled', False):
+                    return Response({
+                        "error_code": "WATERMARK_LOCKED",
+                        "upgrade_required": True,
+                        "detail": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries.",
+                        "message": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries."
+                    }, status=status.HTTP_403_FORBIDDEN)
+
         if active_plan and getattr(active_plan, 'max_galleries', 0) > 0 and profile:
             current_active = profile.galleries.exclude(status='archived').count()
             if current_active >= active_plan.max_galleries:
@@ -1103,6 +1133,26 @@ class GalleryDetailView(APIView):
                         "detail": "Your subscription plan does not include AI Face Search.",
                         "message": "AI Biometric Face Search is locked on your current subscription plan. Upgrade to enable.",
                         "upgrade_required": True
+                    }, status=status.HTTP_403_FORBIDDEN)
+
+        # Enforce plan restriction if enabling watermark_enabled
+        if 'watermark_enabled' in request.data:
+            val = request.data.get('watermark_enabled')
+            is_enabling = val in [True, 'true', 'True', 1, '1']
+            if is_enabling and not (user.is_staff or user.is_superuser):
+                profile = gallery.photographer
+                sub = getattr(profile, 'subscription', None)
+                if not sub and hasattr(user, 'subscription'):
+                    sub = user.subscription
+                plan = getattr(sub, 'plan', None) if sub and getattr(sub, 'is_active', True) else None
+                if not plan and profile:
+                    plan = getattr(profile, 'studio_plan', None) or getattr(profile, 'plan', None)
+                if not plan or not getattr(plan, 'watermark_enabled', False):
+                    return Response({
+                        "error_code": "WATERMARK_LOCKED",
+                        "upgrade_required": True,
+                        "detail": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries.",
+                        "message": "Custom studio watermarking is not included in your current subscription plan. Please upgrade your plan to watermark proofing galleries."
                     }, status=status.HTTP_403_FORBIDDEN)
 
         # 2. Check template_id allowed_templates
@@ -2483,6 +2533,52 @@ class MediaDownloadView(APIView):
 
         storage = get_storage_provider()
         filename = media.original_filename or f"photo_{media.id}.jpg"
+
+        # Check watermark baking on single download:
+        if getattr(gallery, 'watermark_enabled', False) and getattr(media, 'media_type', 'photo') != 'video':
+            profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
+            watermark_text = (
+                gallery.watermark_text or 
+                (profile.get_effective_watermark_text() if profile and hasattr(profile, 'get_effective_watermark_text') else None) or 
+                (getattr(profile, 'studio_name', None) if profile else None) or 
+                "ATELIER PHOTOGRAPHY"
+            )
+            watermark_image_path = (
+                profile.watermark_image.path 
+                if (profile and getattr(profile, 'watermark_image', None) and hasattr(profile.watermark_image, 'path') and os.path.exists(profile.watermark_image.path)) 
+                else None
+            )
+            raw_bytes = None
+            try:
+                raw_bytes = storage.download(media.storage_key)
+            except Exception:
+                if hasattr(media, 'file') and media.file:
+                    try:
+                        raw_bytes = media.file.read()
+                    except Exception:
+                        pass
+            if not raw_bytes and hasattr(storage, '_resolve_path'):
+                try:
+                    p = storage._resolve_path(media.storage_key)
+                    if p.exists():
+                        with open(p, 'rb') as f:
+                            raw_bytes = f.read()
+                except Exception:
+                    pass
+
+            if raw_bytes:
+                try:
+                    watermarked_stream = stamp_watermark_on_image(
+                        io.BytesIO(raw_bytes),
+                        watermark_text=watermark_text,
+                        watermark_image_path=watermark_image_path,
+                        opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
+                        position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                    )
+                    return FileResponse(watermarked_stream, as_attachment=True, filename=filename)
+                except Exception as err:
+                    logger.warning(f"Watermark baking failed on single download: {err}")
+
         signed_url = storage.generate_signed_download_url(media.storage_key, expires_in=3600, filename=filename)
 
         # For LocalStorageProvider, direct FileResponse can also be served
@@ -2917,35 +3013,49 @@ class GalleryMediaReorderView(APIView):
         if not gallery:
             return Response({'detail': 'Gallery not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = MediaReorderSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        from gallery.services.reorder import reorder_gallery_media
+        from gallery.serializers import ReorderGalleryMediaSerializer
 
-        media_ids = serializer.validated_data.get('media_ids')
-        order_list = serializer.validated_data.get('order')
+        serializer = ReorderGalleryMediaSerializer(data=request.data)
+        if serializer.is_valid():
+            data = serializer.validated_data
+            updated_count = reorder_gallery_media(
+                gallery=gallery,
+                media_ids=data.get('media_ids'),
+                media_id=data.get('media_id'),
+                action=data.get('action'),
+                target_position=data.get('target_position')
+            )
+            return Response(
+                {
+                    "status": "success",
+                    "gallery_id": str(gallery.id),
+                    "updated_count": updated_count,
+                    "message": "Gallery media sequence reordered successfully."
+                },
+                status=status.HTTP_200_OK
+            )
 
-        updated_count = 0
-        with transaction.atomic():
-            if media_ids:
-                media_objs = {m.id: m for m in gallery.media_items.filter(id__in=media_ids, deleted_at__isnull=True)}
-                to_update = []
-                for idx, mid in enumerate(media_ids):
-                    if mid in media_objs:
-                        obj = media_objs[mid]
-                        if obj.display_order != idx:
-                            obj.display_order = idx
-                            to_update.append(obj)
-                if to_update:
-                    Media.objects.bulk_update(to_update, ['display_order'])
-                updated_count = len(to_update)
-
-            elif order_list:
+        order_list = request.data.get('order')
+        if order_list:
+            updated_count = 0
+            with transaction.atomic():
                 for item in order_list:
                     m_id = item.get('media_id') or item.get('id')
-                    d_order = item.get('display_order', 0)
+                    d_order = item.get('display_order', item.get('order', 0))
                     if m_id is not None:
-                        updated_count += gallery.media_items.filter(id=m_id, deleted_at__isnull=True).update(display_order=d_order)
+                        updated_count += gallery.media_items.filter(id=m_id, deleted_at__isnull=True).update(order=d_order, display_order=d_order)
+            return Response(
+                {
+                    "status": "success",
+                    "gallery_id": str(gallery.id),
+                    "updated_count": updated_count,
+                    "message": "Gallery media sequence reordered successfully."
+                },
+                status=status.HTTP_200_OK
+            )
 
-        return Response({'status': 'success', 'updated_count': updated_count}, status=status.HTTP_200_OK)
+        serializer.is_valid(raise_exception=True)
 
 
 GalleryReorderMediaView = GalleryMediaReorderView
@@ -2967,21 +3077,36 @@ class MediaBulkDeleteView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        gallery_id = gallery_id or request.data.get('gallery_id')
         media_ids = request.data.get('media_ids', [])
-        if not isinstance(media_ids, list) or not media_ids:
-            return Response(
-                {"detail": "media_ids must be a non-empty list of UUIDs."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        delete_all = request.data.get('delete_all', False)
+        if isinstance(delete_all, str):
+            delete_all = delete_all.lower() in ('true', '1', 'yes')
+        section = request.data.get('section')
 
-        if len(media_ids) > MAX_BULK_DELETE_ITEMS:
-            return Response(
-                {"detail": f"Cannot delete more than {MAX_BULK_DELETE_ITEMS} items at once."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Dedupe while preserving intent; malformed IDs will just fail to match in the query.
-        media_ids = list(dict.fromkeys(media_ids))
+        if not delete_all:
+            if not media_ids:
+                return Response(
+                    {
+                        "message": "No media items specified.",
+                        "deleted_count": 0,
+                        "freed_bytes": 0,
+                        "skipped_ids": [],
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            if not isinstance(media_ids, list):
+                return Response(
+                    {"detail": "media_ids must be a list of UUIDs."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(media_ids) > MAX_BULK_DELETE_ITEMS:
+                return Response(
+                    {"detail": f"Cannot delete more than {MAX_BULK_DELETE_ITEMS} items at once."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Dedupe while preserving intent; malformed IDs will just fail to match in the query.
+            media_ids = list(dict.fromkeys(media_ids))
 
         gallery = None
         if gallery_id:
@@ -2992,9 +3117,9 @@ class MediaBulkDeleteView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-        # Ownership is enforced in the queryset now, not skipped silently in a loop.
+        # Ownership is enforced in the queryset
         media_qs = Media.objects.filter(
-            id__in=media_ids, deleted_at__isnull=True
+            deleted_at__isnull=True
         ).select_related('photographer', 'gallery')
 
         if gallery is not None:
@@ -3003,9 +3128,15 @@ class MediaBulkDeleteView(APIView):
         if not (user.is_staff or user.is_superuser):
             media_qs = media_qs.filter(photographer__user_id=user.id)
 
+        if delete_all:
+            if section and section.lower() != 'all':
+                media_qs = media_qs.filter(section_title__iexact=section)
+        else:
+            media_qs = media_qs.filter(id__in=media_ids)
+
         media_list = list(media_qs)
         found_ids = {str(m.id) for m in media_list}
-        skipped_ids = [str(mid) for mid in media_ids if str(mid) not in found_ids]
+        skipped_ids = [str(mid) for mid in media_ids if str(mid) not in found_ids] if not delete_all else []
 
         if not media_list:
             return Response(
@@ -3024,21 +3155,21 @@ class MediaBulkDeleteView(APIView):
         total_freed_bytes = 0
         affected_galleries = {}  # gallery_id -> gallery instance, for cover-reset check
 
-        # Step 1: soft-delete in the DB first, inside a transaction. If this fails,
-        # nothing has been touched in storage yet.
+        # Step 1: soft-delete in the DB first, inside a transaction.
         with transaction.atomic():
             for media in media_list:
                 if media.gallery_id:
                     affected_galleries[media.gallery_id] = media.gallery
 
-            Media.objects.filter(id__in=[m.id for m in media_list]).update(
+            media_ids_to_del = [m.id for m in media_list]
+            Media.objects.filter(id__in=media_ids_to_del).update(
                 deleted_at=timezone.now()
             )
-            FaceEmbedding.objects.filter(media_id__in=[m.id for m in media_list]).delete()
+            FaceEmbedding.objects.filter(media_id__in=media_ids_to_del).delete()
 
-            for gallery_id, gallery_obj in affected_galleries.items():
-                deleted_ids = [m.id for m in media_list if m.gallery_id == gallery_id]
-                _cleanup_gallery_media_references(gallery_obj, deleted_ids)
+            for gid, gallery_obj in affected_galleries.items():
+                del_ids = [m.id for m in media_list if m.gallery_id == gid]
+                _cleanup_gallery_media_references(gallery_obj, del_ids)
 
             total_freed_bytes = sum(m.file_size for m in media_list)
             # Deduct quota per-photographer in case items span more than one photographer.
@@ -3049,10 +3180,13 @@ class MediaBulkDeleteView(APIView):
             for photographer, freed in by_photographer.items():
                 StorageQuotaService.deduct_storage(photographer, freed)
 
-        # Step 2: best-effort physical deletion from storage. DB state is already
-        # consistent regardless of what happens here, so failures are logged and
-        # reported rather than raised.
+        # Step 2: best-effort physical deletion from storage.
         for media in media_list:
+            try:
+                if media.file:
+                    media.file.delete(save=False)
+            except Exception:
+                pass
             try:
                 if media.storage_key:
                     storage.delete(media.storage_key)
@@ -3067,9 +3201,10 @@ class MediaBulkDeleteView(APIView):
                 )
                 failed_ids.append(str(media.id))
 
+        deleted_count = len(media_list)
         response_body = {
-            "message": f"Successfully deleted {len(deleted_ids)} media items.",
-            "deleted_count": len(deleted_ids),
+            "message": f"Successfully deleted {deleted_count} items.",
+            "deleted_count": deleted_count,
             "freed_bytes": total_freed_bytes,
             "skipped_ids": skipped_ids,
         }
@@ -3773,6 +3908,38 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
 
             # Write file bytes into the ZIP archive
             if file_bytes:
+                # Watermark baking if enabled on gallery and media item is a photo
+                if getattr(gallery, 'watermark_enabled', False) and getattr(item, 'media_type', 'photo') != 'video':
+                    try:
+                        profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
+                        legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
+                        wm_text = None
+                        if gallery.watermark_text and gallery.watermark_text.strip():
+                            raw = gallery.watermark_text.strip()
+                            if raw.lower() not in legacy_placeholders:
+                                wm_text = raw if raw.startswith('©') else f"© {raw}"
+
+                        if not wm_text:
+                            if profile and hasattr(profile, 'get_effective_watermark_text'):
+                                wm_text = profile.get_effective_watermark_text()
+                            else:
+                                user = getattr(gallery.photographer, 'user', None) or getattr(gallery, 'user', None) or gallery.photographer
+                                name = user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else ''
+                                name = name or (getattr(profile, 'name', '') if profile else '') or getattr(user, 'username', 'Photographer')
+                                wm_text = f"© {name}"
+
+                        logo_file = profile.watermark_image if (profile and getattr(profile, 'watermark_image', None)) else None
+                        watermarked_stream = stamp_watermark_on_image(
+                            io.BytesIO(file_bytes),
+                            watermark_text=wm_text,
+                            logo_file=logo_file,
+                            opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
+                            position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                        )
+                        file_bytes = watermarked_stream.getvalue()
+                    except Exception as wm_err:
+                        logger.warning(f"Watermark baking failed for item {item.id} in ZIP download: {wm_err}")
+
                 zip_file.writestr(filename, file_bytes)
 
     # Update gallery downloads count telemetry

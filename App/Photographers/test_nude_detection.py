@@ -2,7 +2,7 @@ import io
 from unittest.mock import patch
 from PIL import Image
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from rest_framework import status
@@ -240,3 +240,71 @@ class NudeDetectionAPIViewTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         new_post = PhotographerPost.objects.get(caption="Sunset Landscape")
         self.assertEqual(new_post.images.count(), 2)
+
+
+class NudeDetectionSettingsToggleTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="toggle_photographer",
+            email="toggle@example.com",
+            password="securepass123",
+            role=User.Role.PHOTOGRAPHER,
+        )
+        self.profile = PhotographerProfile.objects.create(
+            user=self.user,
+            name="Toggle Studio",
+            phone="1234567890",
+            email="toggle@example.com",
+        )
+        self.category = PhotoCategory.objects.create(name="Fine Art")
+        self.post = PhotographerPost.objects.create(
+            photographer=self.profile,
+            photo_category=self.category,
+            caption="Toggle Gallery",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    @override_settings(ENABLE_NUDE_DETECTION=False, NUDE_DETECTION_ENABLED=False)
+    @patch("App.Photographers.photo_utils.get_nude_detector")
+    def test_nude_detection_disabled_bypasses_check_completely(self, mock_get_detector):
+        """When ENABLE_NUDE_DETECTION is False, detector is not called and check returns (False, [])."""
+        img_file = create_test_image("explicit.jpg")
+        is_nude, violations = check_image_for_nudity(img_file)
+        self.assertFalse(is_nude)
+        self.assertEqual(violations, [])
+        mock_get_detector.assert_not_called()
+
+        # Validator also passes through without error
+        validated = validate_non_nude_image(img_file)
+        self.assertEqual(validated, img_file)
+
+    @override_settings(ENABLE_NUDE_DETECTION=False, NUDE_DETECTION_ENABLED=False)
+    def test_upload_photo_accepted_when_detection_disabled(self):
+        """When ENABLE_NUDE_DETECTION is False, upload succeeds even if image would have been flagged."""
+        img_file = create_test_image("upload_disabled.jpg")
+        resp = self.client.post(
+            f"/api/photographers/posts/{self.post.id}/images/upload/",
+            {"image": img_file},
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+    @override_settings(ENABLE_NUDE_DETECTION=True, NUDE_DETECTION_ENABLED=True)
+    @patch("App.Photographers.photo_utils.get_nude_detector")
+    def test_upload_photo_rejected_when_detection_enabled(self, mock_get_detector):
+        """When ENABLE_NUDE_DETECTION is True, nudity detection actively blocks explicit uploads."""
+        mock_detector = mock_get_detector.return_value
+        mock_detector.detect.return_value = [
+            {"class": "FEMALE_GENITALIA_EXPOSED", "score": 0.95, "box": [10, 10, 50, 50]}
+        ]
+
+        img_file = create_test_image("upload_explicit.jpg")
+        resp = self.client.post(
+            f"/api/photographers/posts/{self.post.id}/images/upload/",
+            {"image": img_file},
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("rejected_files", resp.data)
+

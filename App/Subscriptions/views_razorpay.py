@@ -45,6 +45,15 @@ from App.Auth.auth_utils import CookieJWTAuthentication, get_user_from_request
 from App.Subscriptions.sub_models import Plan as StudioPlan, PhotographerSubscription, SubscriptionPayment
 from App.Photographers.photo_models import PhotographerProfile
 
+try:
+    from backend.atelier_notifications import notify_plan_activated, notify_plan_cancelled
+except ImportError:
+    try:
+        from backend.atelier_notifications import notify_plan_activated, notify_plan_cancelled
+    except ImportError:
+        notify_plan_activated = None
+        notify_plan_cancelled = None
+
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -163,29 +172,24 @@ def is_studio_active(user) -> bool:
     else:
         q |= models.Q(photographer__user=user)
 
-    sub = PhotographerSubscription.objects.filter(q).order_by('-created_at').first()
-
-    if not sub:
-        if photographer:
-            default_plan = StudioPlan.objects.filter(is_active=True).exclude(id='plan-test-20gb').order_by('sort_order').first()
-            if default_plan:
-                sub = PhotographerSubscription.objects.create(
-                    user=user,
-                    photographer=photographer,
-                    plan=default_plan,
-                    status="active",
-                    started_at=now,
-                    expires_at=now + timedelta(days=365),
-                    auto_renew=True,
-                    storage_limit_bytes=getattr(default_plan, 'storage_limit_bytes', 16106127360),
-                )
-                photographer.studio_plan = default_plan
-                photographer.save(update_fields=['studio_plan'])
+    # Prioritize any active unexpired subscription
+    active_sub = PhotographerSubscription.objects.filter(
+        q, status='active', expires_at__gt=now
+    ).order_by('-expires_at', '-created_at').first()
+    if active_sub:
+        update_subscription_expiration_state(active_sub)
+        if active_sub.status == 'active':
+            expiry = getattr(active_sub, 'expiry_date', None) or getattr(active_sub, 'expires_at', None)
+            if not expiry or now < expiry:
                 return True
+
+    sub = PhotographerSubscription.objects.filter(q).order_by('-created_at').first()
+    if not sub:
+        if photographer and (getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)):
+            return True
         return False
 
     update_subscription_expiration_state(sub)
-
     if sub.status != 'active':
         return False
     expiry = getattr(sub, 'expiry_date', None) or getattr(sub, 'expires_at', None)
@@ -396,10 +400,11 @@ class StudioPlanSerializer(serializers.ModelSerializer):
             'id', 'name', 'subtitle', 'tier', 'billing_cycle',
             'period_label', 'duration_months', 'monthly_price',
             'original_monthly_price', 'total_price', 'billing_text',
-            'currency', 'tag', 'tag_type', 'image_storage_gb',
+            'currency', 'tag', 'tag_type', 'is_popular', 'image_storage_gb',
             'video_storage_gb', 'image_storage', 'video_storage',
             'storage_limit_bytes', 'features', 'cta_text',
             'max_galleries', 'gallery_expiry_days', 'face_search_enabled',
+            'watermark_enabled',
             'max_events', 'allowed_templates', 'allowed_portfolio_templates',
             'max_portfolio_posts', 'max_inquiries', 'has_full_inquiry_access',
             'inquiry_access', 'can_upgrade_storage', 'max_upgrade_image_gb',
@@ -432,13 +437,14 @@ class CurrentSubscriptionPlanSummarySerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'tier', 'billing_cycle', 'duration_months',
             'total_price', 'currency', 'max_galleries', 'allowed_templates',
-            'face_search_enabled', 'gallery_expiry_days', 'max_events',
+            'face_search_enabled', 'watermark_enabled', 'gallery_expiry_days', 'max_events',
             'max_portfolio_posts', 'has_full_inquiry_access',
         ]
 
 
 class CurrentSubscriptionSerializer(serializers.ModelSerializer):
     plan = CurrentSubscriptionPlanSummarySerializer(read_only=True)
+    has_subscription = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     days_remaining = serializers.SerializerMethodField()
     auto_renew = serializers.SerializerMethodField()
@@ -450,11 +456,14 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = PhotographerSubscription
         fields = [
-            'id', 'status', 'plan', 'start_date', 'expiry_date',
+            'id', 'has_subscription', 'status', 'plan', 'start_date', 'expiry_date',
             'days_remaining', 'storage', 'usage', 'auto_renew',
             'cancel_at_period_end', 'cancelled_at',
             'payment_gateway_ref', 'razorpay_subscription_id',
         ]
+
+    def get_has_subscription(self, obj):
+        return True
 
     def get_status(self, obj):
         now = timezone.now()
@@ -591,9 +600,19 @@ class StudioPlansListView(APIView):
 class CurrentSubscriptionView(APIView):
     """
     GET /api/plans/current/
-    Returns the user's active or latest subscription with dynamic days_remaining,
+    Returns the user's active paid subscription with dynamic days_remaining,
     calculated storage quota, and auto-renew autopay flag.
-    Auto-provisions a default subscription for new users.
+
+    STRICT PAID ARCHITECTURE:
+    - If user has an active paid subscription -> return HTTP 200 with active subscription details.
+    - If user has NEVER paid or has NO active subscription -> return HTTP 200 with:
+        {
+            "has_subscription": False,
+            "status": "no_plan",
+            "plan": None,
+            "message": "No active studio subscription found. Please choose a paid plan."
+        }
+      DO NOT crash with 500 and DO NOT return a raw 404 error page.
     """
     authentication_classes = [CookieJWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -605,32 +624,43 @@ class CurrentSubscriptionView(APIView):
 
         photographer = get_or_create_photographer_profile(user)
 
-        sub = PhotographerSubscription.objects.filter(
-            models.Q(user=user) | models.Q(photographer=photographer)
-        ).order_by('-created_at').first()
-
-        if not sub:
-            # Auto-provision active default plan for photographers
-            default_plan = StudioPlan.objects.filter(is_active=True).exclude(id='plan-test-20gb').order_by('sort_order').first()
-            now = timezone.now()
-            sub = PhotographerSubscription.objects.create(
-                user=user,
-                photographer=photographer,
-                plan=default_plan,
-                status="active",
-                started_at=now,
-                expires_at=now + timedelta(days=365),
-                auto_renew=True,
-                storage_limit_bytes=getattr(default_plan, 'storage_limit_bytes', 16106127360),
-            )
-            if photographer and default_plan:
-                photographer.studio_plan = default_plan
-                photographer.save(update_fields=['studio_plan'])
+        now = timezone.now()
+        q = models.Q(user=user)
+        if photographer:
+            q |= models.Q(photographer=photographer)
         else:
-            update_subscription_expiration_state(sub)
+            q |= models.Q(photographer__user=user)
 
+        # 1. Look for an active, unexpired subscription
+        sub = PhotographerSubscription.objects.filter(
+            q,
+            status='active',
+            expires_at__gt=now
+        ).select_related('plan').order_by('-expires_at', '-created_at').first()
+
+        # If no active sub found by filter, inspect latest sub to update status if expired
+        if not sub:
+            latest_sub = PhotographerSubscription.objects.filter(q).order_by('-created_at').first()
+            if latest_sub:
+                update_subscription_expiration_state(latest_sub)
+                expiry = getattr(latest_sub, 'expiry_date', None) or getattr(latest_sub, 'expires_at', None)
+                if latest_sub.status == 'active' and expiry and expiry > now and not getattr(latest_sub, 'is_expired', False):
+                    sub = latest_sub
+
+        # 2. No Active Subscription (New User or Expired) -> Return 200 with no_plan
+        if not sub:
+            return Response({
+                "has_subscription": False,
+                "status": "no_plan",
+                "plan": None,
+                "message": "No active studio subscription found. Please choose a paid plan."
+            }, status=status.HTTP_200_OK)
+
+        # 3. Active Paid Subscription -> Return sanitized subscription & live metrics
         serializer = CurrentSubscriptionSerializer(sub)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        data = serializer.data
+        data["has_subscription"] = True
+        return Response(data, status=status.HTTP_200_OK)
 
 
 # ------------------------------------------------------------------------------
@@ -1024,6 +1054,18 @@ class PlanVerifyView(APIView):
                 logger.warning(f"Could not record SubscriptionPayment: {e}")
 
         serializer = CurrentSubscriptionSerializer(new_sub)
+
+        # Fire plan-activated in-app notification
+        try:
+            if notify_plan_activated:
+                notify_plan_activated(
+                    user=user,
+                    plan_name=target_plan.name,
+                    duration_months=duration_months,
+                )
+        except Exception as notify_exc:
+            logger.warning(f"notify_plan_activated failed (non-critical): {notify_exc}")
+
         return Response({
             "status": "success",
             "message": f"Successfully activated {target_plan.name}.",
@@ -1075,6 +1117,17 @@ class CancelAutoRenewView(APIView):
 
         expiry_str = sub.expiry_date.strftime('%B %d, %Y') if sub.expiry_date else 'the end of your period'
         serializer = CurrentSubscriptionSerializer(sub)
+
+        # Fire plan-cancelled in-app notification
+        try:
+            if notify_plan_cancelled:
+                notify_plan_cancelled(
+                    user=user,
+                    plan_name=sub.plan.name if sub.plan else 'Studio Plan',
+                    expiry_date=sub.expiry_date or sub.expires_at,
+                )
+        except Exception as notify_exc:
+            logger.warning(f"notify_plan_cancelled failed (non-critical): {notify_exc}")
 
         return Response({
             "status": "success",

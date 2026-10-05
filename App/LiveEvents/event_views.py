@@ -134,6 +134,33 @@ class LiveEventViewSet(viewsets.ModelViewSet):
         self.check_object_permissions(self.request, obj)
         return obj
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+
+        # Base media queryset for the event
+        base_media_qs = instance.media.all().order_by('-created_at')
+        media_qs = base_media_qs
+
+        section_filter = request.query_params.get('section', '').strip()
+        if section_filter and section_filter.lower() != 'all':
+            media_qs = media_qs.filter(section_title__iexact=section_filter)
+
+        all_media_param = request.query_params.get('all_media', '').lower() in ('true', '1', 'yes')
+
+        raw_limit = request.query_params.get('limit') or request.query_params.get('page_size')
+        if not all_media_param and raw_limit:
+            try:
+                limit = min(max(int(raw_limit), 1), 500)
+                media_qs = media_qs[:limit]
+            except (ValueError, TypeError):
+                pass
+
+        context = self.get_serializer_context()
+        context['filtered_media'] = media_qs
+
+        serializer = self.get_serializer(instance, context=context)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
@@ -413,9 +440,12 @@ class LiveEventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='media')
     def get_media_items(self, request, pk=None):
-        """Returns all media items belonging to this live event."""
+        """Returns media items belonging to this live event with optional section filtering."""
         event = self.get_object()
         media_qs = event.media.all().order_by('-created_at')
+        section_filter = request.query_params.get('section', '').strip()
+        if section_filter and section_filter.lower() != 'all':
+            media_qs = media_qs.filter(section_title__iexact=section_filter)
         serializer = EventMediaSerializer(media_qs, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -440,21 +470,39 @@ class LiveEventViewSet(viewsets.ModelViewSet):
     def bulk_delete_media(self, request, pk=None):
         """
         Bulk delete multiple photos / videos belonging to an event.
-        Payload: { "media_ids": ["uuid-1", "uuid-2", ...] }
+        Payload: { "media_ids": ["uuid-1", "uuid-2", ...], "delete_all": true, "section": "..." }
         """
         event = self.get_object()
         media_ids = request.data.get('media_ids', [])
+        delete_all = request.data.get('delete_all', False)
+        if isinstance(delete_all, str):
+            delete_all = delete_all.lower() in ('true', '1', 'yes')
+        section = request.data.get('section')
 
-        if not isinstance(media_ids, list) or len(media_ids) == 0:
-            return Response(
-                {"error": "media_ids must be a non-empty list of UUID strings."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        qs = EventMedia.objects.filter(event=event)
 
-        # Filter only media items belonging strictly to this event
-        media_qs = EventMedia.objects.filter(event=event, id__in=media_ids)
-        found_count = media_qs.count()
+        if delete_all:
+            if section and section.lower() != 'all':
+                qs = qs.filter(section_title__iexact=section)
+        else:
+            if not media_ids:
+                return Response(
+                    {
+                        'deleted_count': 0,
+                        'freed_bytes': 0,
+                        'deleted_media_ids': [],
+                        'message': 'No media items specified.'
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            if not isinstance(media_ids, list):
+                return Response(
+                    {"error": "media_ids must be a list of UUID strings."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(id__in=media_ids)
 
+        found_count = qs.count()
         if found_count == 0:
             return Response(
                 {
@@ -467,24 +515,18 @@ class LiveEventViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
 
+        freed_bytes = qs.aggregate(total=models.Sum('file_size'))['total'] or 0
+        if freed_bytes == 0:
+            sum_mb = qs.aggregate(total=models.Sum('size_mb'))['total'] or 0
+            if sum_mb:
+                freed_bytes = int(sum_mb * 1024 * 1024)
+
         deleted_ids = []
-        freed_bytes = 0
+        deleted_count = found_count
 
         with transaction.atomic():
-            for item in media_qs:
+            for item in qs:
                 deleted_ids.append(str(item.id))
-                # Calculate size in bytes if file_size, size_mb or file.size is present
-                if item.file_size:
-                    freed_bytes += item.file_size
-                elif hasattr(item, 'file') and item.file:
-                    try:
-                        freed_bytes += item.file.size
-                    except Exception:
-                        pass
-                elif getattr(item, 'size_mb', None):
-                    freed_bytes += int(item.size_mb * 1024 * 1024)
-
-                # Clean up physical storage files
                 try:
                     if hasattr(item, 'file') and item.file:
                         item.file.delete(save=False)
@@ -493,20 +535,29 @@ class LiveEventViewSet(viewsets.ModelViewSet):
                 except Exception:
                     pass
 
-                item.delete()
+            # Bulk delete EventMedia records (EventFaceEmbedding cascades)
+            qs.delete()
 
-            # Decrement user's storage quota if tracked on profile/subscription
+            # Deduct from user storage
             user = request.user
             profile = getattr(user, 'photographer_profile', None) or getattr(user, 'profile', None)
-            if profile and hasattr(profile, 'used_storage_bytes'):
-                profile.used_storage_bytes = max(0, profile.used_storage_bytes - freed_bytes)
-                profile.save(update_fields=['used_storage_bytes'])
+            if not profile:
+                from App.Photographers.photo_models import PhotographerProfile
+                profile = PhotographerProfile.objects.filter(user=user).first()
+
+            if profile:
+                if hasattr(profile, 'storage_used_bytes'):
+                    profile.storage_used_bytes = max(0, (profile.storage_used_bytes or 0) - freed_bytes)
+                    profile.save(update_fields=['storage_used_bytes'])
+                elif hasattr(profile, 'used_storage_bytes'):
+                    profile.used_storage_bytes = max(0, (profile.used_storage_bytes or 0) - freed_bytes)
+                    profile.save(update_fields=['used_storage_bytes'])
 
         return Response(
             {
                 "status": "success",
-                "message": f"Successfully deleted {len(deleted_ids)} media item(s).",
-                "deleted_count": len(deleted_ids),
+                "message": f"Successfully removed {deleted_count} items from event.",
+                "deleted_count": deleted_count,
                 "deleted_media_ids": deleted_ids,
                 "freed_bytes": freed_bytes,
             },
@@ -517,6 +568,19 @@ class LiveEventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='bulk-delete')
     def bulk_delete_media_alias(self, request, pk=None):
         return self.bulk_delete_media(request, pk=pk)
+
+    # Collection level POST /api/events/media/bulk-delete/
+    @action(detail=False, methods=['post'], url_path='media/bulk-delete')
+    def bulk_delete_media_collection(self, request):
+        event_id = request.data.get('event_id') or request.data.get('id')
+        if not event_id:
+            return Response({"error": "event_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        self.kwargs[self.lookup_url_kwarg or self.lookup_field] = event_id
+        return self.bulk_delete_media(request, pk=event_id)
+
+    @action(detail=False, methods=['post'], url_path='bulk-delete')
+    def bulk_delete_collection_alias(self, request):
+        return self.bulk_delete_media_collection(request)
 
     @action(detail=True, methods=['post'], url_path='qr-settings')
     def update_qr_settings(self, request, pk=None):

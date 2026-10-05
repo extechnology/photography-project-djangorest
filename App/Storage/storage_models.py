@@ -1,9 +1,12 @@
+import os
 import uuid
 import secrets
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
 from django.utils import timezone
 from django.utils.text import slugify
+from django.utils.translation import gettext_lazy as _
+from django.conf import settings
 from App.Auth.auth_models import User
 from App.Photographers.photo_models import PhotographerProfile
 from App.utils import format_bytes_human
@@ -149,6 +152,11 @@ class ExpiredStatus:
 
 
 class GalleryQuerySet(models.QuerySet):
+    def filter(self, *args, **kwargs):
+        if 'user' in kwargs:
+            kwargs['photographer__user'] = kwargs.pop('user')
+        return super().filter(*args, **kwargs)
+
     def active(self):
         """Galleries that have either no expiration date or whose expiration is in the future."""
         now = timezone.now()
@@ -172,6 +180,23 @@ class GalleryManager(models.Manager):
 
 
 class Gallery(models.Model):
+    def __init__(self, *args, **kwargs):
+        if 'user' in kwargs and 'photographer' not in kwargs:
+            user = kwargs.pop('user')
+            if user:
+                from App.Photographers.photo_models import PhotographerProfile
+                profile = getattr(user, 'photographer_profile', None) or PhotographerProfile.objects.filter(user=user).first()
+                if not profile:
+                    profile, _ = PhotographerProfile.objects.get_or_create(
+                        user=user,
+                        defaults={
+                            'name': getattr(user, 'fullname', '') or getattr(user, 'username', 'Studio'),
+                            'studio_name': getattr(user, 'first_name', '') or 'Studio'
+                        }
+                    )
+                kwargs['photographer'] = profile
+        super().__init__(*args, **kwargs)
+
     objects = GalleryManager()
     STATUS_CHOICES = [
         ('active', 'Active'),
@@ -257,6 +282,16 @@ class Gallery(models.Model):
     allow_downloads = models.BooleanField(default=True)
     allow_favorites = models.BooleanField(default=True)
     face_search_enabled = models.BooleanField(default=False)
+    watermark_enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether watermarking is enabled for photos in this gallery"
+    )
+
+    # Optional Gallery-Specific Watermark Overrides (nullable - falls back to PhotographerProfile)
+    watermark_text = models.CharField(max_length=120, null=True, blank=True)
+    watermark_opacity = models.FloatField(null=True, blank=True)
+    watermark_position = models.CharField(max_length=20, null=True, blank=True)
 
     # Analytics & Engagements
     views_count = models.PositiveIntegerField(default=0)
@@ -277,6 +312,26 @@ class Gallery(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.get_status_display()})"
+
+    def get_effective_watermark_text(self) -> str:
+        """
+        Returns the gallery custom watermark text if clean, or delegates to
+        the photographer's name / profile effective watermark text.
+        """
+        legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
+        if self.watermark_text and self.watermark_text.strip():
+            raw = self.watermark_text.strip()
+            if raw.lower() not in legacy_placeholders:
+                return raw if raw.startswith('©') else f"© {raw}"
+
+        profile = getattr(self.photographer, 'photographer_profile', None) or getattr(self, 'photographer', None)
+        if profile and hasattr(profile, 'get_effective_watermark_text'):
+            return profile.get_effective_watermark_text()
+
+        user = getattr(self.photographer, 'user', None) or getattr(self, 'user', None) or self.photographer
+        full_name = user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else ''
+        name = full_name or getattr(user, 'username', 'Photographer')
+        return f"© {name}"
 
     def save(self, *args, **kwargs):
         if not self.share_token:
@@ -363,7 +418,7 @@ class Gallery(models.Model):
 
     @property
     def media(self):
-        return self.media_items.filter(deleted_at__isnull=True).order_by('display_order', '-created_at')
+        return self.media_items.filter(deleted_at__isnull=True).order_by('order', 'created_at')
 
     @property
     def total_size_bytes(self) -> int:
@@ -420,6 +475,24 @@ class Gallery(models.Model):
     def total_media_count(self, value):
         self._total_media_count = value
 
+    @property
+    def section_counts(self) -> dict:
+        """Counts of active media items grouped by section_title."""
+        counts = (
+            self.media_items.filter(deleted_at__isnull=True)
+            .values('section_title')
+            .annotate(count=models.Count('id'))
+        )
+        return {
+            (item['section_title'] or 'UNASSIGNED').upper(): item['count']
+            for item in counts
+        }
+
+    @property
+    def media(self):
+        """Convenience property referencing media_items related manager."""
+        return self.media_items
+
 
 class GallerySection(models.Model):
     """
@@ -442,6 +515,23 @@ class GallerySection(models.Model):
 
 
 class Media(models.Model):
+    def __init__(self, *args, **kwargs):
+        if 'size_bytes' in kwargs and 'file_size' not in kwargs:
+            kwargs['file_size'] = kwargs.pop('size_bytes')
+        elif 'size_bytes' in kwargs:
+            kwargs.pop('size_bytes')
+        if 'gallery' in kwargs and 'photographer' not in kwargs and kwargs['gallery']:
+            kwargs['photographer'] = getattr(kwargs['gallery'], 'photographer', None)
+        if 'order' in kwargs and 'display_order' not in kwargs:
+            kwargs['display_order'] = kwargs['order']
+        elif 'display_order' in kwargs and 'order' not in kwargs:
+            kwargs['order'] = kwargs['display_order']
+        if 'storage_key' not in kwargs and 'original_filename' in kwargs:
+            g_id = getattr(kwargs.get('gallery'), 'id', 'default')
+            fn = kwargs.get('original_filename', 'photo')
+            kwargs['storage_key'] = f"galleries/{g_id}/{uuid.uuid4().hex[:8]}_{fn}"
+        super().__init__(*args, **kwargs)
+
     MEDIA_TYPE_CHOICES = [
         ('photo', 'Photo'),
         ('video', 'Video'),
@@ -505,6 +595,7 @@ class Media(models.Model):
     aspect_ratio = models.FloatField(null=True, blank=True)
 
     # Layout sequencing & flags
+    order = models.PositiveIntegerField(default=0, db_index=True)
     display_order = models.PositiveIntegerField(default=0, db_index=True)
     is_cover = models.BooleanField(default=False)
     is_favorite = models.BooleanField(default=False, db_index=True)
@@ -522,8 +613,9 @@ class Media(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['display_order', '-created_at', 'id']
+        ordering = ['order', 'display_order', '-created_at', 'id']
         indexes = [
+            models.Index(fields=['gallery', 'order']),
             # Composite cursor pagination indexes for O(1) keyset seeking
             models.Index(fields=['gallery', 'display_order', '-created_at', 'id']),
             models.Index(fields=['gallery', 'section_title', 'display_order', '-created_at', 'id']),
@@ -536,6 +628,25 @@ class Media(models.Model):
             models.Index(fields=['processing_status']),
             models.Index(fields=['deleted_at']),
         ]
+
+    def __init__(self, *args, **kwargs):
+        if 'name' in kwargs and 'original_filename' not in kwargs:
+            kwargs['original_filename'] = kwargs.pop('name')
+        if 'size' in kwargs and 'file_size' not in kwargs:
+            kwargs['file_size'] = kwargs.pop('size')
+        if 'gallery' in kwargs and 'photographer' not in kwargs and getattr(kwargs['gallery'], 'photographer', None):
+            kwargs['photographer'] = kwargs['gallery'].photographer
+        super().__init__(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        if not self.storage_key and self.gallery_id:
+            filename = self.original_filename or f"photo_{self.id}.jpg"
+            self.storage_key = f"galleries/{self.gallery_id}/originals/{self.id}_{filename}"
+        if self.order == 0 and self.display_order != 0:
+            self.order = self.display_order
+        elif self.display_order == 0 and self.order != 0:
+            self.display_order = self.order
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.original_filename} ({self.id})"
@@ -556,6 +667,10 @@ class Media(models.Model):
     def size_mb(self) -> float:
         size = getattr(self, 'file_size', 0) or (self.file.size if getattr(self, 'file', None) else 0)
         return round((size or 0) / (1024 * 1024), 2)
+
+    @property
+    def size_bytes(self) -> int:
+        return self.file_size
 
 
 class GalleryAnalyticsEvent(models.Model):
@@ -805,4 +920,130 @@ class StorageAuditLog(models.Model):
 
 # Backward & REST compatibility alias
 MediaItem = Media
+
+
+def story_video_upload_path(instance, filename):
+    """
+    Storage path: media/galleries/<gallery_id>/story_videos/<unique_filename>
+    """
+    clean_name = os.path.basename(filename)
+    return f"galleries/{instance.gallery_id}/story_videos/{uuid.uuid4().hex[:8]}_{clean_name}"
+
+
+class GalleryGuestSession(models.Model):
+    """
+    Lightweight guest identification for public gallery visitors.
+    Ensures each guest has their own video stories, favorites, and downloads tracked separately.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    gallery = models.ForeignKey(
+        Gallery,
+        on_delete=models.CASCADE,
+        related_name='guest_sessions'
+    )
+    guest_token = models.CharField(
+        max_length=128, 
+        unique=True, 
+        db_index=True,
+        help_text="Unique client token stored in visitor's localStorage"
+    )
+    name = models.CharField(max_length=120, default="Guest Creator")
+    email = models.EmailField(blank=True, default="")
+    phone = models.CharField(max_length=32, blank=True, default="")
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_active_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-last_active_at']
+        indexes = [
+            models.Index(fields=['gallery', 'guest_token']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.guest_token[:8]}) - Gallery {self.gallery_id}"
+
+
+class GalleryStoryVideo(models.Model):
+    """
+    A generated story or reel video created from gallery photographs.
+    """
+    class AspectRatio(models.TextChoices):
+        VERTICAL_9_16 = '9:16', _('9:16 Vertical (Reel / Story / Status)')
+        SQUARE_1_1 = '1:1', _('1:1 Square (Instagram Feed)')
+        LANDSCAPE_16_9 = '16:9', _('16:9 Widescreen (Cinematic / TV)')
+
+    class TransitionStyle(models.TextChoices):
+        KEN_BURNS = 'ken-burns', _('Ken Burns (Cinematic Drift)')
+        CROSSFADE = 'crossfade', _('Dreamy Dissolve (Crossfade)')
+        BURST = 'burst', _('Dynamic Burst')
+        FADE_BLACK = 'fade-black', _('Classic Noir (Fade to Black)')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    gallery = models.ForeignKey(
+        Gallery,
+        on_delete=models.CASCADE,
+        related_name='story_videos'
+    )
+    guest_session = models.ForeignKey(
+        GalleryGuestSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='story_videos'
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_story_videos'
+    )
+
+    creator_name = models.CharField(max_length=120, default="Guest Creator")
+    title = models.CharField(max_length=255, default="Our Story")
+    subtitle = models.CharField(max_length=255, blank=True, default="")
+    
+    aspect_ratio = models.CharField(
+        max_length=10,
+        choices=AspectRatio.choices,
+        default=AspectRatio.VERTICAL_9_16
+    )
+    transition_style = models.CharField(
+        max_length=20,
+        choices=TransitionStyle.choices,
+        default=TransitionStyle.KEN_BURNS
+    )
+    duration_seconds = models.FloatField(default=15.0)
+
+    # Music / Soundtrack metadata
+    music_title = models.CharField(max_length=255, blank=True, default="Soundtrack")
+    music_artist = models.CharField(max_length=255, blank=True, default="")
+    music_url = models.CharField(max_length=1024, blank=True, default="")
+
+    # JSON array of MediaItem IDs included in this reel
+    photo_ids = models.JSONField(default=list)
+
+    # Rendered video file (MP4 / WebM)
+    video_file = models.FileField(upload_to=story_video_upload_path, max_length=512)
+    file_size_bytes = models.BigIntegerField(default=0)
+
+    is_public_story = models.BooleanField(
+        default=True,
+        help_text="If true, visible in the gallery's guest stories showcase"
+    )
+    download_count = models.PositiveIntegerField(default=0)
+    share_count = models.PositiveIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['gallery', 'created_at']),
+            models.Index(fields=['guest_session']),
+        ]
+
+    def __str__(self):
+        return f"Reel '{self.title}' by {self.creator_name} ({self.aspect_ratio})"
 

@@ -1,0 +1,1 @@
+# Galleries module compatibility wrapper

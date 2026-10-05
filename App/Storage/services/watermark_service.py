@@ -1,5 +1,8 @@
 import io
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from utils.watermark import stamp_watermark_on_image
+
+__all__ = ['WatermarkService', 'stamp_watermark_on_image']
 
 
 class WatermarkService:
