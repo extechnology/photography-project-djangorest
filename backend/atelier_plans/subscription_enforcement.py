@@ -385,8 +385,8 @@ def enforce_active_subscription(user, feature_name="studio features"):
             })
         return subscription
 
-    if photographer and getattr(photographer, 'studio_plan', None):
-        return photographer.studio_plan
+    if photographer and (getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)):
+        return photographer.studio_plan or photographer.plan
 
     raise PermissionDenied(detail={
         "code": "no_active_subscription",

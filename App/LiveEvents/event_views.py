@@ -488,12 +488,12 @@ class LiveEventViewSet(viewsets.ModelViewSet):
             if not media_ids:
                 return Response(
                     {
+                        'error': 'media_ids must be a non-empty list of UUID strings.',
                         'deleted_count': 0,
                         'freed_bytes': 0,
                         'deleted_media_ids': [],
-                        'message': 'No media items specified.'
                     },
-                    status=status.HTTP_200_OK,
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
             if not isinstance(media_ids, list):
                 return Response(

@@ -2760,11 +2760,12 @@ class GalleryFaceSearchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Optional threshold
+        # Optional threshold (default 0.42 for SFace cosine matching)
         try:
-            threshold = float(request.query_params.get('threshold') or request.data.get('threshold') or 0.65)
+            raw_threshold = request.query_params.get('threshold') or request.data.get('threshold')
+            threshold = float(raw_threshold) if raw_threshold is not None else 0.42
         except (ValueError, TypeError):
-            threshold = None
+            threshold = 0.42
 
         # Execute search strictly within target gallery
         search_result = FaceService.search_gallery_faces(gallery, selfie_bytes, threshold=threshold, request=request)

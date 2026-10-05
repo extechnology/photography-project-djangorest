@@ -188,7 +188,7 @@ def get_detector_and_recognizer():
 
     if not hasattr(_local_state, "detector") or _local_state.detector is None:
         try:
-            score_thresh = float(config("FACE_DETECTOR_THRESHOLD", default="0.55"))
+            score_thresh = float(config("FACE_DETECTOR_THRESHOLD", default="0.40"))
             nms_thresh = float(config("FACE_NMS_THRESHOLD", default="0.30"))
 
             detector = cv2.FaceDetectorYN.create(
@@ -368,7 +368,7 @@ def load_image_to_cv2(image_input: Any) -> Tuple[Optional[np.ndarray], Dict[str,
 def detect_and_extract_faces(
     image_input: Any,
     max_dim: int = DEFAULT_MAX_DIM,
-    min_confidence: float = 0.50,
+    min_confidence: float = 0.40,
     fallback_if_no_face: bool = False,
 ) -> List[Dict[str, Any]]:
     """
@@ -432,7 +432,8 @@ def detect_and_extract_faces(
     # 4. Execute YuNet Face Detection
     raw_faces = None
     try:
-        ret_val, raw_faces = detector.detect(detect_img)
+        detect_res = detector.detect(detect_img)
+        raw_faces = detect_res[1] if isinstance(detect_res, (tuple, list)) and len(detect_res) > 1 else detect_res
     except Exception as e:
         logger.error(f"[FaceEngine] detector.detect() failed with error: {e}")
         raw_faces = None

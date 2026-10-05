@@ -5,6 +5,16 @@ import uuid
 from django.utils import timezone
 from datetime import timedelta
 
+# Cross-version compatibility for CheckConstraint (Django 4.2/5.0 expects 'check=', Django 6.0+ expects 'condition=')
+if 'check' not in models.CheckConstraint.__init__.__code__.co_varnames:
+    _orig_check_constraint_init = models.CheckConstraint.__init__
+    def _compat_check_constraint_init(self, *args, **kwargs):
+        if 'check' in kwargs and 'condition' not in kwargs:
+            kwargs['condition'] = kwargs.pop('check')
+        _orig_check_constraint_init(self, *args, **kwargs)
+    models.CheckConstraint.__init__ = _compat_check_constraint_init
+
+
 class CustomUserManager(BaseUserManager):
 
     def _normalize_fields(self, username, email, phone):

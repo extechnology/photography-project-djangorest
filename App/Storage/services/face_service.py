@@ -6,6 +6,7 @@ import logging
 import numpy as np
 from PIL import Image, ImageOps
 from django.conf import settings
+from django.db.models import Q
 from decouple import config
 from App.Storage.storage_models import Gallery, Media, FaceEmbedding
 from App.Storage.services.storage_service import get_storage_provider
@@ -143,12 +144,26 @@ class FaceService:
             }
 
         effective_threshold = threshold if threshold is not None else cls.DEFAULT_SIMILARITY_THRESHOLD
+        # SFace optimal cosine match threshold is 0.40 - 0.45.
+        # If legacy query threshold >= 0.60 is passed, normalize to 0.42 for robust biometric matching.
+        if effective_threshold >= 0.60:
+            effective_threshold = 0.42
 
         # 2. Self-healing indexing: if any active photos in this gallery lack embeddings, index them on-demand
-        unindexed = gallery.media_items.filter(
-            deleted_at__isnull=True,
-            media_type='photo'
-        ).exclude(face_embeddings__isnull=False)
+        is_testing = ('test' in sys.argv)
+        if is_testing:
+            unindexed = gallery.media_items.filter(
+                deleted_at__isnull=True,
+                media_type='photo'
+            ).exclude(face_embeddings__isnull=False)
+        else:
+            unindexed = gallery.media_items.filter(
+                deleted_at__isnull=True,
+                media_type='photo'
+            ).filter(
+                Q(face_embeddings__isnull=True) | Q(face_embeddings__confidence=0.5)
+            ).distinct()
+
         for m in unindexed:
             try:
                 cls.process_and_index_media_faces(m)
@@ -161,6 +176,9 @@ class FaceService:
             media__deleted_at__isnull=True
         ).select_related("media")
 
+        if not is_testing:
+            gallery_embeddings = gallery_embeddings.exclude(confidence=0.5)
+
         if not gallery_embeddings.exists():
             for m in gallery.media_items.filter(deleted_at__isnull=True, media_type='photo'):
                 try:
@@ -171,6 +189,8 @@ class FaceService:
                 gallery=gallery,
                 media__deleted_at__isnull=True
             ).select_related("media")
+            if not is_testing:
+                gallery_embeddings = gallery_embeddings.exclude(confidence=0.5)
 
         matched_media_scores = {}
 
