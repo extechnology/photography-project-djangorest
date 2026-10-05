@@ -24,7 +24,11 @@ urlpatterns = [
 
     # 4. Razorpay Checkout & Upfront Unlock
     path("checkout/order/", CreateCullingPaymentOrderView.as_view(), name="culling-checkout-order"),
+    path("checkout/order", CreateCullingPaymentOrderView.as_view(), name="culling-checkout-order-noslash"),
     path("checkout/verify/", VerifyCullingPaymentView.as_view(), name="culling-checkout-verify"),
+    path("checkout/verify", VerifyCullingPaymentView.as_view(), name="culling-checkout-verify-noslash"),
+    path("verify/", VerifyCullingPaymentView.as_view(), name="culling-verify"),
+    path("verify", VerifyCullingPaymentView.as_view(), name="culling-verify-noslash"),
 
     # 5. Curation Decisions Sync
     path("sessions/<str:session_id>/sync/", SyncCullingSessionView.as_view(), name="culling-session-sync"),
