@@ -200,6 +200,46 @@ class PhotographerProfile(models.Model):
         limit = self.get_storage_limit()
         return (self.storage_used_bytes + self.storage_reserved_bytes + bytes_needed) <= limit
 
+    def get_total_storage_used_bytes(self):
+        """Returns total storage used across galleries and staging in bytes."""
+        if self.user and hasattr(self.user, 'get_total_storage_used_bytes'):
+            return self.user.get_total_storage_used_bytes()
+        return int((self.storage_used_bytes or 0) + (self.storage_reserved_bytes or 0))
+
+    def get_active_subscription(self):
+        """Returns the active subscription for this studio."""
+        if hasattr(self, 'subscription') and self.subscription:
+            if getattr(self.subscription, 'status', None) == 'active':
+                return self.subscription
+        if self.user and hasattr(self.user, 'subscription'):
+            sub = self.user.subscription
+            if sub and getattr(sub, 'status', None) == 'active':
+                return sub
+        return None
+
+    @property
+    def events(self):
+        if self.user and hasattr(self.user, 'events'):
+            return self.user.events
+        if hasattr(self, 'shared_events'):
+            return self.shared_events
+        from App.LiveEvents.event_models import LiveEvent
+        return LiveEvent.objects.filter(photographer=self.user)
+
+    @property
+    def portfolio_projects(self):
+        if self.user and hasattr(self.user, 'portfolio_projects'):
+            return self.user.portfolio_projects
+        from portfolio.models import PortfolioWork
+        return PortfolioWork.objects.none()
+
+    @property
+    def inquiries(self):
+        if self.user:
+            from portfolio.models import PortfolioInquiry
+            return PortfolioInquiry.objects.filter(photographer=self.user)
+        return getattr(self, 'inquiry_set', None)
+
     def __str__(self):
         return f"{self.studio_name} ({self.name})"
 

@@ -8,12 +8,12 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 
-def culling_upload_path(instance, filename):
-    """
-    Staging storage path: media/culling_staging/<session_id>/<unique_id>_<filename>
-    """
+def culling_staging_upload_path(instance, filename):
     clean_name = os.path.basename(filename)
-    return f"culling_staging/{instance.session.id}/{uuid.uuid4().hex[:8]}_{clean_name}"
+    return f"culling_staging/{instance.session.id}/{uuid.uuid4().hex}_{clean_name}"
+
+
+culling_upload_path = culling_staging_upload_path
 
 
 class CullingPricingTier(models.Model):
@@ -66,29 +66,25 @@ class CullingSession(models.Model):
     A single culling batch session tied to an upfront paid plan and photographer storage.
     """
     STATUS_CHOICES = (
+        ("staging", "Staging / Uploading"),
         ("draft", "Draft / Staging"),
-        ("paid", "Paid & Unlocked"),
         ("analyzed", "Analyzed & Curated"),
         ("moved_to_gallery", "Moved to Gallery"),
         ("discarded", "Discarded / Purged"),
-        ("pending_payment", "Pending Payment"),
+        ("paid", "Paid & Unlocked"),
         ("active", "Active Batch In Progress"),
         ("completed", "Completed (Moved to Gallery)"),
-        ("exported", "Exported via ZIP"),
-        ("expired", "Expired / Auto-Purged"),
     )
 
     class Status(models.TextChoices):
+        STAGING = 'staging', _('Staging / Uploading')
         DRAFT = 'draft', _('Draft / Staging')
-        PAID = 'paid', _('Paid & Unlocked')
         ANALYZED = 'analyzed', _('Analyzed & Curated')
         MOVED_TO_GALLERY = 'moved_to_gallery', _('Moved to Gallery')
         DISCARDED = 'discarded', _('Discarded & Storage Cleared')
-        PENDING_PAYMENT = 'pending_payment', _('Pending Payment')
+        PAID = 'paid', _('Paid & Unlocked')
         ACTIVE = 'active', _('Active Batch In Progress')
         COMPLETED = 'completed', _('Completed (Moved to Gallery)')
-        EXPORTED = 'exported', _('Exported via ZIP')
-        EXPIRED = 'expired', _('Expired / Auto-Purged')
 
     id = models.CharField(max_length=100, primary_key=True, default=uuid.uuid4)
     user = models.ForeignKey(
@@ -107,10 +103,10 @@ class CullingSession(models.Model):
     status = models.CharField(
         max_length=30,
         choices=STATUS_CHOICES,
-        default="draft",
+        default="staging",
         db_index=True
     )
-    is_paid = models.BooleanField(default=False)
+    is_paid = models.BooleanField(default=True)
     paid_amount_inr = models.PositiveIntegerField(default=0)
     razorpay_order_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
     razorpay_payment_id = models.CharField(max_length=128, blank=True, default="")
@@ -119,9 +115,12 @@ class CullingSession(models.Model):
 
     photo_count = models.PositiveIntegerField(default=0)
     total_photos = models.PositiveIntegerField(default=0)
+    keeper_count = models.PositiveIntegerField(default=0)
+    duplicate_count = models.PositiveIntegerField(default=0)
+    total_duplicates = models.PositiveIntegerField(default=0)
+    wasted_bytes = models.BigIntegerField(default=0)
     total_bytes = models.BigIntegerField(default=0)
     total_clusters = models.PositiveIntegerField(default=0)
-    total_duplicates = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -159,9 +158,9 @@ class CullingSession(models.Model):
         self.clusters.all().delete()
 
 
-class CullingPhoto(models.Model):
+class CullingStagingPhoto(models.Model):
     """
-    Individual image analyzed inside a culling session.
+    Individual photo stored temporarily in staging disk for analysis.
     """
     STATUS_CHOICES = (
         ("keep", "Keep"),
@@ -228,8 +227,16 @@ class CullingPhoto(models.Model):
             self.size_mb = round(self.file_size_bytes / (1024 * 1024), 2)
         super().save(*args, **kwargs)
 
+    @property
+    def uploaded_at(self):
+        return self.created_at
+
     def __str__(self):
         return f"{self.original_filename or self.name} [{self.status}]"
+
+
+# Alias for backward compatibility
+CullingPhoto = CullingStagingPhoto
 
 
 class CullingCluster(models.Model):

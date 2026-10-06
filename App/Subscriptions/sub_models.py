@@ -5,7 +5,7 @@ from django.conf import settings
 
 
 def default_allowed_templates():
-    return ["editorial", "masonry", "cinematic", "minimal"]
+    return ["editorial-vogue", "darkroom-atelier"]
 
 
 def default_features():
@@ -68,6 +68,10 @@ class Plan(models.Model):
         default=False,
         help_text="Whether photographers on this plan can apply watermarks to gallery photos"
     )
+    ai_culling_enabled = models.BooleanField(
+        default=False,
+        help_text="Enables AI Smart Culling & Duplicate Detection for subscribers on this plan"
+    )
     max_events = models.PositiveIntegerField(default=0, help_text="Max shared events allowed in event section (0 for unlimited)")
     max_portfolio_posts = models.PositiveIntegerField(default=0, help_text="Max showcase portfolio posts (0 for unlimited)")
     can_upgrade_storage = models.BooleanField(default=False, help_text="Whether this tier can purchase additional storage upgrades")
@@ -100,6 +104,16 @@ class Plan(models.Model):
         elif self.duration_months == 1:
             return "For 01 Month"
         return f"For {self.duration_months} Months"
+
+    @property
+    def slug(self):
+        return self.id
+
+    @property
+    def storage_limit_gb(self):
+        if self.storage_limit_bytes:
+            return round(self.storage_limit_bytes / (1024 * 1024 * 1024), 2)
+        return float(self.image_storage_gb + self.video_storage_gb)
 
     @property
     def billing_text(self):
@@ -160,6 +174,10 @@ class SubscriptionPlans(models.Model):
     watermark_customization = models.BooleanField(
         default=True,
         help_text="Whether studio watermarking suite is enabled"
+    )
+    ai_culling_enabled = models.BooleanField(
+        default=False,
+        help_text="Whether AI Smart Culling is enabled"
     )
     features_list = models.JSONField(
         default=default_features,
@@ -297,6 +315,10 @@ class PhotographerSubscription(models.Model):
 
     @property
     def is_currently_active(self):
+        return self.is_active
+
+    @property
+    def is_valid(self):
         return self.is_active
 
     @property

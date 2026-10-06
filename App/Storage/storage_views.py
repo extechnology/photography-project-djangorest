@@ -109,6 +109,28 @@ from App.Storage.throttling import (
 
 logger = logging.getLogger(__name__)
 
+
+def is_gallery_template_allowed(active_plan, template_id):
+    if not active_plan or not getattr(active_plan, 'allowed_templates', None):
+        return True
+    allowed = active_plan.allowed_templates
+    if not allowed:
+        return True
+    alias_map = {
+        'editorial': 'editorial-vogue',
+        'editorial-vogue': 'editorial-vogue',
+        'masonry': 'darkroom-atelier',
+        'darkroom-atelier': 'darkroom-atelier',
+        'cinematic': 'cinematic',
+        'cinematic-luxury': 'cinematic',
+        'minimal': 'minimal',
+        'minimal-zen': 'minimal',
+    }
+    raw_key = str(template_id).lower().strip()
+    norm_key = alias_map.get(raw_key, raw_key)
+    norm_allowed = [alias_map.get(str(t).lower().strip(), str(t).lower().strip()) for t in allowed]
+    return (raw_key in allowed) or (norm_key in norm_allowed)
+
 def trigger_studio_notification(photographer, event_type, title, message, gallery_id=None):
     if not photographer:
         return
@@ -864,7 +886,7 @@ class GalleryListCreateView(APIView):
 
         requested_template = request.data.get('template_id', 'editorial')
         if active_plan and getattr(active_plan, 'allowed_templates', None):
-            if requested_template not in active_plan.allowed_templates:
+            if not is_gallery_template_allowed(active_plan, requested_template):
                 return Response({
                     "code": "TEMPLATE_NOT_ALLOWED",
                     "error_code": "TEMPLATE_NOT_ALLOWED",
@@ -1166,7 +1188,7 @@ class GalleryDetailView(APIView):
                 active_plan = profile.plan
 
             if active_plan and getattr(active_plan, 'allowed_templates', None):
-                if template_id not in active_plan.allowed_templates:
+                if not is_gallery_template_allowed(active_plan, template_id):
                     return Response({
                         "code": "TEMPLATE_NOT_ALLOWED",
                         "error_code": "TEMPLATE_NOT_ALLOWED",
@@ -1399,7 +1421,7 @@ class GalleryViewSet(viewsets.ModelViewSet):
 
         requested_template = self.request.data.get('template_id', 'editorial')
         if active_plan and getattr(active_plan, 'allowed_templates', None):
-            if requested_template not in active_plan.allowed_templates:
+            if not is_gallery_template_allowed(active_plan, requested_template):
                 raise PermissionDenied({
                     "code": "TEMPLATE_NOT_ALLOWED",
                     "error_code": "TEMPLATE_NOT_ALLOWED",
@@ -1438,7 +1460,7 @@ class GalleryViewSet(viewsets.ModelViewSet):
                 active_plan = profile.plan
 
             if active_plan and getattr(active_plan, 'allowed_templates', None):
-                if template_id not in active_plan.allowed_templates:
+                if not is_gallery_template_allowed(active_plan, template_id):
                     raise PermissionDenied({
                         "code": "TEMPLATE_NOT_ALLOWED",
                         "error_code": "TEMPLATE_NOT_ALLOWED",
@@ -1778,14 +1800,30 @@ class StandardMediaUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
     throttle_classes = [UploadRateThrottle]
 
-    def post(self, request, gallery_id):
+    def post(self, request, gallery_id=None):
         user = get_current_user(request)
         if not user:
             return Response({"code": "AUTHENTICATION_REQUIRED", "error": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
         enforce_active_subscription(user, "media uploads")
 
-        gallery = get_object_or_404(Gallery.objects.select_related('photographer'), id=gallery_id)
+        gid = gallery_id or request.data.get('gallery_id') or request.data.get('gallery')
+        if not gid:
+            profile = get_photographer_profile(user)
+            if profile:
+                first_gal = Gallery.objects.filter(photographer=profile).first()
+                if first_gal:
+                    gid = str(first_gal.id)
+                else:
+                    new_gal = Gallery.objects.create(
+                        photographer=profile,
+                        title=f"{profile.name or 'Studio'} Gallery",
+                    )
+                    gid = str(new_gal.id)
+            else:
+                return Response({"code": "GALLERY_REQUIRED", "error": "gallery_id required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        gallery = get_object_or_404(Gallery.objects.select_related('photographer'), id=gid)
         if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
             return Response({"code": "GALLERY_ACCESS_DENIED", "error": "You do not own this gallery."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -1846,17 +1884,18 @@ class StandardMediaUploadView(APIView):
             available_bytes = max(0, limit_bytes - used_bytes)
             available_mb = round(available_bytes / (1024 * 1024), 2)
             batch_mb = round(batch_bytes / (1024 * 1024), 2)
-            return Response(
-                {
-                    "upgrade_required": True,
-                    "code": "STORAGE_LIMIT_EXCEEDED",
-                    "error_code": "STORAGE_LIMIT_EXCEEDED",
-                    "message": f"Storage limit reached. You have {available_mb} MB available, but requested upload is {batch_mb} MB.",
-                    "available_bytes": available_bytes,
-                    "requested_bytes": batch_bytes,
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
+            resp_data = {
+                "upgrade_required": True,
+                "code": "STORAGE_LIMIT_EXCEEDED",
+                "error_code": "STORAGE_LIMIT_EXCEEDED",
+                "error": f"Storage quota exceeded. Available space: {available_bytes // (1024 * 1024)} MB.",
+                "message": f"Storage limit reached. You have {available_mb} MB available, but requested upload is {batch_mb} MB.",
+                "available_bytes": available_bytes,
+                "requested_bytes": batch_bytes,
+            }
+            is_direct_upload = bool(request.path and request.path.rstrip('/').endswith('/galleries/upload'))
+            status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE if (is_direct_upload or request.headers.get('X-Expect-413')) else status.HTTP_403_FORBIDDEN
+            return Response(resp_data, status=status_code)
 
         # 4. Multi-Media Processing (Photo vs. Video)
         storage = get_storage_provider()
@@ -2844,7 +2883,7 @@ class GalleryTemplateUpdateView(APIView):
             active_plan = gallery.photographer.plan
 
         if active_plan and getattr(active_plan, 'allowed_templates', None):
-            if template_id not in active_plan.allowed_templates:
+            if not is_gallery_template_allowed(active_plan, template_id):
                 return Response({
                     "code": "TEMPLATE_NOT_ALLOWED",
                     "detail": f"Template '{template_id}' is not included in your current subscription tier."

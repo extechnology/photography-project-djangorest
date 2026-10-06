@@ -128,6 +128,7 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/share/', GalleryShareView.as_view(), name='gallery-share'),
 
     # Enterprise Media Uploads & Direct-to-Storage
+    path('galleries/upload/', StandardMediaUploadView.as_view(), name='gallery-upload-direct'),
     path('galleries/<str:gallery_id>/upload-init/', DirectUploadInitView.as_view(), name='direct-upload-init'),
     path('galleries/<str:gallery_id>/upload-confirm/', DirectUploadConfirmView.as_view(), name='direct-upload-confirm'),
     path('galleries/<str:gallery_id>/upload/', StandardMediaUploadView.as_view(), name='standard-media-upload'),

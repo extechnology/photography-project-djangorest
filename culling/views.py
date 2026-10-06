@@ -3,11 +3,7 @@ import io
 import shutil
 import zipfile
 import uuid
-import hmac
-import hashlib
-from decimal import Decimal
 
-import razorpay
 from django.db import transaction, models
 from django.conf import settings
 from django.http import HttpResponse
@@ -17,621 +13,598 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser
 
-from .models import CullingPricingTier, CullingSession, CullingPhoto, CullingCluster
+from .models import (
+    CullingPricingTier,
+    CullingSession,
+    CullingStagingPhoto,
+    CullingPhoto,
+    CullingCluster,
+)
 from .serializers import (
     CullingPricingTierSerializer,
     CullingPhotoSerializer,
     CullingClusterSerializer,
+    ActiveCullingSessionSerializer,
     CullingSessionDetailSerializer,
 )
+from .ai_engine import run_server_side_culling, run_server_side_ai_analysis
+from .permissions import HasAICullingAccess, HasAICullingPlanPermission
+from App.Storage.storage_models import Gallery, GallerySection, Media as GalleryMedia
+from App.Photographers.photo_models import PhotographerProfile
 
 
-class CullingPricingTierListView(APIView):
-    """
-    GET /api/culling/plans/ (alias /api/culling/pricing-tiers/)
-    Returns all active pricing tiers ordered by display_order.
-    Publicly accessible so frontend renders 100% dynamic plan cards from DB.
-    """
-    permission_classes = [AllowAny]
+# ─── 1. Multi-Photo Upload ───────────────────────────────────────────────────
 
-    def get(self, request):
-        tiers = CullingPricingTier.objects.filter(is_active=True).order_by("display_order", "price")
-        if not tiers.exists():
-            default_tiers = [
-                {
-                    "id": "tier_starter",
-                    "name": "Starter Shoot",
-                    "price": Decimal("149.00"),
-                    "price_inr": 149,
-                    "photos_limit": 300,
-                    "badge": "Up to 300 Photos",
-                    "description": "Ideal for portrait sessions, mini shoots, and maternity captures.",
-                    "features": [
-                        "Up to 300 Photos per batch",
-                        "Dual AI duplicate grouping",
-                        "Laplacian sharpness focus score",
-                        "1-Click move to gallery",
-                    ],
-                    "is_popular": False,
-                    "display_order": 1,
-                },
-                {
-                    "id": "tier_pro",
-                    "name": "Studio Event",
-                    "price": Decimal("399.00"),
-                    "price_inr": 399,
-                    "photos_limit": 1200,
-                    "badge": "Up to 1,200 Photos",
-                    "description": "Best for birthday parties, corporate events, and pre-wedding shoots.",
-                    "features": [
-                        "Up to 1,200 Photos per batch",
-                        "High-speed burst clustering",
-                        "Direct RAW/JPEG processing",
-                        "Side-by-side comparison modal",
-                        "1-Click move to gallery",
-                    ],
-                    "is_popular": True,
-                    "display_order": 2,
-                },
-                {
-                    "id": "tier_wedding",
-                    "name": "Grand Wedding",
-                    "price": Decimal("899.00"),
-                    "price_inr": 899,
-                    "photos_limit": 4000,
-                    "badge": "Up to 4,000 Photos",
-                    "description": "Full day wedding coverage, multi-camera setups, and mega events.",
-                    "features": [
-                        "Up to 4,000 Photos per batch",
-                        "Multi-angle burst culling",
-                        "Unlimited keeper moves to gallery",
-                        "Highest priority AI processing",
-                        "VIP studio support",
-                    ],
-                    "is_popular": False,
-                    "display_order": 3,
-                },
-            ]
-            for t in default_tiers:
-                CullingPricingTier.objects.update_or_create(id=t["id"], defaults=t)
-            tiers = CullingPricingTier.objects.filter(is_active=True).order_by("display_order", "price")
-
-        serializer = CullingPricingTierSerializer(tiers, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-# Backward-compatible alias
-CullingPricingTiersListView = CullingPricingTierListView
-
-
-class ActiveCullingSessionView(APIView):
-    """
-    GET /api/culling/sessions/active/
-    Hydrates the user's ongoing session state on mount or page refresh (NO localStorage required).
-    """
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        session = (
-            CullingSession.objects.filter(
-                user=request.user,
-                status__in=["draft", "paid", "analyzed", "active", "pending_payment"],
-            )
-            .select_related("tier")
-            .prefetch_related("photos", "clusters")
-            .order_by("-updated_at")
-            .first()
-        )
-        if not session:
-            return Response({"session": None, "active": False}, status=status.HTTP_200_OK)
-
-        serializer = CullingSessionDetailSerializer(session, context={"request": request})
-        return Response({"session": serializer.data, "active": True}, status=status.HTTP_200_OK)
-
-
-class CullingPhotoUploadView(APIView):
+class UploadCullingPhotosView(APIView):
     """
     POST /api/culling/upload/
-    Receives multipart raw photo files, checks tier capacity, and saves them to session staging.
+    POST /api/culling/sessions/{session_id}/upload-photos/
+    Receives multi-part photos in batches, validates studio storage quota, saves to staging disk.
+    Supports multi-chunk batch uploads (e.g. 2,000 photos in 15MB sequential chunks) without HTTP 413.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasAICullingAccess]
     parser_classes = [MultiPartParser, FormParser]
 
-    def post(self, request):
-        session_id = request.data.get("session_id")
-        files = request.FILES.getlist("files") or request.FILES.getlist("photos")
-        if not files:
-            for single_key in ["file", "photo", "image"]:
-                single = request.FILES.get(single_key)
-                if single:
-                    files = [single]
-                    break
-
-        if not files:
-            return Response({"error": "No photo files received."}, status=status.HTTP_400_BAD_REQUEST)
-
-        session, _ = CullingSession.objects.get_or_create(
-            id=session_id or f"cull_{uuid.uuid4().hex[:12]}",
-            defaults={"user": request.user, "title": "AI Smart Cull Session"},
+    def post(self, request, session_id=None):
+        files = request.FILES.getlist("photos") or request.FILES.getlist("files")
+        user = request.user
+        sid = (
+            session_id
+            or request.data.get("session_id")
+            or request.data.get("sessionId")
+            or f"cull_session_{uuid.uuid4().hex[:12]}"
         )
 
-        # STRICT LOOPHOLE CHECK: Validate against tier capacity
-        if session.tier and (session.photos.count() + len(files) > session.tier.photos_limit):
+        if not files:
             return Response(
-                {
-                    "error": f"Queued photos exceed the {session.tier.name} limit of {session.tier.photos_limit} photos."
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Invariant 2: One session = One batch upload. Incremental append uploads are rejected
-        if session.photos.exists():
-            return Response(
-                {"error": "Session batch already uploaded. Incremental uploads are locked. Single upload rule violated."},
+                {"error": "No image files provided.", "detail": "No photos provided for upload.", "code": "no_files"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        created_photos = []
+        # ─── 1. Unified Storage Quota Check ───────────────────────────────────────
+        batch_size_bytes = sum(f.size for f in files)
+        current_used_bytes = user.get_total_storage_used_bytes()
+
+        sub = getattr(user, 'subscription', None)
+        storage_limit_bytes = 0
+        if sub and sub.plan:
+            storage_limit_bytes = sub.effective_storage_limit_bytes if hasattr(sub, 'effective_storage_limit_bytes') else getattr(sub.plan, 'storage_limit_bytes', int(sub.plan.storage_limit_gb * 1024 * 1024 * 1024))
+        elif sub and sub.legacy_plan:
+            storage_limit_bytes = sub.legacy_plan.storage_limit_bytes
+        else:
+            storage_limit_bytes = getattr(settings, 'TEST_USER_STORAGE_LIMIT_BYTES', 21474836480)
+
+        if storage_limit_bytes > 0 and (current_used_bytes + batch_size_bytes > storage_limit_bytes):
+            available_bytes = max(0, storage_limit_bytes - current_used_bytes)
+            return Response(
+                {
+                    "error": f"Storage quota exceeded. Available space: {available_bytes // (1024*1024)} MB.",
+                    "detail": f"Upload exceeds available storage quota. You have {round(available_bytes / (1024*1024), 1)} MB remaining on your plan.",
+                    "code": "STORAGE_LIMIT_EXCEEDED",
+                    "storage_limit_bytes": storage_limit_bytes,
+                    "storage_used_bytes": current_used_bytes,
+                    "batch_size_bytes": batch_size_bytes
+                },
+                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+            )
+
+        # ─── 2. Get or create active staging session ─────────────────────────────
+        session, _ = CullingSession.objects.get_or_create(
+            id=sid,
+            defaults={"user": user, "title": "AI Smart Cull Session", "status": "staging", "is_paid": True},
+        )
+
+        saved_photos = []
         with transaction.atomic():
             for f in files:
                 photo_id = uuid.uuid4().hex[:16]
-                photo = CullingPhoto.objects.create(
+                photo = CullingStagingPhoto.objects.create(
                     id=photo_id,
                     session=session,
                     file=f,
                     original_filename=f.name,
                     name=f.name,
-                    file_size_bytes=f.size,
                     size_bytes=f.size,
+                    file_size_bytes=f.size,
                     size_mb=round(f.size / (1024 * 1024), 2),
+                    status="keep",
                 )
-                created_photos.append(photo)
+                saved_photos.append({
+                    "id": str(photo.id),
+                    "name": photo.original_filename,
+                    "previewUrl": request.build_absolute_uri(photo.file.url),
+                    "sizeBytes": photo.size_bytes,
+                    "sizeMB": round(photo.size_bytes / (1024 * 1024), 2),
+                    "status": "keep",
+                    "sharpnessScore": photo.sharpness_score,
+                    "isBestPick": photo.is_best_pick,
+                    "clusterId": photo.cluster_id or "",
+                    "hash": photo.perceptual_hash or "",
+                    "similarityWithBest": photo.similarity_with_winner,
+                })
 
-            session.photo_count = session.photos.count()
-            session.total_photos = session.photo_count
-            session.total_bytes = sum(p.file_size_bytes for p in session.photos.all())
-            session.save(update_fields=["photo_count", "total_photos", "total_bytes"])
+            session.total_photos = session.photos.count()
+            session.photo_count = session.total_photos
+            session.total_bytes = sum(p.size_bytes or p.file_size_bytes or 0 for p in session.photos.all())
+            session.save(update_fields=["total_photos", "photo_count", "total_bytes", "updated_at"])
 
-        photo_serializer = CullingPhotoSerializer(created_photos, many=True, context={"request": request})
         return Response(
             {
-                "message": f"Successfully uploaded {len(created_photos)} photos to staging.",
+                "message": f"Successfully uploaded {len(saved_photos)} photos.",
                 "session_id": session.id,
-                "photos": photo_serializer.data,
-                "uploaded_count": len(created_photos),
+                "photos": saved_photos,
+                "uploaded_count": len(saved_photos),
             },
             status=status.HTTP_201_CREATED,
         )
 
 
 # Backward-compatible alias
-UploadCullingPhotosView = CullingPhotoUploadView
+CullingPhotoUploadView = UploadCullingPhotosView
 
 
-class CreateCullingPaymentOrderView(APIView):
+# ─── 2. Server-Side AI Culling Engine ────────────────────────────────────────
+
+class AnalyzeCullingSessionView(APIView):
     """
-    POST /api/culling/checkout/order/
-    Creates Razorpay payment order for upfront session unlock.
+    POST /api/culling/sessions/{session_id}/analyze/ (alias POST /api/culling/analyze/)
+    Executes parallel multithreaded focus sharpness scoring and burst sequence clustering.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasAICullingPlanPermission]
 
-    def post(self, request):
-        session_id = request.data.get("session_id")
-        tier_id = request.data.get("tier_id")
-        try:
-            photo_count = int(request.data.get("photo_count", 0))
-        except (ValueError, TypeError):
-            photo_count = 0
-
-        tier = CullingPricingTier.objects.filter(id=tier_id, is_active=True).first()
-        if not tier:
-            return Response({"error": "Invalid or inactive culling plan."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # STRICT VALIDATION: Ensure media count qualifies for this tier
-        if photo_count > tier.photos_limit:
-            return Response(
-                {
-                    "error": f"Photo count limit exceeded: this plan permits up to {tier.photos_limit} photos, but {photo_count} were submitted."
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Zero loophole: disallow starting a second batch while another active batch is unlocked
-        if session_id:
-            existing_active = CullingSession.objects.filter(
-                user=request.user,
-                status__in=["paid", "active", "analyzed"],
-                is_paid=True
-            ).exclude(id=session_id).exists()
-            if existing_active:
-                return Response(
-                    {
-                        "error": "Active batch in progress. Complete or discard your existing batch first.",
-                        "code": "ACTIVE_BATCH_IN_PROGRESS"
-                    },
-                    status=status.HTTP_409_CONFLICT
-                )
-
-        session, _ = CullingSession.objects.get_or_create(
-            id=session_id or f"cull_{uuid.uuid4().hex[:12]}",
-            defaults={"user": request.user, "title": "AI Smart Cull Session"},
-        )
-        session.tier = tier
-        session.save(update_fields=["tier"])
-
-        price_val = getattr(tier, 'price', None) or getattr(tier, 'price_inr', 149)
-        amount_paisa = int(float(price_val) * 100)
-
-        # Razorpay integration with mock fallback
-        rzp_key = getattr(settings, 'RAZORPAY_KEY_ID', 'rzp_test_key')
-        rzp_secret = getattr(settings, 'RAZORPAY_KEY_SECRET', 'rzp_test_secret')
-
-        try:
-            client = razorpay.Client(auth=(rzp_key, rzp_secret))
-            order_data = {
-                "amount": amount_paisa,
-                "currency": "INR",
-                "receipt": f"cull_{session.id[:20]}",
-                "notes": {
-                    "session_id": session.id,
-                    "tier_id": tier.id,
-                    "user_id": str(request.user.id),
-                    "photo_count": photo_count,
-                },
-            }
-            rzp_order = client.order.create(data=order_data)
-            order_id = rzp_order["id"]
-        except Exception:
-            order_id = f"order_{uuid.uuid4().hex[:16]}"
-
-        session.razorpay_order_id = order_id
-        session.save(update_fields=["razorpay_order_id"])
-
-        return Response(
-            {
-                "order_id": order_id,
-                "amount": amount_paisa,
-                "currency": "INR",
-                "key_id": rzp_key,
-                "session_id": session.id,
-                "tier_id": tier.id,
-            },
-            status=status.HTTP_201_CREATED,
-        )
-
-
-class VerifyCullingPaymentView(APIView):
-    """
-    POST /api/culling/checkout/verify/
-    Verifies Razorpay payment signature and marks session as paid/active and unlocked.
-    """
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        session_id = (
-            request.data.get("session_id")
+    def post(self, request, session_id=None):
+        sid = (
+            session_id
+            or request.data.get("session_id")
             or request.data.get("sessionId")
-            or request.data.get("culling_session_id")
         )
-        order_id = (
-            request.data.get("razorpay_order_id")
-            or request.data.get("razorpayOrderId")
-            or request.data.get("order_id")
-            or request.data.get("orderId")
-        )
-        payment_id = (
-            request.data.get("razorpay_payment_id")
-            or request.data.get("razorpayPaymentId")
-            or request.data.get("payment_id")
-            or request.data.get("paymentId")
-        )
-        signature = (
-            request.data.get("razorpay_signature")
-            or request.data.get("razorpaySignature")
-            or request.data.get("signature")
-        )
-
-        user = request.user if getattr(request, 'user', None) and request.user.is_authenticated else None
-
-        session = None
-        # 1. Lookup by session_id
-        if session_id:
-            if user:
-                session = CullingSession.objects.filter(id=session_id, user=user).first()
-            if not session:
-                session = CullingSession.objects.filter(id=session_id).first()
-
-        # 2. Lookup by razorpay_order_id (extremely reliable because each order is unique)
-        if not session and order_id:
-            if user:
-                session = CullingSession.objects.filter(razorpay_order_id=order_id, user=user).first()
-            if not session:
-                session = CullingSession.objects.filter(razorpay_order_id=order_id).first()
-
-        # 3. Lookup by razorpay_payment_id
-        if not session and payment_id:
-            if user:
-                session = CullingSession.objects.filter(razorpay_payment_id=payment_id, user=user).first()
-            if not session:
-                session = CullingSession.objects.filter(razorpay_payment_id=payment_id).first()
-
-        # 4. Fallback to user's latest draft / unpaid session
-        if not session and user:
+        session = CullingSession.objects.filter(id=sid, user=request.user).first()
+        if not session:
+            # Fallback to active session
             session = (
-                CullingSession.objects.filter(user=user, is_paid=False).order_by("-updated_at").first()
-                or CullingSession.objects.filter(user=user).order_by("-updated_at").first()
+                CullingSession.objects.filter(user=request.user)
+                .exclude(status__in=["moved_to_gallery", "discarded", "completed"])
+                .order_by("-updated_at")
+                .first()
             )
 
         if not session:
-            return Response({"error": "Culling session not found."}, status=status.HTTP_404_NOT_FOUND)
+            # Fallback create to ensure zero 404 deadlocks
+            session, _ = CullingSession.objects.get_or_create(
+                id=sid or f"cull_session_{uuid.uuid4().hex[:12]}",
+                defaults={"user": request.user, "title": "AI Smart Cull Session", "status": "staging"},
+            )
 
-        # If order_id wasn't in request body, take it from the session
-        if not order_id and session.razorpay_order_id:
-            order_id = session.razorpay_order_id
+        try:
+            threshold = float(request.data.get("similarity_threshold", 88.0))
+        except (ValueError, TypeError):
+            threshold = 88.0
 
-        rzp_secret = getattr(settings, 'RAZORPAY_KEY_SECRET', 'rzp_test_secret')
-        is_valid = False
+        run_server_side_culling(session, similarity_threshold=threshold)
 
-        if order_id and payment_id and signature:
-            try:
-                generated_signature = hmac.new(
-                    rzp_secret.encode(),
-                    f"{order_id}|{payment_id}".encode(),
-                    hashlib.sha256,
-                ).hexdigest()
-                is_valid = (generated_signature == signature)
-            except Exception:
-                is_valid = False
+        photos_data = [
+            {
+                "id": str(p.id),
+                "name": p.original_filename or p.name,
+                "previewUrl": request.build_absolute_uri(p.file.url) if p.file else "",
+                "sizeBytes": p.size_bytes or p.file_size_bytes or 0,
+                "sizeMB": round((p.size_bytes or p.file_size_bytes or 0) / (1024 * 1024), 2),
+                "sharpnessScore": round(p.sharpness_score, 1),
+                "isBestPick": p.is_best_pick,
+                "status": p.status,
+                "clusterId": p.cluster_id or "",
+                "hash": p.perceptual_hash or "",
+                "similarityWithBest": p.similarity_with_winner,
+            }
+            for p in session.photos.all()
+        ]
 
-        # In dev/test environments with test keys or missing signatures, allow verification if payment_id or order_id is provided
-        if not is_valid and (
-            settings.DEBUG
-            or getattr(settings, 'TESTING', False)
-            or 'test' in str(getattr(settings, 'RAZORPAY_KEY_ID', '')).lower()
-            or not signature
-        ):
-            if payment_id or order_id:
-                is_valid = True
+        clusters_data = [
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "averageSimilarity": c.average_similarity,
+                "bestPickId": c.best_pick_item_id or c.best_pick_id or "",
+                "photoIds": c.photo_ids or list(session.photos.filter(cluster_id=c.id).values_list("id", flat=True)),
+                "totalPhotos": c.total_photos,
+                "duplicatesCount": c.duplicates_count,
+                "wastedBytes": c.wasted_bytes,
+            }
+            for c in session.clusters.all()
+        ]
 
-        if not is_valid:
-            return Response({"error": "Invalid signature. Payment could not be verified."}, status=status.HTTP_400_BAD_REQUEST)
-
-        price_val = getattr(session.tier, 'price', None) or getattr(session.tier, 'price_inr', 0) if session.tier else 0
-        session.is_paid = True
-        session.status = "paid"
-        session.razorpay_payment_id = payment_id or session.razorpay_payment_id or ""
-        session.razorpay_signature = signature or session.razorpay_signature or ""
-        session.amount_paid = Decimal(str(price_val))
-        session.paid_amount_inr = int(float(price_val))
-        session.save(update_fields=["is_paid", "status", "razorpay_payment_id", "razorpay_signature", "amount_paid", "paid_amount_inr"])
+        session_payload = {
+            "id": session.id,
+            "title": session.title,
+            "status": session.status,
+            "photo_count": len(photos_data),
+            "photos": photos_data,
+            "clusters": clusters_data,
+        }
 
         return Response(
             {
                 "success": True,
-                "message": "Payment verified. AI Smart Cull session unlocked.",
-                "is_paid": True,
-                "session_id": session.id,
-                "status": session.status,
+                "message": "Server AI culling analysis complete.",
+                "session": session_payload,
             },
             status=status.HTTP_200_OK,
         )
 
 
+# ─── 3. Active Session Recovery ──────────────────────────────────────────────
+
+class ActiveCullingSessionView(APIView):
+    """
+    GET /api/culling/sessions/active/
+    Hydrates ongoing session state on mount or browser reload without localStorage.
+    """
+    permission_classes = [IsAuthenticated, HasAICullingPlanPermission]
+
+    def get(self, request):
+        session = (
+            CullingSession.objects.filter(user=request.user)
+            .exclude(status__in=["moved_to_gallery", "discarded", "completed"])
+            .order_by("-updated_at")
+            .first()
+        )
+
+        if not session or not session.photos.exists():
+            return Response({"session": None, "active": False}, status=status.HTTP_200_OK)
+
+        photos_data = [
+            {
+                "id": str(p.id),
+                "name": p.original_filename or p.name,
+                "previewUrl": request.build_absolute_uri(p.file.url) if p.file else "",
+                "sizeBytes": p.size_bytes or p.file_size_bytes or 0,
+                "sizeMB": round((p.size_bytes or p.file_size_bytes or 0) / (1024 * 1024), 2),
+                "sharpnessScore": round(p.sharpness_score, 1),
+                "isBestPick": p.is_best_pick,
+                "status": p.status,
+                "clusterId": p.cluster_id or "",
+                "hash": p.perceptual_hash or "",
+                "similarityWithBest": p.similarity_with_winner,
+            }
+            for p in session.photos.all()
+        ]
+
+        clusters_data = [
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "averageSimilarity": c.average_similarity,
+                "bestPickId": c.best_pick_item_id or c.best_pick_id or "",
+                "photoIds": c.photo_ids or list(session.photos.filter(cluster_id=c.id).values_list("id", flat=True)),
+                "totalPhotos": c.total_photos,
+                "duplicatesCount": c.duplicates_count,
+                "wastedBytes": c.wasted_bytes,
+            }
+            for c in session.clusters.all()
+        ]
+
+        response_data = {
+            "id": session.id,
+            "title": session.title,
+            "status": session.status,
+            "photo_count": len(photos_data),
+            "photos": photos_data,
+            "clusters": clusters_data,
+        }
+
+        # Hybrid payload: exposes both root fields and nested session for any frontend variation
+        return Response(
+            {
+                **response_data,
+                "session": response_data,
+                "active": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ─── 4. Session Sync ─────────────────────────────────────────────────────────
+
 class SyncCullingSessionView(APIView):
     """
-    POST /api/culling/sessions/<session_id>/sync/
-    Persists the frontend AI analysis results, sharpness scores, clusters, and keeper overrides.
+    POST /api/culling/sessions/{session_id}/sync/ (alias POST /api/culling/sync/)
+    Persists curation state, keeper/discard overrides, and cluster groupings.
+    Uses get_or_create to prevent HTTP 404 if frontend syncs before initial upload completes.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasAICullingPlanPermission]
 
-    def post(self, request, session_id):
-        session = CullingSession.objects.filter(id=session_id, user=request.user).first()
-        if not session:
-            return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+    def post(self, request, session_id=None):
+        sid = (
+            session_id
+            or request.data.get("session_id")
+            or request.data.get("sessionId")
+            or f"cull_session_{uuid.uuid4().hex[:12]}"
+        )
+
+        # Resilient get_or_create: eliminates HTTP 404 completely!
+        session, _ = CullingSession.objects.get_or_create(
+            id=sid,
+            defaults={"user": request.user, "title": "AI Smart Cull Session", "status": "staging"},
+        )
 
         photos_data = request.data.get("photos", [])
         clusters_data = request.data.get("clusters", [])
 
         with transaction.atomic():
             for p in photos_data:
-                p_id = p.get("id")
-                if not p_id:
-                    continue
-                sharpness = float(p.get("sharpnessScore", p.get("sharpness_score", 80.0)))
-                variance = float(p.get("rawSharpnessVariance", p.get("raw_sharpness_variance", 100.0)))
-                cluster_id = p.get("clusterId", p.get("cluster_id"))
-                is_best = bool(p.get("isBestPick", p.get("is_best_pick", False)))
-                photo_status = p.get("status", "keep")
-                sim = p.get("similarityWithBest", p.get("similarity_with_winner"))
-                p_hash = p.get("hash", p.get("perceptual_hash", ""))
-
-                CullingPhoto.objects.filter(id=p_id, session=session).update(
-                    sharpness_score=sharpness,
-                    raw_sharpness_variance=variance,
-                    cluster_id=cluster_id or "",
-                    is_best_pick=is_best,
-                    status=photo_status,
-                    similarity_with_winner=sim,
-                    similarity_with_best=sim or 0.0,
-                    perceptual_hash=p_hash,
-                    hash=p_hash,
-                )
+                pid = p.get("id")
+                if pid:
+                    CullingStagingPhoto.objects.filter(id=pid, session=session).update(
+                        sharpness_score=p.get("sharpnessScore", 80.0),
+                        is_best_pick=bool(p.get("isBestPick", False)),
+                        status=p.get("status", "keep"),
+                        cluster_id=p.get("clusterId", "") or "",
+                        perceptual_hash=p.get("hash", "") or "",
+                        similarity_with_winner=p.get("similarityWithBest"),
+                    )
 
             # Recreate clusters
             CullingCluster.objects.filter(session=session).delete()
             cluster_objs = []
             for c in clusters_data:
-                c_id = c.get("id") or uuid.uuid4().hex[:12]
-                photo_ids = c.get("photoIds", c.get("photo_ids", []))
-                best_pick = c.get("bestPickId", c.get("best_pick_id", ""))
-                avg_sim = float(c.get("averageSimilarity", c.get("average_similarity", 90.0)))
-                tot = int(c.get("totalPhotos", len(photo_ids) or 1))
-                dups = int(c.get("duplicatesCount", max(0, tot - 1)))
-                wasted = int(c.get("wastedBytes", 0))
-
+                cid = c.get("id") or f"cluster_{uuid.uuid4().hex[:8]}"
                 cluster_objs.append(
                     CullingCluster(
-                        id=c_id,
+                        id=cid,
                         session=session,
-                        title=c.get("title", "Burst Set"),
-                        average_similarity=avg_sim,
-                        best_pick_item_id=best_pick,
-                        best_pick_id=best_pick,
-                        photo_ids=photo_ids,
-                        total_photos=tot,
-                        duplicates_count=dups,
-                        wasted_bytes=wasted,
+                        title=c.get("title", "Burst Cluster"),
+                        average_similarity=c.get("averageSimilarity", 90.0),
+                        best_pick_item_id=c.get("bestPickId", "") or "",
+                        best_pick_id=c.get("bestPickId", "") or "",
+                        photo_ids=c.get("photoIds", []),
+                        total_photos=c.get("totalPhotos", 0),
+                        duplicates_count=c.get("duplicatesCount", 0),
+                        wasted_bytes=c.get("wastedBytes", 0),
                     )
                 )
-
             if cluster_objs:
                 CullingCluster.objects.bulk_create(cluster_objs)
 
+            session.total_photos = session.photos.count()
+            session.photo_count = session.total_photos
+            session.keeper_count = session.photos.filter(status="keep").count()
+            session.duplicate_count = session.photos.filter(status="discard").count()
+            session.total_duplicates = session.duplicate_count
+            session.wasted_bytes = sum(
+                p.size_bytes or p.file_size_bytes or 0 for p in session.photos.filter(status="discard")
+            )
             session.status = "analyzed"
-            session.total_clusters = len(cluster_objs)
-            session.save(update_fields=["status", "total_clusters"])
+            session.save(update_fields=[
+                "total_photos", "photo_count", "keeper_count", "duplicate_count",
+                "total_duplicates", "wasted_bytes", "status", "updated_at"
+            ])
 
-        return Response({"success": True, "message": "Session successfully synced."}, status=status.HTTP_200_OK)
+        return Response({"success": True, "message": "Synced successfully."}, status=status.HTTP_200_OK)
 
+
+# ─── 5. Move to Gallery ──────────────────────────────────────────────────────
 
 class MoveCullingToGalleryView(APIView):
     """
-    POST /api/culling/sessions/<session_id>/move-to-gallery/
-    Copies approved keepers into client gallery, then discards staging storage.
+    POST /api/culling/sessions/{session_id}/move-to-gallery/
+    Transfers approved keeper photos from staging storage to permanent Gallery.
+    Purges staging disk files after successful migration.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasAICullingPlanPermission]
 
-    def post(self, request, session_id):
-        session = CullingSession.objects.filter(id=session_id, user=request.user).first()
+    def post(self, request, session_id=None):
+        sid = (
+            session_id
+            or request.data.get("session_id")
+            or request.data.get("sessionId")
+        )
+        session = CullingSession.objects.filter(id=sid, user=request.user).first()
         if not session:
             return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not session.is_paid:
-            return Response({"error": "Upfront payment required before moving to gallery."}, status=status.HTTP_402_PAYMENT_REQUIRED)
+        target_mode = request.data.get("target_mode", "existing")
+        target_gallery_id = request.data.get("target_gallery_id") or request.data.get("gallery_id")
+        new_title = request.data.get("new_gallery_title", "Culled Shoot")
+        sec_title = request.data.get("target_section_title", "Highlights")
+        category_assignments = request.data.get("category_assignments", {})
 
-        gallery_id = request.data.get("gallery_id")
-        from gallery.models import Gallery, GalleryMedia
-        gallery = None
-
-        if not gallery_id and request.data.get("new_gallery_title"):
-            profile = getattr(request.user, "photographer_profile", None)
-            gallery = Gallery.objects.create(
-                photographer=profile,
-                title=request.data.get("new_gallery_title")
+        profile = getattr(request.user, "photographer_profile", None) or PhotographerProfile.objects.filter(user=request.user).first()
+        if not profile:
+            profile, _ = PhotographerProfile.objects.get_or_create(
+                user=request.user,
+                defaults={
+                    "name": getattr(request.user, "fullname", "") or getattr(request.user, "username", "Studio"),
+                    "studio_name": "Studio Pro",
+                },
             )
-        elif gallery_id:
-            gallery = (
-                Gallery.objects.filter(id=gallery_id, photographer__user=request.user).first()
-                or Gallery.objects.filter(slug=gallery_id, photographer__user=request.user).first()
-            )
-            if not gallery and (request.user.is_staff or request.user.is_superuser):
-                gallery = Gallery.objects.filter(id=gallery_id).first()
 
-        if not gallery:
-            return Response({"error": "Target gallery not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        keepers = session.photos.filter(status="keep")
-        if not keepers.exists():
-            keepers = session.photos.all()
-
-        moved_count = 0
         with transaction.atomic():
-            media_list = []
-            for photo in keepers:
-                if photo.file:
-                    media_list.append(
-                        GalleryMedia(
-                            gallery=gallery,
-                            photographer=gallery.photographer,
-                            file=photo.file,
-                            original_filename=photo.original_filename or photo.name or "photo.jpg",
-                            file_size=photo.file_size_bytes or photo.size_bytes or 0,
-                        )
-                    )
-                    moved_count += 1
+            if target_mode == "new" or (not target_gallery_id and new_title):
+                gallery = Gallery.objects.create(
+                    photographer=profile,
+                    title=new_title,
+                    status="published",
+                )
+            else:
+                gallery = (
+                    Gallery.objects.filter(id=target_gallery_id, photographer=profile).first()
+                    or Gallery.objects.filter(slug=target_gallery_id, photographer=profile).first()
+                )
+                if not gallery and (request.user.is_staff or request.user.is_superuser):
+                    gallery = Gallery.objects.filter(id=target_gallery_id).first()
 
-            if media_list:
-                GalleryMedia.objects.bulk_create(media_list)
+            if not gallery:
+                return Response({"error": "Target gallery not found."}, status=status.HTTP_404_NOT_FOUND)
 
-            # Mark session as moved_to_gallery / completed
+            default_sec, _ = GallerySection.objects.get_or_create(gallery=gallery, title=sec_title)
+
+            keepers = session.photos.filter(status="keep")
+            if not keepers.exists():
+                keepers = session.photos.all()
+
+            count = 0
+            for sp in keepers:
+                assigned_sec_title = category_assignments.get(sp.cluster_id, sec_title)
+                sec_obj = default_sec if assigned_sec_title == sec_title else GallerySection.objects.get_or_create(gallery=gallery, title=assigned_sec_title)[0]
+                GalleryMedia.objects.create(
+                    gallery=gallery,
+                    photographer=gallery.photographer,
+                    section=sec_obj,
+                    section_title=assigned_sec_title,
+                    file=sp.file,
+                    original_filename=sp.original_filename or sp.name or "photo.jpg",
+                    file_size=sp.size_bytes or sp.file_size_bytes or 0,
+                )
+                count += 1
+
             session.status = "moved_to_gallery"
-            session.save(update_fields=["status"])
+            session.save(update_fields=["status", "updated_at"])
 
-        # Purge staging disk folder
-        session.purge_staging_storage()
+            staging_dir = os.path.join(settings.MEDIA_ROOT, "culling_staging", str(session.id))
+            if os.path.exists(staging_dir):
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
         return Response(
             {
                 "success": True,
-                "message": f"Successfully moved {moved_count} keepers to gallery '{gallery.title}'.",
                 "gallery_id": str(gallery.id),
-                "moved_count": moved_count,
+                "gallery_title": gallery.title,
+                "transferred_count": count,
+                "message": f"Successfully moved {count} photos to gallery '{gallery.title}'.",
             },
             status=status.HTTP_200_OK,
         )
 
 
+# ─── 6. Discard & Free Storage ───────────────────────────────────────────────
+
 class DiscardCullingSessionView(APIView):
     """
-    DELETE /api/culling/sessions/<session_id>/
-    Purges staging directory from disk and marks session as discarded.
+    DELETE /api/culling/sessions/{session_id}/
+    POST   /api/culling/sessions/{session_id}/discard/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasAICullingAccess]
 
-    def delete(self, request, session_id):
-        session = CullingSession.objects.filter(id=session_id, user=request.user).first()
+    def delete(self, request, session_id=None):
+        sid = session_id or request.data.get("session_id")
+        return self._discard(request, sid)
+
+    def post(self, request, session_id=None):
+        sid = session_id or request.data.get("session_id") or request.data.get("sessionId")
+        return self._discard(request, sid)
+
+    def _discard(self, request, sid):
+        session = CullingSession.objects.filter(id=sid, user=request.user).first()
         if not session:
-            return Response({"message": "Session already cleared."}, status=status.HTTP_200_OK)
+            return Response({"detail": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Purge staging directory from disk and delete photos/clusters
-        session.purge_staging_storage()
-        session.status = "discarded"
-        session.save(update_fields=["status"])
+        # Reclaim storage physically from media backend
+        for photo in session.photos.all():
+            if hasattr(photo, 'file') and photo.file:
+                photo.file.delete(save=False)
+            elif hasattr(photo, 'original_file') and photo.original_file:
+                photo.original_file.delete(save=False)
 
-        return Response(
-            {"success": True, "message": "Culling batch deleted and staging disk purged."},
-            status=status.HTTP_200_OK,
-        )
+        staging_dir = os.path.join(settings.MEDIA_ROOT, "culling_staging", str(session.id))
+        if os.path.exists(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
+        session.photos.all().delete()
+        session.clusters.all().delete()
+        session.delete()
+
+        return Response({
+            "success": True,
+            "message": "Session discarded and staging storage reclaimed successfully."
+        }, status=status.HTTP_200_OK)
+
+
+# ─── 7. Keepers ZIP Export ───────────────────────────────────────────────────
 
 class ExportCullingZipView(APIView):
     """
-    GET / POST /api/culling/sessions/<session_id>/export-zip/
-    Streams approved keeper photos in a ZIP archive.
+    GET /api/culling/sessions/<id>/export-zip/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasAICullingPlanPermission]
 
-    def _generate_zip(self, request, session_id):
-        session = CullingSession.objects.filter(id=session_id, user=request.user).first()
+    def get(self, request, session_id):
+        return self._export_zip(request, session_id)
+
+    def post(self, request, session_id=None):
+        sid = session_id or request.data.get("session_id") or request.data.get("sessionId")
+        return self._export_zip(request, sid)
+
+    def _export_zip(self, request, sid):
+        session = CullingSession.objects.filter(id=sid, user=request.user).first()
         if not session:
             return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not session.is_paid:
-            return Response({"error": "Upfront payment required before exporting."}, status=status.HTTP_402_PAYMENT_REQUIRED)
-
         keepers = session.photos.filter(status="keep")
+        if not keepers.exists():
+            keepers = session.photos.all()
+
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for photo in keepers:
-                filename = photo.original_filename or photo.name or "photo.jpg"
-                if photo.file and hasattr(photo.file, "path") and os.path.exists(photo.file.path):
-                    zf.write(photo.file.path, arcname=filename)
-                elif photo.file:
+            for p in keepers:
+                if p.file:
                     try:
-                        photo.file.open("rb")
-                        content = photo.file.read()
-                        photo.file.close()
-                        zf.writestr(filename, content)
+                        filename = p.original_filename or os.path.basename(p.file.name)
+                        p.file.seek(0)
+                        zf.writestr(filename, p.file.read())
                     except Exception:
                         pass
 
         zip_buffer.seek(0)
-        response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
-        response["Content-Disposition"] = f'attachment; filename="smart_cull_keepers_{session.id[:8]}.zip"'
-        return response
+        resp = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
+        resp["Content-Disposition"] = f'attachment; filename="keepers_{session.id[:12]}.zip"'
+        return resp
 
-    def get(self, request, session_id):
-        return self._generate_zip(request, session_id)
 
-    def post(self, request, session_id):
-        return self._generate_zip(request, session_id)
+# ─── 8. Backward Compatibility Endpoints ─────────────────────────────────────
+
+class CullingPricingTierListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        tiers = CullingPricingTier.objects.filter(is_active=True).order_by("display_order", "price")
+        serializer = CullingPricingTierSerializer(tiers, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class CreateCullingPaymentOrderView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        session_id = request.data.get("session_id") or f"cull_{uuid.uuid4().hex[:12]}"
+        session, _ = CullingSession.objects.get_or_create(
+            id=session_id,
+            defaults={"user": request.user, "title": "AI Smart Cull Session", "is_paid": True, "status": "staging"},
+        )
+        return Response(
+            {
+                "order_id": f"order_free_{uuid.uuid4().hex[:12]}",
+                "amount": 0,
+                "currency": "INR",
+                "key_id": getattr(settings, "RAZORPAY_KEY_ID", "rzp_test"),
+                "session_id": session.id,
+                "unlocked": True,
+                "message": "AI Smart Culling is included in your active subscription plan.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class VerifyCullingPaymentView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        session_id = request.data.get("session_id") or request.data.get("sessionId")
+        return Response(
+            {
+                "success": True,
+                "message": "AI Smart Culling is unlocked via your studio subscription plan.",
+                "is_paid": True,
+                "session_id": session_id,
+            },
+            status=status.HTTP_200_OK,
+        )

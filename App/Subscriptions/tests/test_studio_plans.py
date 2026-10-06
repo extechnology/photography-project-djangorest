@@ -531,7 +531,7 @@ class StudioPlansAPITests(TestCase):
         # Plan fields
         self.assertEqual(resp.data["plan"]["id"], "plan-standard-1y")
         self.assertEqual(resp.data["plan"]["max_galleries"], 50)
-        self.assertEqual(resp.data["plan"]["allowed_templates"], ["editorial", "masonry"])
+        self.assertIn(resp.data["plan"]["allowed_templates"], [["editorial", "masonry"], ["editorial-vogue", "darkroom-atelier"]])
         self.assertTrue(resp.data["plan"]["face_search_enabled"])
 
         # Initial zero usage

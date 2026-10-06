@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'culling',
     'App',
+    'portfolio',
 ]
 
 MIDDLEWARE = [
@@ -366,8 +367,8 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000
 # Allow multi-gigabyte upload payloads (e.g. 2,000 high-res / RAW photos up to 10 GB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10737418240
 
-# Stream files larger than 10MB to disk instead of filling system RAM
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 MB
+# Allow up to 100MB in-memory buffer before streaming to temporary disk
+FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
 
 # ------------------------------------------------------------------------------
 # TEST ENVIRONMENT LIMITATIONS

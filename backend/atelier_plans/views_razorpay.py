@@ -322,6 +322,7 @@ class StudioPlanSerializer(serializers.ModelSerializer):
             'video_storage_gb', 'image_storage', 'video_storage',
             'storage_limit_bytes', 'features', 'cta_text',
             'max_galleries', 'gallery_expiry_days', 'face_search_enabled',
+            'watermark_enabled', 'ai_culling_enabled',
             'max_events', 'allowed_templates', 'allowed_portfolio_templates',
             'max_portfolio_posts', 'max_inquiries', 'has_full_inquiry_access',
             'inquiry_access', 'can_upgrade_storage', 'max_upgrade_image_gb',
@@ -354,7 +355,7 @@ class CurrentSubscriptionPlanSummarySerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'tier', 'billing_cycle', 'duration_months',
             'total_price', 'currency', 'max_galleries', 'allowed_templates',
-            'face_search_enabled', 'gallery_expiry_days', 'max_events',
+            'face_search_enabled', 'watermark_enabled', 'ai_culling_enabled', 'gallery_expiry_days', 'max_events',
             'max_portfolio_posts', 'has_full_inquiry_access',
         ]
 
@@ -365,6 +366,7 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     days_remaining = serializers.SerializerMethodField()
     auto_renew = serializers.SerializerMethodField()
+    ai_culling_enabled = serializers.SerializerMethodField()
     storage = serializers.SerializerMethodField()
     usage = serializers.SerializerMethodField()
     start_date = serializers.DateTimeField(source='started_at', read_only=True)
@@ -374,10 +376,16 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
         model = PhotographerSubscription
         fields = [
             'id', 'has_subscription', 'status', 'plan', 'start_date', 'expiry_date',
-            'days_remaining', 'storage', 'usage', 'auto_renew',
+            'days_remaining', 'ai_culling_enabled', 'storage', 'usage', 'auto_renew',
             'cancel_at_period_end', 'cancelled_at',
             'payment_gateway_ref', 'razorpay_subscription_id',
         ]
+
+    def get_ai_culling_enabled(self, obj):
+        if hasattr(obj, 'is_valid') and not obj.is_valid:
+            return False
+        plan = getattr(obj, 'plan', None)
+        return bool(plan and getattr(plan, 'ai_culling_enabled', False))
 
     def get_has_subscription(self, obj):
         return True

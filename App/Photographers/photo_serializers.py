@@ -251,6 +251,7 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
             "name": plan_name,
             "tier": tier,
             "billing_cycle": billing_cycle,
+            "ai_culling_enabled": getattr(plan, 'ai_culling_enabled', False) if plan else False,
             "headline": f"You're on {plan_name}",
             "description": "Unlock more storage and premium features."
         }

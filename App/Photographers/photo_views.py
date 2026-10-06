@@ -292,7 +292,10 @@ class MyPhotographerProfileGetView(APIView):
             if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
                 active_plan = profile.subscription.plan
             if active_plan and getattr(active_plan, 'allowed_portfolio_templates', None):
-                if template not in active_plan.allowed_portfolio_templates:
+                allowed = active_plan.allowed_portfolio_templates
+                alias_map = {'editorial': 'editorial-vogue', 'editorial-vogue': 'editorial-vogue', 'masonry': 'darkroom-atelier', 'darkroom-atelier': 'darkroom-atelier', 'cinematic': 'cinematic', 'minimal': 'minimal'}
+                raw_t = str(template).lower().strip()
+                if raw_t not in allowed and alias_map.get(raw_t, raw_t) not in [alias_map.get(str(x).lower().strip(), str(x).lower().strip()) for x in allowed]:
                     return Response(
                         {"message": f"Portfolio template '{template}' is not included in your current subscription plan."},
                         status=status.HTTP_403_FORBIDDEN
@@ -332,7 +335,10 @@ class MyPhotographerProfileGetView(APIView):
             if not active_plan and hasattr(profile, 'subscription') and profile.subscription and profile.subscription.plan:
                 active_plan = profile.subscription.plan
             if active_plan and getattr(active_plan, 'allowed_portfolio_templates', None):
-                if template not in active_plan.allowed_portfolio_templates:
+                allowed = active_plan.allowed_portfolio_templates
+                alias_map = {'editorial': 'editorial-vogue', 'editorial-vogue': 'editorial-vogue', 'masonry': 'darkroom-atelier', 'darkroom-atelier': 'darkroom-atelier', 'cinematic': 'cinematic', 'minimal': 'minimal'}
+                raw_t = str(template).lower().strip()
+                if raw_t not in allowed and alias_map.get(raw_t, raw_t) not in [alias_map.get(str(x).lower().strip(), str(x).lower().strip()) for x in allowed]:
                     return Response(
                         {"message": f"Portfolio template '{template}' is not included in your current subscription plan."},
                         status=status.HTTP_403_FORBIDDEN

@@ -136,10 +136,10 @@ class CullingClusterSerializer(serializers.ModelSerializer):
         return wasted_qs['total'] or 0
 
 
-class CullingSessionDetailSerializer(serializers.ModelSerializer):
-    tier = CullingPricingTierSerializer(read_only=True)
+class ActiveCullingSessionSerializer(serializers.ModelSerializer):
     photos = serializers.SerializerMethodField()
     clusters = CullingClusterSerializer(many=True, read_only=True)
+    photo_count = serializers.SerializerMethodField()
 
     class Meta:
         model = CullingSession
@@ -147,11 +147,12 @@ class CullingSessionDetailSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "status",
-            "is_paid",
-            "tier",
             "photo_count",
             "photos",
             "clusters",
+            "keeper_count",
+            "duplicate_count",
+            "wasted_bytes",
             "created_at",
             "updated_at",
         ]
@@ -161,6 +162,10 @@ class CullingSessionDetailSerializer(serializers.ModelSerializer):
         photos = obj.photos.all()
         return CullingPhotoSerializer(photos, many=True, context={"request": request}).data
 
+    def get_photo_count(self, obj):
+        return obj.total_photos or obj.photos.count()
 
-# Alias for backward compatibility
-ActiveCullingSessionResponseSerializer = CullingSessionDetailSerializer
+
+# Aliases for backward compatibility
+CullingSessionDetailSerializer = ActiveCullingSessionSerializer
+ActiveCullingSessionResponseSerializer = ActiveCullingSessionSerializer

@@ -8,11 +8,14 @@ class PlanSerializer(serializers.ModelSerializer):
     image_storage = serializers.SerializerMethodField()
     video_storage = serializers.SerializerMethodField()
     inquiry_access = serializers.SerializerMethodField()
+    slug = serializers.CharField(read_only=True)
+    storage_limit_gb = serializers.FloatField(read_only=True)
 
     class Meta:
         model = Plan
         fields = [
             'id',
+            'slug',
             'name',
             'subtitle',
             'tier',
@@ -26,6 +29,7 @@ class PlanSerializer(serializers.ModelSerializer):
             'currency',
             'image_storage_gb',
             'video_storage_gb',
+            'storage_limit_gb',
             'image_storage',
             'video_storage',
             'storage_limit_bytes',
@@ -38,6 +42,7 @@ class PlanSerializer(serializers.ModelSerializer):
             'gallery_expiry_days',
             'face_search_enabled',
             'watermark_enabled',
+            'ai_culling_enabled',
             'allowed_templates',
             'allowed_portfolio_templates',
             'max_events',
@@ -68,7 +73,7 @@ class PlanSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         templates = data.get('allowed_templates')
         if not templates:
-            data['allowed_templates'] = ["editorial", "masonry", "cinematic", "minimal"] if instance.tier == 'premium' else ["editorial", "masonry"]
+            data['allowed_templates'] = ["editorial-vogue", "darkroom-atelier"]
         elif isinstance(templates, str):
             import json
             try:
@@ -78,6 +83,7 @@ class PlanSerializer(serializers.ModelSerializer):
         data['price'] = float(instance.monthly_price) if instance.monthly_price is not None else 0.0
         data['originalPrice'] = float(instance.original_monthly_price) if instance.original_monthly_price is not None else None
         data['watermark_enabled'] = getattr(instance, 'watermark_enabled', False)
+        data['ai_culling_enabled'] = getattr(instance, 'ai_culling_enabled', False)
         return data
 
 
@@ -96,6 +102,7 @@ class PlanSummarySerializer(serializers.ModelSerializer):
             'allowed_templates',
             'face_search_enabled',
             'watermark_enabled',
+            'ai_culling_enabled',
             'gallery_expiry_days',
             'max_events',
             'max_portfolio_posts',
@@ -109,7 +116,7 @@ class PlanSummarySerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         templates = data.get('allowed_templates')
         if not templates:
-            data['allowed_templates'] = ["editorial", "masonry", "cinematic", "minimal"] if instance.tier == 'premium' else ["editorial", "masonry"]
+            data['allowed_templates'] = ["editorial-vogue", "darkroom-atelier"]
         elif isinstance(templates, str):
             import json
             try:
@@ -117,6 +124,7 @@ class PlanSummarySerializer(serializers.ModelSerializer):
             except Exception:
                 data['allowed_templates'] = [templates]
         data['watermark_enabled'] = getattr(instance, 'watermark_enabled', False)
+        data['ai_culling_enabled'] = getattr(instance, 'ai_culling_enabled', False)
         return data
 
 
@@ -129,6 +137,7 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
     expiry_date = serializers.DateTimeField(source='expires_at', read_only=True)
     days_remaining = serializers.IntegerField(read_only=True)
     has_subscription = serializers.SerializerMethodField()
+    ai_culling_enabled = serializers.SerializerMethodField()
     storage = serializers.SerializerMethodField()
     usage = serializers.SerializerMethodField()
 
@@ -142,6 +151,7 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
             'start_date',
             'expiry_date',
             'days_remaining',
+            'ai_culling_enabled',
             'storage',
             'usage',
             'auto_renew',
@@ -151,10 +161,19 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
     def get_has_subscription(self, obj):
         return True
 
+    def get_ai_culling_enabled(self, obj):
+        if not getattr(obj, 'is_valid', False):
+            return False
+        if obj.plan and getattr(obj.plan, 'ai_culling_enabled', False):
+            return True
+        if obj.legacy_plan and getattr(obj.legacy_plan, 'ai_culling_enabled', False):
+            return True
+        return False
+
     def get_storage(self, obj):
         photographer = obj.photographer
         limit_bytes = obj.effective_storage_limit_bytes if hasattr(obj, 'effective_storage_limit_bytes') else (photographer.get_storage_limit() if photographer else 225485783040)
-        used_bytes = (photographer.storage_used_bytes + photographer.storage_reserved_bytes) if photographer else 0
+        used_bytes = photographer.get_total_storage_used_bytes() if (photographer and hasattr(photographer, 'get_total_storage_used_bytes')) else ((photographer.storage_used_bytes + photographer.storage_reserved_bytes) if photographer else 0)
         used_gb = round(used_bytes / (1024 ** 3), 1)
         limit_gb = round(limit_bytes / (1024 ** 3), 1)
         used_pct = round((used_bytes / limit_bytes) * 100, 1) if limit_bytes > 0 else 0.0
@@ -165,6 +184,7 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
             "used_gb": used_gb,
             "limit_gb": limit_gb,
             "used_percentage": min(100.0, used_pct),
+            "is_unlimited": bool(limit_bytes == 0),
         }
 
     def get_usage(self, obj):
@@ -184,7 +204,12 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
 
         # Events usage
         events_used = 0
-        if photographer and hasattr(photographer, 'shared_events'):
+        if photographer and hasattr(photographer, 'events'):
+            try:
+                events_used = photographer.events.count()
+            except Exception:
+                events_used = 0
+        elif photographer and hasattr(photographer, 'shared_events'):
             try:
                 events_used = photographer.shared_events.count()
             except Exception:
@@ -195,7 +220,11 @@ class CurrentSubscriptionSerializer(serializers.ModelSerializer):
 
         # Portfolio Posts usage
         posts_used = 0
-        if photographer and hasattr(photographer, 'posts'):
+        if photographer and hasattr(photographer, 'portfolio_projects'):
+            posts_used = photographer.portfolio_projects.count()
+        elif obj.user and hasattr(obj.user, 'portfolio_projects'):
+            posts_used = obj.user.portfolio_projects.count()
+        elif photographer and hasattr(photographer, 'posts'):
             try:
                 posts_used = photographer.posts.count()
             except Exception:
@@ -284,6 +313,7 @@ class SubscriptionPlansSerializer(serializers.ModelSerializer):
 
 class PhotographerSubscriptionSerializer(serializers.ModelSerializer):
     plan = serializers.SerializerMethodField()
+    ai_culling_enabled = serializers.SerializerMethodField()
     storage_used_bytes = serializers.IntegerField(source='photographer.storage_used_bytes', read_only=True)
     storage_reserved_bytes = serializers.IntegerField(source='photographer.storage_reserved_bytes', read_only=True)
     storage_limit_bytes = serializers.SerializerMethodField()
@@ -298,11 +328,21 @@ class PhotographerSubscriptionSerializer(serializers.ModelSerializer):
             'expiry_date',
             'auto_renew',
             'plan',
+            'ai_culling_enabled',
             'storage_used_bytes',
             'storage_reserved_bytes',
             'storage_limit_bytes',
             'storage_percentage',
         ]
+
+    def get_ai_culling_enabled(self, obj):
+        if not getattr(obj, 'is_valid', False):
+            return False
+        if obj.plan and getattr(obj.plan, 'ai_culling_enabled', False):
+            return True
+        if obj.legacy_plan and getattr(obj.legacy_plan, 'ai_culling_enabled', False):
+            return True
+        return False
 
     def get_plan(self, obj):
         if obj.plan:
@@ -327,6 +367,51 @@ class PhotographerSubscriptionSerializer(serializers.ModelSerializer):
             return 0.0
         used = obj.photographer.storage_used_bytes + obj.photographer.storage_reserved_bytes
         return min(100.0, round((used / limit) * 100, 2))
+
+
+class UserSubscriptionSerializer(serializers.ModelSerializer):
+    plan = PlanSerializer(read_only=True)
+    ai_culling_enabled = serializers.SerializerMethodField()
+    storage_used_bytes = serializers.SerializerMethodField()
+    storage_limit_bytes = serializers.SerializerMethodField()
+    is_active = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PhotographerSubscription
+        fields = [
+            'id',
+            'plan',
+            'status',
+            'start_date',
+            'expiry_date',
+            'ai_culling_enabled',
+            'storage_used_bytes',
+            'storage_limit_bytes',
+            'is_active',
+        ]
+
+    def get_ai_culling_enabled(self, obj):
+        if not getattr(obj, 'is_valid', False):
+            return False
+        return bool(obj.plan and getattr(obj.plan, 'ai_culling_enabled', False))
+
+    def get_storage_used_bytes(self, obj):
+        user = getattr(obj, 'user', None) or (obj.photographer.user if obj.photographer else None)
+        if user and hasattr(user, 'get_total_storage_used_bytes'):
+            return user.get_total_storage_used_bytes()
+        if obj.photographer:
+            return (obj.photographer.storage_used_bytes or 0) + (obj.photographer.storage_reserved_bytes or 0)
+        return 0
+
+    def get_storage_limit_bytes(self, obj):
+        if hasattr(obj, 'effective_storage_limit_bytes'):
+            return obj.effective_storage_limit_bytes
+        if obj.plan:
+            return obj.plan.storage_limit_bytes
+        return 0
+
+    def get_is_active(self, obj):
+        return getattr(obj, 'is_valid', False)
 
 
 class UpgradeSubscriptionSerializer(serializers.Serializer):

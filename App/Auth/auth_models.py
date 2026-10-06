@@ -166,6 +166,50 @@ class User(AbstractBaseUser, PermissionsMixin):
             return self.subscriptions.order_by('-created_at').first()
         return None
 
+    def get_total_storage_used_bytes(self):
+        """
+        Calculates unified storage quota used by this user across galleries,
+        portfolio assets, and staging culling files.
+        """
+        profile = getattr(self, 'photographer_profile', None)
+        if profile and (profile.storage_used_bytes or profile.storage_reserved_bytes):
+            return int((profile.storage_used_bytes or 0) + (profile.storage_reserved_bytes or 0))
+        try:
+            from App.Storage.storage_models import Media
+            gallery_bytes = Media.objects.filter(gallery__photographer__user=self).aggregate(
+                total=models.Sum('file_size')
+            )['total'] or 0
+            return int(gallery_bytes)
+        except Exception:
+            return 0
+
+    @property
+    def has_ai_culling_access(self):
+        if self.is_staff or self.is_superuser:
+            return True
+        sub = self.subscription
+        if not sub or not getattr(sub, 'is_active', False):
+            return False
+        plan = getattr(sub, 'plan', None)
+        if plan and getattr(plan, 'ai_culling_enabled', False):
+            return True
+        legacy_plan = getattr(sub, 'legacy_plan', None)
+        if legacy_plan and getattr(legacy_plan, 'ai_culling_enabled', False):
+            return True
+        return False
+
+    @property
+    def portfolio_visits(self):
+        return getattr(self, 'portfolio_views', None)
+
+    @property
+    def portfolio_projects(self):
+        config = getattr(self, 'portfolio_config', None)
+        if config:
+            return config.works.all()
+        from portfolio.models import PortfolioWork
+        return PortfolioWork.objects.filter(portfolio__user=self)
+
     @property
     def is_onboarded(self):
         profile = getattr(self, 'photographer_profile', None)
