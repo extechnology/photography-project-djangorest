@@ -359,7 +359,7 @@ def load_image_to_cv2(image_input: Any) -> Tuple[Optional[np.ndarray], Dict[str,
 
     meta["error"] = "OpenCV could not decode image bytes into valid pixels"
     logger.warning(f"[FaceEngine] {meta['error']}")
-    return None, meta
+    return None, meta 
 
 
 # ------------------------------------------------------------------------------

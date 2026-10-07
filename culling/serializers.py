@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.db import models
 from .models import CullingPricingTier, CullingSession, CullingPhoto, CullingCluster
 
-
+ 
 class CullingPricingTierSerializer(serializers.ModelSerializer):
     photosLimit = serializers.IntegerField(source="photos_limit")
     isPopular = serializers.BooleanField(source="is_popular", required=False)
