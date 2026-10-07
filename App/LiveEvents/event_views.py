@@ -24,7 +24,9 @@ from .event_serializers import (
 import base64
 import threading
 from .event_tasks import process_face_embeddings_task, compare_selfie_faces_task, run_indexing_safely
+from django.core.files.base import ContentFile
 from App.Storage.storage_models import Gallery, Media as GalleryMedia, GallerySection
+from App.Storage.services.storage_service import get_storage_provider
 from App.Photographers.photo_models import PhotographerProfile
 from backend.atelier_plans.subscription_enforcement import enforce_active_subscription, is_studio_active
 
@@ -688,25 +690,98 @@ class LiveEventViewSet(viewsets.ModelViewSet):
                 )
 
             # Migrate media items into gallery
+            storage = get_storage_provider()
             for media in event.media.all():
                 sec_title = assignments.get(str(media.id), media.section_title).strip().upper()
                 section, _ = GallerySection.objects.get_or_create(gallery=gallery, title=sec_title)
 
-                GalleryMedia.objects.create(
+                safe_name = os.path.basename(str(media.original_filename or "photo.jpg").replace('\\', '/'))
+                media_id = uuid.uuid4()
+                storage_key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
+
+                file_bytes = b""
+                try:
+                    if media.file:
+                        media.file.open("rb")
+                        file_bytes = media.file.read()
+                        media.file.close()
+                except Exception:
+                    if hasattr(media.file, 'path') and os.path.exists(media.file.path):
+                        try:
+                            with open(media.file.path, 'rb') as f:
+                                file_bytes = f.read()
+                        except Exception:
+                            pass
+
+                mime = "video/mp4" if media.media_type == "video" else "image/jpeg"
+                if safe_name.lower().endswith(".png"):
+                    mime = "image/png"
+                elif safe_name.lower().endswith(".webp"):
+                    mime = "image/webp"
+
+                if file_bytes:
+                    storage.upload(storage_key, file_bytes, content_type=mime)
+
+                gm = GalleryMedia(
+                    id=media_id,
                     photographer=profile,
                     gallery=gallery,
                     section=section,
                     section_title=sec_title,
-                    original_filename=media.original_filename,
-                    file=media.file,
-                    storage_key=f"galleries/{gallery.id}/originals/{media.id}_{media.original_filename}",
+                    original_filename=safe_name,
+                    storage_key=storage_key,
+                    media_type=media.media_type,
                     aspect_ratio=media.aspect_ratio,
-                    file_size=int(media.size_mb * 1024 * 1024),
+                    file_size=len(file_bytes) if file_bytes else int(media.size_mb * 1024 * 1024),
                     width=media.width,
                     height=media.height,
                     is_favorite=media.is_favorite,
                     is_cover=media.is_cover,
+                    processing_status="ready" if media.media_type == "video" else "pending",
+                    upload_status="completed",
                 )
+                if file_bytes:
+                    gm.file.save(f"{media_id}_{safe_name}", ContentFile(file_bytes), save=False)
+                    if media.media_type == "photo":
+                        try:
+                            from PIL import Image, ImageOps
+                            img = Image.open(io.BytesIO(file_bytes))
+                            img = ImageOps.exif_transpose(img)
+                            gm.width, gm.height = img.size
+                            if gm.height > 0:
+                                gm.aspect_ratio = round(gm.width / float(gm.height), 3)
+
+                            thumb_img = img.copy()
+                            thumb_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                            thumb_buf = io.BytesIO()
+                            thumb_img.convert("RGB").save(thumb_buf, format="JPEG", quality=85)
+                            thumb_key = f"galleries/{gallery.id}/thumbnails/{media_id}.jpg"
+                            storage.upload(thumb_key, thumb_buf.getvalue(), content_type="image/jpeg")
+                            gm.thumbnail_storage_key = thumb_key
+
+                            prev_img = img.copy()
+                            prev_img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                            prev_buf = io.BytesIO()
+                            prev_img.convert("RGB").save(prev_buf, format="JPEG", quality=90)
+                            prev_key = f"galleries/{gallery.id}/previews/{media_id}.jpg"
+                            storage.upload(prev_key, prev_buf.getvalue(), content_type="image/jpeg")
+                            gm.preview_storage_key = prev_key
+                            gm.processing_status = "ready"
+                        except Exception:
+                            pass
+                    elif media.media_type == "video" and getattr(media, 'thumbnail', None):
+                        try:
+                            media.thumbnail.open("rb")
+                            v_thumb = media.thumbnail.read()
+                            media.thumbnail.close()
+                            if v_thumb:
+                                v_thumb_key = f"galleries/{gallery.id}/thumbnails/{media_id}.jpg"
+                                storage.upload(v_thumb_key, v_thumb, content_type="image/jpeg")
+                                gm.thumbnail_storage_key = v_thumb_key
+                        except Exception:
+                            pass
+
+                gm.save()
 
             # Permanent cleanup of event as requested
             event.delete()

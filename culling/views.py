@@ -7,6 +7,7 @@ import uuid
 from django.db import transaction, models
 from django.conf import settings
 from django.http import HttpResponse
+from django.core.files.base import ContentFile
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -30,7 +31,26 @@ from .serializers import (
 from .ai_engine import run_server_side_culling, run_server_side_ai_analysis
 from .permissions import HasAICullingAccess, HasAICullingPlanPermission
 from App.Storage.storage_models import Gallery, GallerySection, Media as GalleryMedia
+from App.Storage.services.storage_service import get_storage_provider
 from App.Photographers.photo_models import PhotographerProfile
+
+
+def find_app_culling_session(sid, user):
+    """Safely look up an App.Culling session by session_key or UUID id without throwing ValidationError."""
+    if not sid or not user:
+        return None
+    from App.Culling.culling_models import CullingSession as AppCullingSession
+    try:
+        s = AppCullingSession.objects.filter(session_key=str(sid), user=user).first()
+        if s:
+            return s
+    except Exception:
+        pass
+    try:
+        uuid.UUID(str(sid))
+        return AppCullingSession.objects.filter(id=sid, user=user).first()
+    except (ValueError, AttributeError, Exception):
+        return None
 
 
 # ─── 1. Multi-Photo Upload ───────────────────────────────────────────────────
@@ -54,6 +74,11 @@ class UploadCullingPhotosView(APIView):
             or request.data.get("sessionId")
             or f"cull_session_{uuid.uuid4().hex[:12]}"
         )
+
+        app_session = find_app_culling_session(sid, user)
+        if app_session:
+            from App.Culling.culling_views import CullingSessionViewSet
+            return CullingSessionViewSet.as_view({'post': 'upload_photos'})(request._request, pk=str(app_session.id))
 
         if not files:
             return Response(
@@ -182,45 +207,7 @@ class AnalyzeCullingSessionView(APIView):
 
         run_server_side_culling(session, similarity_threshold=threshold)
 
-        photos_data = [
-            {
-                "id": str(p.id),
-                "name": p.original_filename or p.name,
-                "previewUrl": request.build_absolute_uri(p.file.url) if p.file else "",
-                "sizeBytes": p.size_bytes or p.file_size_bytes or 0,
-                "sizeMB": round((p.size_bytes or p.file_size_bytes or 0) / (1024 * 1024), 2),
-                "sharpnessScore": round(p.sharpness_score, 1),
-                "isBestPick": p.is_best_pick,
-                "status": p.status,
-                "clusterId": p.cluster_id or "",
-                "hash": p.perceptual_hash or "",
-                "similarityWithBest": p.similarity_with_winner,
-            }
-            for p in session.photos.all()
-        ]
-
-        clusters_data = [
-            {
-                "id": str(c.id),
-                "title": c.title,
-                "averageSimilarity": c.average_similarity,
-                "bestPickId": c.best_pick_item_id or c.best_pick_id or "",
-                "photoIds": c.photo_ids or list(session.photos.filter(cluster_id=c.id).values_list("id", flat=True)),
-                "totalPhotos": c.total_photos,
-                "duplicatesCount": c.duplicates_count,
-                "wastedBytes": c.wasted_bytes,
-            }
-            for c in session.clusters.all()
-        ]
-
-        session_payload = {
-            "id": session.id,
-            "title": session.title,
-            "status": session.status,
-            "photo_count": len(photos_data),
-            "photos": photos_data,
-            "clusters": clusters_data,
-        }
+        session_payload = serialize_culling_session_payload(session, request)
 
         return Response(
             {
@@ -230,6 +217,48 @@ class AnalyzeCullingSessionView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+def serialize_culling_session_payload(session, request):
+    photos_data = [
+        {
+            "id": str(p.id),
+            "name": p.original_filename or p.name,
+            "previewUrl": request.build_absolute_uri(p.file.url) if p.file else "",
+            "sizeBytes": p.size_bytes or p.file_size_bytes or 0,
+            "sizeMB": round((p.size_bytes or p.file_size_bytes or 0) / (1024 * 1024), 2),
+            "sharpnessScore": round(p.sharpness_score, 1),
+            "isBestPick": p.is_best_pick,
+            "status": p.status,
+            "clusterId": p.cluster_id or "",
+            "hash": p.perceptual_hash or "",
+            "similarityWithBest": p.similarity_with_winner,
+        }
+        for p in session.photos.all()
+    ]
+
+    clusters_data = [
+        {
+            "id": str(c.id),
+            "title": c.title,
+            "averageSimilarity": c.average_similarity,
+            "bestPickId": c.best_pick_item_id or c.best_pick_id or "",
+            "photoIds": c.photo_ids or list(session.photos.filter(cluster_id=c.id).values_list("id", flat=True)),
+            "totalPhotos": c.total_photos,
+            "duplicatesCount": c.duplicates_count,
+            "wastedBytes": c.wasted_bytes,
+        }
+        for c in session.clusters.all()
+    ]
+
+    return {
+        "id": session.id,
+        "title": session.title,
+        "status": session.status,
+        "photo_count": len(photos_data),
+        "photos": photos_data,
+        "clusters": clusters_data,
+    }
 
 
 # ─── 3. Active Session Recovery ──────────────────────────────────────────────
@@ -252,45 +281,7 @@ class ActiveCullingSessionView(APIView):
         if not session or not session.photos.exists():
             return Response({"session": None, "active": False}, status=status.HTTP_200_OK)
 
-        photos_data = [
-            {
-                "id": str(p.id),
-                "name": p.original_filename or p.name,
-                "previewUrl": request.build_absolute_uri(p.file.url) if p.file else "",
-                "sizeBytes": p.size_bytes or p.file_size_bytes or 0,
-                "sizeMB": round((p.size_bytes or p.file_size_bytes or 0) / (1024 * 1024), 2),
-                "sharpnessScore": round(p.sharpness_score, 1),
-                "isBestPick": p.is_best_pick,
-                "status": p.status,
-                "clusterId": p.cluster_id or "",
-                "hash": p.perceptual_hash or "",
-                "similarityWithBest": p.similarity_with_winner,
-            }
-            for p in session.photos.all()
-        ]
-
-        clusters_data = [
-            {
-                "id": str(c.id),
-                "title": c.title,
-                "averageSimilarity": c.average_similarity,
-                "bestPickId": c.best_pick_item_id or c.best_pick_id or "",
-                "photoIds": c.photo_ids or list(session.photos.filter(cluster_id=c.id).values_list("id", flat=True)),
-                "totalPhotos": c.total_photos,
-                "duplicatesCount": c.duplicates_count,
-                "wastedBytes": c.wasted_bytes,
-            }
-            for c in session.clusters.all()
-        ]
-
-        response_data = {
-            "id": session.id,
-            "title": session.title,
-            "status": session.status,
-            "photo_count": len(photos_data),
-            "photos": photos_data,
-            "clusters": clusters_data,
-        }
+        response_data = serialize_culling_session_payload(session, request)
 
         # Hybrid payload: exposes both root fields and nested session for any frontend variation
         return Response(
@@ -331,23 +322,25 @@ class SyncCullingSessionView(APIView):
         clusters_data = request.data.get("clusters", [])
 
         with transaction.atomic():
-            for p in photos_data:
-                pid = p.get("id")
-                if pid:
-                    CullingStagingPhoto.objects.filter(id=pid, session=session).update(
-                        sharpness_score=p.get("sharpnessScore", 80.0),
-                        is_best_pick=bool(p.get("isBestPick", False)),
-                        status=p.get("status", "keep"),
-                        cluster_id=p.get("clusterId", "") or "",
-                        perceptual_hash=p.get("hash", "") or "",
-                        similarity_with_winner=p.get("similarityWithBest"),
-                    )
-
-            # Recreate clusters
-            CullingCluster.objects.filter(session=session).delete()
+            cluster_id_remap = {}
+            seen_cids = set()
             cluster_objs = []
             for c in clusters_data:
-                cid = c.get("id") or f"cluster_{uuid.uuid4().hex[:8]}"
+                raw_cid = str(c.get("id") or "").strip()
+                if not raw_cid:
+                    cid = f"cluster_{session.id[:80]}_{uuid.uuid4().hex[:8]}"
+                elif CullingCluster.objects.filter(id=raw_cid).exclude(session=session).exists():
+                    cid = f"cluster_{session.id[:80]}_{raw_cid}"
+                    cluster_id_remap[raw_cid] = cid
+                else:
+                    cid = raw_cid
+
+                if cid in seen_cids:
+                    cid = f"{cid}_{uuid.uuid4().hex[:4]}"
+                    if raw_cid:
+                        cluster_id_remap[raw_cid] = cid
+                seen_cids.add(cid)
+
                 cluster_objs.append(
                     CullingCluster(
                         id=cid,
@@ -362,6 +355,27 @@ class SyncCullingSessionView(APIView):
                         wasted_bytes=c.get("wastedBytes", 0),
                     )
                 )
+
+            for p in photos_data:
+                pid = p.get("id")
+                if pid:
+                    raw_p_cluster = p.get("clusterId", "") or ""
+                    final_p_cluster = cluster_id_remap.get(raw_p_cluster, raw_p_cluster)
+                    CullingStagingPhoto.objects.filter(id=pid, session=session).update(
+                        sharpness_score=p.get("sharpnessScore", 80.0),
+                        is_best_pick=bool(p.get("isBestPick", False)),
+                        status=p.get("status", "keep"),
+                        cluster_id=final_p_cluster,
+                        perceptual_hash=p.get("hash", "") or "",
+                        similarity_with_winner=p.get("similarityWithBest"),
+                    )
+
+            if cluster_id_remap:
+                for old_cid, new_cid in cluster_id_remap.items():
+                    session.photos.filter(cluster_id=old_cid).update(cluster_id=new_cid)
+
+            # Recreate clusters
+            CullingCluster.objects.filter(session=session).delete()
             if cluster_objs:
                 CullingCluster.objects.bulk_create(cluster_objs)
 
@@ -398,6 +412,22 @@ class MoveCullingToGalleryView(APIView):
             or request.data.get("session_id")
             or request.data.get("sessionId")
         )
+
+        from App.Culling.services.gallery_bridge import move_culled_photos_to_gallery
+        app_session = find_app_culling_session(sid, request.user)
+        if app_session:
+            result = move_culled_photos_to_gallery(
+                user=request.user,
+                session=app_session,
+                target_mode=request.data.get("target_mode", "new"),
+                target_gallery_id=request.data.get("target_gallery_id") or request.data.get("gallery_id"),
+                new_gallery_title=request.data.get("new_gallery_title", "Culled Shoot"),
+                category_assignments=request.data.get("category_assignments", {}),
+                include_duplicates=request.data.get("include_duplicates", True),
+                items_payload=request.data.get("items", []),
+            )
+            return Response(result, status=status.HTTP_200_OK)
+
         session = CullingSession.objects.filter(id=sid, user=request.user).first()
         if not session:
             return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -442,19 +472,79 @@ class MoveCullingToGalleryView(APIView):
             if not keepers.exists():
                 keepers = session.photos.all()
 
+            storage = get_storage_provider()
             count = 0
             for sp in keepers:
-                assigned_sec_title = category_assignments.get(sp.cluster_id, sec_title)
+                assigned_sec_title = category_assignments.get(str(sp.id)) or category_assignments.get(sp.cluster_id, sec_title)
                 sec_obj = default_sec if assigned_sec_title == sec_title else GallerySection.objects.get_or_create(gallery=gallery, title=assigned_sec_title)[0]
-                GalleryMedia.objects.create(
+                safe_name = os.path.basename(str(sp.original_filename or sp.name or "photo.jpg").replace('\\', '/'))
+                media_id = uuid.uuid4()
+                storage_key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
+
+                file_bytes = b""
+                try:
+                    if sp.file:
+                        sp.file.open("rb")
+                        file_bytes = sp.file.read()
+                        sp.file.close()
+                except Exception:
+                    if hasattr(sp.file, 'path') and os.path.exists(sp.file.path):
+                        with open(sp.file.path, 'rb') as f:
+                            file_bytes = f.read()
+
+                mime = "image/jpeg"
+                if safe_name.lower().endswith(".png"):
+                    mime = "image/png"
+                elif safe_name.lower().endswith(".webp"):
+                    mime = "image/webp"
+
+                if file_bytes:
+                    storage.upload(storage_key, file_bytes, content_type=mime)
+
+                gm = GalleryMedia(
+                    id=media_id,
                     gallery=gallery,
                     photographer=gallery.photographer,
                     section=sec_obj,
                     section_title=assigned_sec_title,
-                    file=sp.file,
-                    original_filename=sp.original_filename or sp.name or "photo.jpg",
-                    file_size=sp.size_bytes or sp.file_size_bytes or 0,
+                    original_filename=safe_name,
+                    storage_key=storage_key,
+                    file_size=len(file_bytes) if file_bytes else (sp.size_bytes or sp.file_size_bytes or 0),
+                    mime_type=mime,
+                    is_favorite=bool(sp.is_best_pick),
+                    processing_status="pending",
+                    upload_status="completed",
                 )
+                if file_bytes:
+                    gm.file.save(f"{media_id}_{safe_name}", ContentFile(file_bytes), save=False)
+                    try:
+                        from PIL import Image, ImageOps
+                        img = Image.open(io.BytesIO(file_bytes))
+                        img = ImageOps.exif_transpose(img)
+                        gm.width, gm.height = img.size
+                        if gm.height > 0:
+                            gm.aspect_ratio = round(gm.width / float(gm.height), 3)
+
+                        thumb_img = img.copy()
+                        thumb_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                        thumb_buf = io.BytesIO()
+                        thumb_img.convert("RGB").save(thumb_buf, format="JPEG", quality=85)
+                        thumb_key = f"galleries/{gallery.id}/thumbnails/{media_id}.jpg"
+                        storage.upload(thumb_key, thumb_buf.getvalue(), content_type="image/jpeg")
+                        gm.thumbnail_storage_key = thumb_key
+
+                        prev_img = img.copy()
+                        prev_img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                        prev_buf = io.BytesIO()
+                        prev_img.convert("RGB").save(prev_buf, format="JPEG", quality=90)
+                        prev_key = f"galleries/{gallery.id}/previews/{media_id}.jpg"
+                        storage.upload(prev_key, prev_buf.getvalue(), content_type="image/jpeg")
+                        gm.preview_storage_key = prev_key
+                        gm.processing_status = "ready"
+                    except Exception:
+                        pass
+
+                gm.save()
                 count += 1
 
             session.status = "moved_to_gallery"
@@ -469,21 +559,64 @@ class MoveCullingToGalleryView(APIView):
                 "success": True,
                 "gallery_id": str(gallery.id),
                 "gallery_title": gallery.title,
+                "moved_count": count,
                 "transferred_count": count,
+                "purged": True,
                 "message": f"Successfully moved {count} photos to gallery '{gallery.title}'.",
             },
             status=status.HTTP_200_OK,
         )
 
 
-# ─── 6. Discard & Free Storage ───────────────────────────────────────────────
+# ─── 6. Session Detail & Discard Storage ─────────────────────────────────────
 
-class DiscardCullingSessionView(APIView):
+class CullingSessionDetailView(APIView):
     """
+    GET    /api/culling/sessions/{session_id}/
+    GET    /api/culling/sessions/latest/
     DELETE /api/culling/sessions/{session_id}/
     POST   /api/culling/sessions/{session_id}/discard/
     """
     permission_classes = [IsAuthenticated, HasAICullingAccess]
+
+    def get(self, request, session_id=None):
+        sid = session_id or request.query_params.get("session_id")
+        if not sid or sid in ("latest", "active"):
+            session = (
+                CullingSession.objects.filter(user=request.user)
+                .exclude(status__in=["moved_to_gallery", "discarded", "completed"])
+                .order_by("-updated_at")
+                .first()
+            )
+            if not session:
+                session = (
+                    CullingSession.objects.filter(user=request.user)
+                    .exclude(status="discarded")
+                    .order_by("-updated_at")
+                    .first()
+                )
+            if not session or not session.photos.exists():
+                return Response({"session": None, "active": False}, status=status.HTTP_200_OK)
+        else:
+            session = CullingSession.objects.filter(id=sid, user=request.user).first()
+            if not session:
+                app_session = find_app_culling_session(sid, request.user)
+                if app_session:
+                    from App.Culling.culling_views import CullingSessionViewSet
+                    return CullingSessionViewSet.as_view({'get': 'retrieve'})(request._request, pk=str(app_session.id))
+                return Response({"detail": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        response_data = serialize_culling_session_payload(session, request)
+        is_active = session.status not in ["moved_to_gallery", "discarded", "completed"] and len(response_data["photos"]) > 0
+
+        return Response(
+            {
+                **response_data,
+                "session": response_data,
+                "active": is_active,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def delete(self, request, session_id=None):
         sid = session_id or request.data.get("session_id")
@@ -496,6 +629,12 @@ class DiscardCullingSessionView(APIView):
     def _discard(self, request, sid):
         session = CullingSession.objects.filter(id=sid, user=request.user).first()
         if not session:
+            app_session = find_app_culling_session(sid, request.user)
+            if app_session:
+                from App.Culling.services.culler import purge_culling_staging
+                purge_culling_staging(app_session)
+                app_session.delete()
+                return Response({"success": True, "message": "Session discarded and staging storage reclaimed."}, status=status.HTTP_200_OK)
             return Response({"detail": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Reclaim storage physically from media backend
@@ -517,6 +656,10 @@ class DiscardCullingSessionView(APIView):
             "success": True,
             "message": "Session discarded and staging storage reclaimed successfully."
         }, status=status.HTTP_200_OK)
+
+
+# Backward-compatible alias
+DiscardCullingSessionView = CullingSessionDetailView
 
 
 # ─── 7. Keepers ZIP Export ───────────────────────────────────────────────────

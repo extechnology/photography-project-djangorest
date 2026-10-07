@@ -243,7 +243,7 @@ class CullingCluster(models.Model):
     """
     Burst group of duplicate photos identified by AI.
     """
-    id = models.CharField(max_length=128, primary_key=True)
+    id = models.CharField(max_length=128, primary_key=True, default=uuid.uuid4)
     session = models.ForeignKey(
         CullingSession,
         on_delete=models.CASCADE,

@@ -117,7 +117,7 @@ def run_server_side_culling(session, similarity_threshold: float = 88.0):
 
         if len(group) > 1:
             visited.add(a.id)
-            c_uid = f"cluster_{cluster_idx}"
+            c_uid = f"cluster_{session.id[:80]}_{cluster_idx}"
             cluster_idx += 1
 
             # Best Pick is the sharpest in the cluster

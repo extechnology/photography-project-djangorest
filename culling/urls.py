@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     UploadCullingPhotosView,
     ActiveCullingSessionView,
+    CullingSessionDetailView,
     AnalyzeCullingSessionView,
     SyncCullingSessionView,
     MoveCullingToGalleryView,
@@ -20,9 +21,11 @@ urlpatterns = [
     path("sessions/<str:session_id>/upload-photos/", UploadCullingPhotosView.as_view(), name="culling-session-upload-photos"),
     path("sessions/<str:session_id>/upload-photos", UploadCullingPhotosView.as_view(), name="culling-session-upload-photos-noslash"),
 
-    # 2. Active session restoration
+    # 2. Active & Latest session restoration
     path("sessions/active/", ActiveCullingSessionView.as_view(), name="culling-session-active"),
     path("sessions/active", ActiveCullingSessionView.as_view(), name="culling-session-active-noslash"),
+    path("sessions/latest/", CullingSessionDetailView.as_view(), name="culling-session-latest"),
+    path("sessions/latest", CullingSessionDetailView.as_view(), name="culling-session-latest-noslash"),
 
     # 3. Server-side AI analysis trigger
     path("sessions/<str:session_id>/analyze/", AnalyzeCullingSessionView.as_view(), name="culling-session-analyze"),
@@ -45,8 +48,8 @@ urlpatterns = [
     # 6. Discard session and purge staging storage
     path("sessions/<str:session_id>/discard/", DiscardCullingSessionView.as_view(), name="culling-session-discard-post"),
     path("sessions/<str:session_id>/discard", DiscardCullingSessionView.as_view(), name="culling-session-discard-post-noslash"),
-    path("sessions/<str:session_id>/", DiscardCullingSessionView.as_view(), name="culling-session-discard"),
-    path("sessions/<str:session_id>", DiscardCullingSessionView.as_view(), name="culling-session-discard-noslash"),
+    path("sessions/<str:session_id>/", CullingSessionDetailView.as_view(), name="culling-session-detail"),
+    path("sessions/<str:session_id>", CullingSessionDetailView.as_view(), name="culling-session-detail-noslash"),
 
     # 7. Keepers ZIP export
     path("sessions/<str:session_id>/export-zip/", ExportCullingZipView.as_view(), name="culling-export-zip"),

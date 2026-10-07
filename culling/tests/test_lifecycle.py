@@ -311,3 +311,54 @@ class CullingSessionLifecycleTests(TestCase):
         user_sub_data = UserSubscriptionSerializer(self.subscription).data
         self.assertIn('ai_culling_enabled', user_sub_data)
         self.assertTrue(user_sub_data['ai_culling_enabled'])
+
+    def test_multiple_sessions_cluster_uniqueness_preventing_integrity_error(self):
+        # Session 1 with duplicates
+        sid_1 = f"cull_batch1_{uuid.uuid4().hex[:8]}"
+        self.client.post('/api/culling/upload/', {
+            'session_id': sid_1,
+            'photos': [
+                make_dummy_jpeg('batch1_a.jpg', color=(100, 100, 100)),
+                make_dummy_jpeg('batch1_b.jpg', color=(100, 100, 100)),
+            ]
+        }, format='multipart')
+        res1 = self.client.post(f'/api/culling/sessions/{sid_1}/analyze/', {'similarity_threshold': 80.0}, format='json')
+        self.assertEqual(res1.status_code, status.HTTP_200_OK)
+
+        # Session 2 with duplicates - must not trigger UNIQUE constraint failed: culling_cluster.id
+        sid_2 = f"cull_batch2_{uuid.uuid4().hex[:8]}"
+        self.client.post('/api/culling/upload/', {
+            'session_id': sid_2,
+            'photos': [
+                make_dummy_jpeg('batch2_a.jpg', color=(150, 150, 150)),
+                make_dummy_jpeg('batch2_b.jpg', color=(150, 150, 150)),
+            ]
+        }, format='multipart')
+        res2 = self.client.post(f'/api/culling/sessions/{sid_2}/analyze/', {'similarity_threshold': 80.0}, format='json')
+        self.assertEqual(res2.status_code, status.HTTP_200_OK)
+
+        s1_clusters = list(CullingCluster.objects.filter(session_id=sid_1).values_list('id', flat=True))
+        s2_clusters = list(CullingCluster.objects.filter(session_id=sid_2).values_list('id', flat=True))
+        self.assertGreater(len(s1_clusters), 0)
+        self.assertGreater(len(s2_clusters), 0)
+        # Ensure disjoint cluster IDs
+        self.assertTrue(set(s1_clusters).isdisjoint(set(s2_clusters)))
+
+    def test_get_session_latest_and_detail_endpoint(self):
+        session_id = f"cull_latest_{uuid.uuid4().hex[:8]}"
+        self.client.post('/api/culling/upload/', {
+            'session_id': session_id,
+            'photos': [make_dummy_jpeg('test_photo.jpg')]
+        }, format='multipart')
+
+        # Test GET /api/culling/sessions/latest/ does not return 405 Method Not Allowed
+        res_latest = self.client.get('/api/culling/sessions/latest/')
+        self.assertEqual(res_latest.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_latest.data['id'], session_id)
+        self.assertEqual(res_latest.data['photo_count'], 1)
+
+        # Test GET /api/culling/sessions/{session_id}/ returns session detail
+        res_detail = self.client.get(f'/api/culling/sessions/{session_id}/')
+        self.assertEqual(res_detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_detail.data['id'], session_id)
+

@@ -20,6 +20,33 @@ class HasAICullingAccess(BasePermission):
         if user.is_staff or user.is_superuser:
             return True
 
+        # Allow access if operating on an upfront pay-per-cull session
+        session_id = getattr(view, 'kwargs', {}).get('session_id') or getattr(view, 'kwargs', {}).get('pk') or request.data.get('session_id') or request.data.get('sessionId')
+        if session_id:
+            import uuid as _uuid
+            from App.Culling.culling_models import CullingSession as AppCullingSession
+            from culling.models import CullingSession as NewCullingSession
+            try:
+                if AppCullingSession.objects.filter(session_key=str(session_id), user=user).exists():
+                    return True
+            except Exception:
+                pass
+            try:
+                try:
+                    _uuid.UUID(str(session_id))
+                    is_valid_uuid = True
+                except (ValueError, AttributeError):
+                    is_valid_uuid = False
+                if is_valid_uuid and AppCullingSession.objects.filter(id=session_id, user=user).exists():
+                    return True
+            except Exception:
+                pass
+            try:
+                if NewCullingSession.objects.filter(id=str(session_id), user=user).exists():
+                    return True
+            except Exception:
+                pass
+
         from App.Subscriptions.sub_models import PhotographerSubscription
 
         now = timezone.now()

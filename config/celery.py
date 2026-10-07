@@ -17,3 +17,6 @@ app.conf.task_default_exchange = "exshare"
 app.conf.task_default_routing_key = "exshare"
 
 app.autodiscover_tasks()
+
+# celery -A config worker --loglevel=info --pool=solo
+# celery -A config beat --loglevel=INFO
