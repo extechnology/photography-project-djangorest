@@ -32,7 +32,9 @@ from .ai_engine import run_server_side_culling, run_server_side_ai_analysis
 from .permissions import HasAICullingAccess, HasAICullingPlanPermission
 from App.Storage.storage_models import Gallery, GallerySection, Media as GalleryMedia
 from App.Storage.services.storage_service import get_storage_provider
+from App.Storage.services.media_transfer import transfer_media_to_gallery
 from App.Photographers.photo_models import PhotographerProfile
+
 
 
 def find_app_culling_session(sid, user):
@@ -233,6 +235,7 @@ def serialize_culling_session_payload(session, request):
             "clusterId": p.cluster_id or "",
             "hash": p.perceptual_hash or "",
             "similarityWithBest": p.similarity_with_winner,
+            "faceAnalysis": p.face_analysis if hasattr(p, 'face_analysis') and p.face_analysis else {},
         }
         for p in session.photos.all()
     ]
@@ -472,80 +475,22 @@ class MoveCullingToGalleryView(APIView):
             if not keepers.exists():
                 keepers = session.photos.all()
 
-            storage = get_storage_provider()
             count = 0
             for sp in keepers:
                 assigned_sec_title = category_assignments.get(str(sp.id)) or category_assignments.get(sp.cluster_id, sec_title)
                 sec_obj = default_sec if assigned_sec_title == sec_title else GallerySection.objects.get_or_create(gallery=gallery, title=assigned_sec_title)[0]
-                safe_name = os.path.basename(str(sp.original_filename or sp.name or "photo.jpg").replace('\\', '/'))
-                media_id = uuid.uuid4()
-                storage_key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
 
-                file_bytes = b""
-                try:
-                    if sp.file:
-                        sp.file.open("rb")
-                        file_bytes = sp.file.read()
-                        sp.file.close()
-                except Exception:
-                    if hasattr(sp.file, 'path') and os.path.exists(sp.file.path):
-                        with open(sp.file.path, 'rb') as f:
-                            file_bytes = f.read()
-
-                mime = "image/jpeg"
-                if safe_name.lower().endswith(".png"):
-                    mime = "image/png"
-                elif safe_name.lower().endswith(".webp"):
-                    mime = "image/webp"
-
-                if file_bytes:
-                    storage.upload(storage_key, file_bytes, content_type=mime)
-
-                gm = GalleryMedia(
-                    id=media_id,
+                transfer_media_to_gallery(
                     gallery=gallery,
                     photographer=gallery.photographer,
                     section=sec_obj,
-                    section_title=assigned_sec_title,
-                    original_filename=safe_name,
-                    storage_key=storage_key,
-                    file_size=len(file_bytes) if file_bytes else (sp.size_bytes or sp.file_size_bytes or 0),
-                    mime_type=mime,
+                    original_filename=sp.original_filename or sp.name or "photo.jpg",
+                    file_source=sp.file,
+                    media_type='photo',
                     is_favorite=bool(sp.is_best_pick),
-                    processing_status="pending",
-                    upload_status="completed",
                 )
-                if file_bytes:
-                    gm.file.save(f"{media_id}_{safe_name}", ContentFile(file_bytes), save=False)
-                    try:
-                        from PIL import Image, ImageOps
-                        img = Image.open(io.BytesIO(file_bytes))
-                        img = ImageOps.exif_transpose(img)
-                        gm.width, gm.height = img.size
-                        if gm.height > 0:
-                            gm.aspect_ratio = round(gm.width / float(gm.height), 3)
-
-                        thumb_img = img.copy()
-                        thumb_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-                        thumb_buf = io.BytesIO()
-                        thumb_img.convert("RGB").save(thumb_buf, format="JPEG", quality=85)
-                        thumb_key = f"galleries/{gallery.id}/thumbnails/{media_id}.jpg"
-                        storage.upload(thumb_key, thumb_buf.getvalue(), content_type="image/jpeg")
-                        gm.thumbnail_storage_key = thumb_key
-
-                        prev_img = img.copy()
-                        prev_img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
-                        prev_buf = io.BytesIO()
-                        prev_img.convert("RGB").save(prev_buf, format="JPEG", quality=90)
-                        prev_key = f"galleries/{gallery.id}/previews/{media_id}.jpg"
-                        storage.upload(prev_key, prev_buf.getvalue(), content_type="image/jpeg")
-                        gm.preview_storage_key = prev_key
-                        gm.processing_status = "ready"
-                    except Exception:
-                        pass
-
-                gm.save()
                 count += 1
+
 
             session.status = "moved_to_gallery"
             session.save(update_fields=["status", "updated_at"])
@@ -751,3 +696,4 @@ class VerifyCullingPaymentView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+

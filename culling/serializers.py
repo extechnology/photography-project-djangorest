@@ -36,6 +36,7 @@ class CullingPhotoSerializer(serializers.ModelSerializer):
     isBestPick = serializers.BooleanField(source="is_best_pick")
     similarityWithBest = serializers.SerializerMethodField()
     hash = serializers.SerializerMethodField()
+    faceAnalysis = serializers.JSONField(source="face_analysis", required=False, default=dict)
 
     class Meta:
         model = CullingPhoto
@@ -52,6 +53,7 @@ class CullingPhotoSerializer(serializers.ModelSerializer):
             "status",
             "similarityWithBest",
             "hash",
+            "faceAnalysis",
         ]
 
     def get_name(self, obj):

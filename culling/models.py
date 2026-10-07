@@ -200,6 +200,12 @@ class CullingStagingPhoto(models.Model):
     similarity_with_winner = models.FloatField(null=True, blank=True)
     similarity_with_best = models.FloatField(default=0.0, null=True, blank=True)
 
+    face_analysis = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="AI-detected facial analysis: landmarks, eyes, lips, expression data"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

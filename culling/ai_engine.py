@@ -59,7 +59,7 @@ def calculate_hash_similarity(hash_a: str, hash_b: str) -> float:
 
 def _process_single_photo(p):
     """
-    Worker function to compute sharpness and dHash for a single photo.
+    Worker function to compute sharpness, dHash, and face analysis for a single photo.
     """
     try:
         file_path = p.file.path
@@ -70,6 +70,18 @@ def _process_single_photo(p):
         p.sharpness_score = 80.0
         p.perceptual_hash = ""
         p.hash = ""
+
+    # Face landmark & expression analysis
+    try:
+        from App.face_engine import analyze_face_details
+        file_path = p.file.path
+        with open(file_path, 'rb') as f:
+            image_bytes = f.read()
+        face_result = analyze_face_details(image_bytes)
+        p.face_analysis = face_result
+    except Exception:
+        p.face_analysis = {"face_count": 0, "faces": []}
+
     p.status = "keep"
     p.is_best_pick = True
     p.cluster_id = ""

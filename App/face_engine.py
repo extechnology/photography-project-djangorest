@@ -526,6 +526,307 @@ def detect_and_extract_faces(
 
 
 # ------------------------------------------------------------------------------
+# Facial Landmark & Expression Analysis
+# ------------------------------------------------------------------------------
+def _analyze_face_landmarks(
+    img_bgr: np.ndarray,
+    scaled_face: np.ndarray,
+    bounding_box: Dict[str, int],
+) -> Dict[str, Any]:
+    """
+    Extracts facial landmark positions and computes geometric expression features
+    from YuNet's 5-point landmark output.
+
+    YuNet landmark layout (indices 4-13 of the face array):
+        [4,5]   = right eye center
+        [6,7]   = left eye center
+        [8,9]   = nose tip
+        [10,11] = right mouth corner
+        [12,13] = left mouth corner
+
+    Returns a rich dict with:
+        - landmarks: {right_eye, left_eye, nose, mouth_right, mouth_left} as {x, y}
+        - eyes: openness estimation, inter-eye distance, symmetry
+        - lips: width, estimated openness, smile curvature
+        - expression: classified label + confidence
+    """
+    box_x, box_y = bounding_box["x"], bounding_box["y"]
+    box_w, box_h = bounding_box["w"], bounding_box["h"]
+
+    # Extract the 5 landmark points (already scaled to original image coords)
+    right_eye = (float(scaled_face[4]), float(scaled_face[5]))
+    left_eye = (float(scaled_face[6]), float(scaled_face[7]))
+    nose = (float(scaled_face[8]), float(scaled_face[9]))
+    mouth_right = (float(scaled_face[10]), float(scaled_face[11]))
+    mouth_left = (float(scaled_face[12]), float(scaled_face[13]))
+
+    landmarks = {
+        "right_eye": {"x": round(right_eye[0], 1), "y": round(right_eye[1], 1)},
+        "left_eye": {"x": round(left_eye[0], 1), "y": round(left_eye[1], 1)},
+        "nose": {"x": round(nose[0], 1), "y": round(nose[1], 1)},
+        "mouth_right": {"x": round(mouth_right[0], 1), "y": round(mouth_right[1], 1)},
+        "mouth_left": {"x": round(mouth_left[0], 1), "y": round(mouth_left[1], 1)},
+    }
+
+    # ── Eye Analysis ──────────────────────────────────────────────────────────
+    inter_eye_dist = float(np.sqrt(
+        (left_eye[0] - right_eye[0]) ** 2 + (left_eye[1] - right_eye[1]) ** 2
+    ))
+    eye_midpoint = (
+        (right_eye[0] + left_eye[0]) / 2.0,
+        (right_eye[1] + left_eye[1]) / 2.0,
+    )
+
+    # Eye openness estimation via local grayscale variance in the eye region
+    # Higher variance = open eye with iris visible; low variance = closed/squinting
+    eye_region_radius = max(6, int(inter_eye_dist * 0.15))
+
+    def _estimate_eye_openness(center_x, center_y):
+        """Estimate eye openness from local pixel variance around the eye center."""
+        cx, cy = int(center_x), int(center_y)
+        r = eye_region_radius
+        h, w = img_bgr.shape[:2]
+        y1, y2 = max(0, cy - r), min(h, cy + r)
+        x1, x2 = max(0, cx - r), min(w, cx + r)
+        if y2 <= y1 or x2 <= x1:
+            return 0.5
+        patch = img_bgr[y1:y2, x1:x2]
+        gray_patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY) if len(patch.shape) == 3 else patch
+        variance = float(np.var(gray_patch))
+        # Normalize: typical open eye variance 200-2000+, closed <100
+        openness = min(1.0, max(0.0, (variance - 50.0) / 800.0))
+        return round(openness, 3)
+
+    right_eye_openness = _estimate_eye_openness(*right_eye)
+    left_eye_openness = _estimate_eye_openness(*left_eye)
+
+    # Eye symmetry: how level/balanced the eyes are (1.0 = perfectly level)
+    eye_angle = abs(np.degrees(np.arctan2(
+        left_eye[1] - right_eye[1], left_eye[0] - right_eye[0]
+    )))
+    eye_symmetry = round(max(0.0, 1.0 - (eye_angle / 30.0)), 3)
+
+    eyes_data = {
+        "right_eye_openness": right_eye_openness,
+        "left_eye_openness": left_eye_openness,
+        "average_openness": round((right_eye_openness + left_eye_openness) / 2.0, 3),
+        "inter_eye_distance": round(inter_eye_dist, 1),
+        "symmetry": eye_symmetry,
+        "eyes_closed": right_eye_openness < 0.15 and left_eye_openness < 0.15,
+        "blinking": (right_eye_openness < 0.2 or left_eye_openness < 0.2)
+                    and not (right_eye_openness < 0.15 and left_eye_openness < 0.15),
+    }
+
+    # ── Lips / Mouth Analysis ─────────────────────────────────────────────────
+    mouth_width = float(np.sqrt(
+        (mouth_left[0] - mouth_right[0]) ** 2 + (mouth_left[1] - mouth_right[1]) ** 2
+    ))
+    mouth_center = (
+        (mouth_right[0] + mouth_left[0]) / 2.0,
+        (mouth_right[1] + mouth_left[1]) / 2.0,
+    )
+
+    # Mouth-to-nose vertical distance (lip position relative to nose)
+    nose_to_mouth_dist = float(np.sqrt(
+        (mouth_center[0] - nose[0]) ** 2 + (mouth_center[1] - nose[1]) ** 2
+    ))
+
+    # Smile curvature: mouth corners above mouth center = smile
+    # Measure: average y of mouth corners vs mouth center y
+    mouth_corner_avg_y = (mouth_right[1] + mouth_left[1]) / 2.0
+    # For a smile, corners curve up (lower y value relative to center in image coords)
+    # We compare mouth center y to nose-mouth midpoint
+    smile_curvature = 0.0
+    if inter_eye_dist > 0:
+        # Mouth width relative to inter-eye distance: smiling widens the mouth
+        mouth_ratio = mouth_width / inter_eye_dist
+        # Typical neutral: 0.9-1.1, smile: 1.2-1.6+
+        smile_curvature = round(max(0.0, min(1.0, (mouth_ratio - 0.85) / 0.7)), 3)
+
+    # Lip openness estimation from the region between mouth corners
+    lip_open_score = 0.0
+    try:
+        lip_cx, lip_cy = int(mouth_center[0]), int(mouth_center[1])
+        lip_r = max(4, int(mouth_width * 0.12))
+        h, w = img_bgr.shape[:2]
+        ly1 = max(0, lip_cy - lip_r)
+        ly2 = min(h, lip_cy + lip_r)
+        lx1 = max(0, lip_cx - lip_r * 2)
+        lx2 = min(w, lip_cx + lip_r * 2)
+        if ly2 > ly1 and lx2 > lx1:
+            lip_patch = img_bgr[ly1:ly2, lx1:lx2]
+            lip_gray = cv2.cvtColor(lip_patch, cv2.COLOR_BGR2GRAY) if len(lip_patch.shape) == 3 else lip_patch
+            # Dark pixels in mouth region = mouth open (oral cavity is dark)
+            dark_ratio = float(np.sum(lip_gray < 60)) / max(1, lip_gray.size)
+            lip_open_score = round(min(1.0, dark_ratio * 3.0), 3)
+    except Exception:
+        lip_open_score = 0.0
+
+    lips_data = {
+        "mouth_width": round(mouth_width, 1),
+        "mouth_width_ratio": round(mouth_width / max(1.0, inter_eye_dist), 3),
+        "nose_to_mouth_distance": round(nose_to_mouth_dist, 1),
+        "smile_curvature": smile_curvature,
+        "lip_openness": lip_open_score,
+        "mouth_open": lip_open_score > 0.3,
+        "smiling": smile_curvature > 0.45,
+    }
+
+    # ── Expression Classification ─────────────────────────────────────────────
+    # Geometric-ratio-based expression classifier using landmarks
+    expression_label = "neutral"
+    expression_confidence = 0.5
+
+    if eyes_data["eyes_closed"]:
+        expression_label = "eyes_closed"
+        expression_confidence = 0.85
+    elif eyes_data["blinking"]:
+        expression_label = "blinking"
+        expression_confidence = 0.75
+    elif lips_data["smiling"] and lips_data["mouth_open"]:
+        expression_label = "laughing"
+        expression_confidence = round(0.6 + smile_curvature * 0.3, 3)
+    elif lips_data["smiling"]:
+        expression_label = "smiling"
+        expression_confidence = round(0.55 + smile_curvature * 0.35, 3)
+    elif lips_data["mouth_open"] and lip_open_score > 0.5:
+        expression_label = "surprised"
+        expression_confidence = round(0.5 + lip_open_score * 0.3, 3)
+    elif lips_data["mouth_open"]:
+        expression_label = "speaking"
+        expression_confidence = 0.55
+    else:
+        expression_label = "neutral"
+        expression_confidence = 0.6
+
+    expression_confidence = round(min(1.0, expression_confidence), 3)
+
+    # Face pose: head tilt estimation from eye line angle
+    head_tilt = round(float(np.degrees(np.arctan2(
+        left_eye[1] - right_eye[1], left_eye[0] - right_eye[0]
+    ))), 1)
+
+    expression_data = {
+        "label": expression_label,
+        "confidence": expression_confidence,
+        "head_tilt_degrees": head_tilt,
+        "face_centered": (
+            abs(nose[0] - (box_x + box_w / 2)) < box_w * 0.2
+            and abs(nose[1] - (box_y + box_h * 0.45)) < box_h * 0.25
+        ),
+    }
+
+    return {
+        "landmarks": landmarks,
+        "eyes": eyes_data,
+        "lips": lips_data,
+        "expression": expression_data,
+        "face_count": 1,
+    }
+
+
+def analyze_face_details(image_input: Any) -> Dict[str, Any]:
+    """
+    High-level API: Detects faces in an image and returns detailed
+    landmark, eye, lip, and expression analysis for each face.
+
+    Returns:
+        {
+            "face_count": int,
+            "faces": [
+                {
+                    "bounding_box": {...},
+                    "confidence": float,
+                    "landmarks": {...},
+                    "eyes": {...},
+                    "lips": {...},
+                    "expression": {...},
+                }
+            ]
+        }
+    """
+    img_bgr, meta = load_image_to_cv2(image_input)
+    if img_bgr is None:
+        return {"face_count": 0, "faces": [], "error": meta.get("error")}
+
+    orig_h, orig_w = img_bgr.shape[:2]
+    if orig_h < 20 or orig_w < 20:
+        return {"face_count": 0, "faces": [], "error": "Image too small"}
+
+    detector, recognizer = get_detector_and_recognizer()
+    if detector is None:
+        return {"face_count": 0, "faces": [], "error": "Face detector unavailable"}
+
+    # Resize for detection
+    scale = 1.0
+    if max(orig_h, orig_w) > DEFAULT_MAX_DIM:
+        scale = DEFAULT_MAX_DIM / float(max(orig_h, orig_w))
+        detect_w = max(32, int(orig_w * scale))
+        detect_h = max(32, int(orig_h * scale))
+        detect_img = cv2.resize(img_bgr, (detect_w, detect_h), interpolation=cv2.INTER_AREA)
+    elif max(orig_h, orig_w) < 320:
+        scale = 640.0 / float(max(orig_h, orig_w))
+        detect_w = int(orig_w * scale)
+        detect_h = int(orig_h * scale)
+        detect_img = cv2.resize(img_bgr, (detect_w, detect_h), interpolation=cv2.INTER_LINEAR)
+    else:
+        detect_img = img_bgr
+
+    dh, dw = detect_img.shape[:2]
+    detector.setInputSize((dw, dh))
+
+    try:
+        detect_res = detector.detect(detect_img)
+        raw_faces = detect_res[1] if isinstance(detect_res, (tuple, list)) and len(detect_res) > 1 else detect_res
+    except Exception as e:
+        logger.error(f"[FaceEngine] detector.detect() failed: {e}")
+        return {"face_count": 0, "faces": [], "error": str(e)}
+
+    faces_output = []
+    if raw_faces is not None and len(raw_faces) > 0:
+        for face in raw_faces:
+            conf = float(face[14])
+            if conf < 0.40:
+                continue
+
+            scaled_face = face.copy()
+            if scale != 1.0:
+                scaled_face[0:14] /= scale
+
+            box_x = max(0, min(orig_w - 1, int(scaled_face[0])))
+            box_y = max(0, min(orig_h - 1, int(scaled_face[1])))
+            box_w = max(1, min(orig_w - box_x, int(scaled_face[2])))
+            box_h = max(1, min(orig_h - box_y, int(scaled_face[3])))
+
+            if box_w < 12 or box_h < 12:
+                continue
+
+            # Clamp landmarks
+            for idx in range(4, 14, 2):
+                scaled_face[idx] = max(0.0, min(float(orig_w - 1), scaled_face[idx]))
+                scaled_face[idx + 1] = max(0.0, min(float(orig_h - 1), scaled_face[idx + 1]))
+
+            bbox = {"x": box_x, "y": box_y, "w": box_w, "h": box_h}
+
+            try:
+                analysis = _analyze_face_landmarks(img_bgr, scaled_face, bbox)
+            except Exception as e:
+                logger.debug(f"[FaceEngine] Landmark analysis failed: {e}")
+                analysis = {"landmarks": {}, "eyes": {}, "lips": {}, "expression": {"label": "unknown", "confidence": 0.0}}
+
+            faces_output.append({
+                "bounding_box": bbox,
+                "confidence": round(conf, 4),
+                **analysis,
+            })
+
+    return {
+        "face_count": len(faces_output),
+        "faces": faces_output,
+    }
+
+
+# ------------------------------------------------------------------------------
 # Biometric Vector Similarity Computation
 # ------------------------------------------------------------------------------
 def compute_face_similarity(vec1: List[float], vec2: List[float]) -> float:
