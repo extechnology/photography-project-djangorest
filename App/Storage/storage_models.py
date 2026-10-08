@@ -289,9 +289,20 @@ class Gallery(models.Model):
     )
 
     # Optional Gallery-Specific Watermark Overrides (nullable - falls back to PhotographerProfile)
+    watermark_type = models.CharField(
+        max_length=10,
+        choices=[('text', 'Text Signature'), ('image', 'Image Logo')],
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Active branding format: 'text' or 'image'"
+    )
     watermark_text = models.CharField(max_length=120, null=True, blank=True)
     watermark_opacity = models.FloatField(null=True, blank=True)
     watermark_position = models.CharField(max_length=20, null=True, blank=True)
+    watermark_font_size = models.CharField(max_length=10, null=True, blank=True, default=None)
+    watermark_font_color = models.CharField(max_length=20, null=True, blank=True, default=None)
+    watermark_font_style = models.CharField(max_length=20, null=True, blank=True, default=None)
 
     # Analytics & Engagements
     views_count = models.PositiveIntegerField(default=0)
@@ -332,6 +343,31 @@ class Gallery(models.Model):
         full_name = user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else ''
         name = full_name or getattr(user, 'username', 'Photographer')
         return f"© {name}"
+
+    def get_watermark_type(self) -> str:
+        """Returns gallery watermark_type override or inherits from photographer profile, defaulting strictly to 'text'."""
+        if self.watermark_type:
+            return self.watermark_type
+        profile = getattr(self.photographer, 'photographer_profile', None) or getattr(self, 'photographer', None)
+        return getattr(profile, 'watermark_type', 'text') or 'text'
+
+    def get_watermark_font_size(self) -> str:
+        if self.watermark_font_size:
+            return self.watermark_font_size
+        profile = getattr(self.photographer, 'photographer_profile', None) or getattr(self, 'photographer', None)
+        return getattr(profile, 'watermark_font_size', 'md') or 'md'
+
+    def get_watermark_font_color(self) -> str:
+        if self.watermark_font_color:
+            return self.watermark_font_color
+        profile = getattr(self.photographer, 'photographer_profile', None) or getattr(self, 'photographer', None)
+        return getattr(profile, 'watermark_font_color', '#FFFFFF') or '#FFFFFF'
+
+    def get_watermark_font_style(self) -> str:
+        if self.watermark_font_style:
+            return self.watermark_font_style
+        profile = getattr(self.photographer, 'photographer_profile', None) or getattr(self, 'photographer', None)
+        return getattr(profile, 'watermark_font_style', 'serif') or 'serif'
 
     def save(self, *args, **kwargs):
         if not self.share_token:

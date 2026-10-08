@@ -1,5 +1,6 @@
 import uuid
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 from App.Auth.auth_models import User
 from App.Subscriptions.sub_models import SubscriptionPlans, Plan
 
@@ -19,6 +20,11 @@ class PhotographerProfile(models.Model):
         ('minimal', 'Minimal'),
     ]
 
+    WATERMARK_TYPE_CHOICES = [
+        ('text', 'Text Signature'),
+        ('image', 'Image Logo'),
+    ]
+
     WATERMARK_POSITION_CHOICES = [
         ('bottom-right', 'Bottom Right'),
         ('bottom_right', 'Bottom Right'),
@@ -26,9 +32,25 @@ class PhotographerProfile(models.Model):
         ('bottom_left', 'Bottom Left'),
         ('top-right', 'Top Right'),
         ('top_right', 'Top Right'),
+        ('top-left', 'Top Left'),
+        ('top_left', 'Top Left'),
         ('center', 'Center'),
         ('tiled', 'Tiled Pattern'),
         ('repeated', 'Repeated Pattern'),
+    ]
+
+    FONT_SIZE_CHOICES = [
+        ('sm', 'Small'),
+        ('md', 'Medium'),
+        ('lg', 'Large'),
+        ('xl', 'Extra Large'),
+    ]
+
+    FONT_STYLE_CHOICES = [
+        ('serif', 'Editorial Serif'),
+        ('sans', 'Modern Sans'),
+        ('script', 'Signature Script'),
+        ('mono', 'Minimal Mono'),
     ]
 
     user = models.OneToOneField(
@@ -79,23 +101,63 @@ class PhotographerProfile(models.Model):
     )
 
     # Watermark Suite
-    enable_watermark = models.BooleanField(default=True)
+    enable_watermark = models.BooleanField(
+        default=True,
+        help_text="Enable or disable watermark branding on client galleries"
+    )
+    watermark_type = models.CharField(
+        max_length=10,
+        choices=WATERMARK_TYPE_CHOICES,
+        default='text',
+        help_text="Active branding format: 'text' or 'image'"
+    )
     watermark_text = models.CharField(
         max_length=255,
         blank=True,
         default='',
         help_text="Custom watermark signature. If blank, defaults to photographer's name."
     )
-    watermark_image = models.ImageField(upload_to='watermarks/', null=True, blank=True)
+    watermark_image = models.ImageField(
+        upload_to='watermarks/%Y/%m/',
+        null=True,
+        blank=True,
+        help_text="Studio watermark logo (transparent PNG/SVG recommended)"
+    )
     watermark_opacity = models.FloatField(
         default=0.45,
-        help_text="Opacity between 0.1 and 1.0 (default 0.45)"
+        validators=[MinValueValidator(0.05), MaxValueValidator(1.0)],
+        help_text="Opacity between 0.05 and 1.0 (default 0.45)"
     )
     watermark_position = models.CharField(
         max_length=50,
         choices=WATERMARK_POSITION_CHOICES,
-        default='bottom-right'
+        default='bottom-right',
+        help_text="Watermark screen placement"
     )
+    watermark_font_size = models.CharField(
+        max_length=10,
+        choices=FONT_SIZE_CHOICES,
+        default='md',
+        help_text="Typography size preset: sm, md, lg, xl"
+    )
+    watermark_font_color = models.CharField(
+        max_length=20,
+        default='#FFFFFF',
+        help_text="Hex color code for watermark typography"
+    )
+    watermark_font_style = models.CharField(
+        max_length=20,
+        choices=FONT_STYLE_CHOICES,
+        default='serif',
+        help_text="Typography family: serif, sans, script, mono"
+    )
+
+    def get_watermark_text(self) -> str:
+        """Fallback to photographer name if watermark_text is blank."""
+        if self.watermark_text and self.watermark_text.strip():
+            return self.watermark_text.strip()
+        photographer_name = self.name or (self.user.get_full_name() if self.user else 'Photographer')
+        return f"© {photographer_name}"
 
     def get_photographer_display_name(self) -> str:
         """Returns the photographer's real name or username."""

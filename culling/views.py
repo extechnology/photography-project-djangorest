@@ -6,6 +6,7 @@ import uuid
 
 from django.db import transaction, models
 from django.conf import settings
+from django.utils import timezone
 from django.http import HttpResponse
 from django.core.files.base import ContentFile
 from rest_framework import status
@@ -122,38 +123,62 @@ class UploadCullingPhotosView(APIView):
         )
 
         saved_photos = []
-        with transaction.atomic():
-            for f in files:
-                photo_id = uuid.uuid4().hex[:16]
-                photo = CullingStagingPhoto.objects.create(
-                    id=photo_id,
-                    session=session,
-                    file=f,
-                    original_filename=f.name,
-                    name=f.name,
-                    size_bytes=f.size,
-                    file_size_bytes=f.size,
-                    size_mb=round(f.size / (1024 * 1024), 2),
-                    status="keep",
-                )
-                saved_photos.append({
-                    "id": str(photo.id),
-                    "name": photo.original_filename,
-                    "previewUrl": request.build_absolute_uri(photo.file.url),
-                    "sizeBytes": photo.size_bytes,
-                    "sizeMB": round(photo.size_bytes / (1024 * 1024), 2),
-                    "status": "keep",
-                    "sharpnessScore": photo.sharpness_score,
-                    "isBestPick": photo.is_best_pick,
-                    "clusterId": photo.cluster_id or "",
-                    "hash": photo.perceptual_hash or "",
-                    "similarityWithBest": photo.similarity_with_winner,
-                })
+        photo_instances = []
+        staging_dir = os.path.join(settings.MEDIA_ROOT, 'culling_staging', str(session.id))
+        os.makedirs(staging_dir, exist_ok=True)
 
-            session.total_photos = session.photos.count()
-            session.photo_count = session.total_photos
-            session.total_bytes = sum(p.size_bytes or p.file_size_bytes or 0 for p in session.photos.all())
-            session.save(update_fields=["total_photos", "photo_count", "total_bytes", "updated_at"])
+        for f in files:
+            photo_id = uuid.uuid4().hex[:16]
+            clean_name = os.path.basename(f.name)
+            target_filename = f"{uuid.uuid4().hex}_{clean_name}"
+            target_disk_path = os.path.join(staging_dir, target_filename)
+
+            # Stream write directly to disk in 1MB blocks
+            with open(target_disk_path, "wb") as out_f:
+                if hasattr(f, "chunks"):
+                    for chunk in f.chunks(chunk_size=1024 * 1024):
+                        out_f.write(chunk)
+                else:
+                    shutil.copyfileobj(f, out_f, length=1024 * 1024)
+
+            rel_file_path = f"culling_staging/{session.id}/{target_filename}"
+            actual_size = getattr(f, 'size', 0) or os.path.getsize(target_disk_path)
+
+            photo = CullingStagingPhoto(
+                id=photo_id,
+                session=session,
+                file=rel_file_path,
+                original_filename=clean_name,
+                name=clean_name,
+                size_bytes=actual_size,
+                file_size_bytes=actual_size,
+                size_mb=round(actual_size / (1024 * 1024), 2),
+                status="keep",
+            )
+            photo_instances.append(photo)
+            saved_photos.append({
+                "id": str(photo.id),
+                "name": photo.original_filename,
+                "previewUrl": request.build_absolute_uri(f"{settings.MEDIA_URL}{rel_file_path}"),
+                "sizeBytes": photo.size_bytes,
+                "sizeMB": photo.size_mb,
+                "status": "keep",
+                "sharpnessScore": photo.sharpness_score,
+                "isBestPick": photo.is_best_pick,
+                "clusterId": "",
+                "hash": "",
+                "similarityWithBest": 0.0,
+            })
+
+        with transaction.atomic():
+            if photo_instances:
+                CullingStagingPhoto.objects.bulk_create(photo_instances, batch_size=500)
+                CullingSession.objects.filter(id=session.id).update(
+                    total_photos=models.F("total_photos") + len(photo_instances),
+                    photo_count=models.F("photo_count") + len(photo_instances),
+                    total_bytes=models.F("total_bytes") + batch_size_bytes,
+                    updated_at=timezone.now(),
+                )
 
         return Response(
             {

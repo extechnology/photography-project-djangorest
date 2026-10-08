@@ -39,6 +39,22 @@ class BaseStorageProvider:
     def generate_cdn_url(self, key: str) -> str:
         raise NotImplementedError
 
+    def save_file(self, key: str, file_or_stream, content_type: str = "application/octet-stream") -> str:
+        """Stream file or stream directly to storage destination without memory buffering."""
+        raise NotImplementedError
+
+    def get_absolute_path(self, key: str) -> Path:
+        """Return the local filesystem Path if supported, else raise NotImplementedError."""
+        raise NotImplementedError
+
+    def move_file(self, source_path, target_key: str) -> str:
+        """Move an existing local file directly into storage key location atomically."""
+        raise NotImplementedError
+
+    def open_stream(self, key: str, mode: str = "rb"):
+        """Return an open file handle or stream for reading/writing."""
+        raise NotImplementedError
+
 
 class LocalStorageProvider(BaseStorageProvider):
     """
@@ -57,11 +73,62 @@ class LocalStorageProvider(BaseStorageProvider):
         full_path.parent.mkdir(parents=True, exist_ok=True)
         return full_path
 
+    def get_absolute_path(self, key: str) -> Path:
+        return self._resolve_path(key)
+
     def upload(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         path = self._resolve_path(key)
         with open(path, "wb") as f:
             f.write(data)
+        self._ensure_permissions(path)
         return key
+
+    def save_file(self, key: str, file_or_stream, content_type: str = "application/octet-stream") -> str:
+        """Stream write a file-like object directly to disk in 1MB chunks."""
+        import shutil
+        path = self._resolve_path(key)
+        with open(path, "wb") as out_f:
+            if hasattr(file_or_stream, "chunks"):
+                for chunk in file_or_stream.chunks(chunk_size=1024 * 1024):
+                    out_f.write(chunk)
+            elif hasattr(file_or_stream, "read"):
+                shutil.copyfileobj(file_or_stream, out_f, length=1024 * 1024)
+            elif isinstance(file_or_stream, (bytes, bytearray)):
+                out_f.write(file_or_stream)
+            else:
+                out_f.write(file_or_stream)
+        self._ensure_permissions(path)
+        return key
+
+    def move_file(self, source_path, target_key: str) -> str:
+        """Atomically move/rename a file on the local filesystem into the storage destination."""
+        import shutil
+        src = Path(source_path)
+        if not src.exists():
+            raise FileNotFoundError(f"Source file '{src}' does not exist.")
+        dst = self._resolve_path(target_key)
+        try:
+            os.replace(str(src), str(dst))
+        except OSError:
+            shutil.move(str(src), str(dst))
+        self._ensure_permissions(dst)
+        return target_key
+
+    def open_stream(self, key: str, mode: str = "rb"):
+        path = self._resolve_path(key)
+        if "r" in mode and not path.exists():
+            raise FileNotFoundError(f"Storage key '{key}' not found.")
+        return open(path, mode)
+
+    def _ensure_permissions(self, path: Path):
+        if os.name != "nt":
+            try:
+                if path.is_file():
+                    os.chmod(str(path), 0o644)
+                elif path.is_dir():
+                    os.chmod(str(path), 0o755)
+            except Exception:
+                pass
 
     def download(self, key: str) -> bytes:
         path = self._resolve_path(key)

@@ -133,19 +133,18 @@ def generate_bulk_download_archive_task(job_id_str: str, photo_ids: list = None)
         return
 
     storage = get_storage_provider()
-    zip_buffer = io.BytesIO()
+    archive_dir = os.path.join(settings.MEDIA_ROOT, 'storage_objects', 'archives', str(gallery.id))
+    os.makedirs(archive_dir, exist_ok=True)
+    archive_final_path = os.path.join(archive_dir, f"{job.id}.zip")
+    archive_tmp_path = os.path.join(archive_dir, f"{job.id}.tmp")
 
     try:
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as z:
+        # High-performance disk-streamed ZIP with ZIP_STORED (no recompression of already-compressed JPEGs)
+        with zipfile.ZipFile(archive_tmp_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
             used_filenames = set()
             processed_count = 0
 
             for media in photos_qs:
-                try:
-                    file_bytes = storage.download(media.storage_key)
-                except Exception:
-                    continue
-
                 filename = media.original_filename or f"media_{media.id}.jpg"
                 base, ext = os.path.splitext(filename)
                 clean_name = filename
@@ -156,8 +155,14 @@ def generate_bulk_download_archive_task(job_id_str: str, photo_ids: list = None)
                 used_filenames.add(clean_name)
 
                 # Bake watermark if enabled on gallery
-                if getattr(gallery, 'watermark_enabled', False) and getattr(media, 'media_type', 'photo') != 'video':
+                needs_watermark = (
+                    getattr(gallery, 'watermark_enabled', False)
+                    and getattr(media, 'media_type', 'photo') != 'video'
+                )
+
+                if needs_watermark:
                     try:
+                        file_bytes = storage.download(media.storage_key)
                         profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
                         legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
                         wm_text = None
@@ -175,36 +180,71 @@ def generate_bulk_download_archive_task(job_id_str: str, photo_ids: list = None)
                                 name = name or (getattr(profile, 'name', '') if profile else '') or getattr(user, 'username', 'Photographer')
                                 wm_text = f"© {name}"
 
-                        logo_file = profile.watermark_image if (profile and getattr(profile, 'watermark_image', None)) else None
+                        wm_type = getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text'
+                        wm_type = str(wm_type).lower().strip()
+                        if wm_type != 'image':
+                            wm_type = 'text'
+
+                        logo_file = profile.watermark_image if (wm_type == 'image' and profile and getattr(profile, 'watermark_image', None)) else None
+                        font_size = getattr(gallery, 'watermark_font_size', None) or (getattr(profile, 'watermark_font_size', None) if profile else None) or 'md'
+                        font_color = getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', None) if profile else None) or '#FFFFFF'
+                        font_style = getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', None) if profile else None) or 'serif'
+
                         watermarked_stream = stamp_watermark_on_image(
                             io.BytesIO(file_bytes),
                             watermark_text=wm_text,
                             logo_file=logo_file,
                             opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
                             position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                            font_style=font_style,
+                            font_size=font_size,
+                            font_color=font_color,
+                            watermark_type=wm_type,
                         )
-                        file_bytes = watermarked_stream.getvalue()
+                        z.writestr(clean_name, watermarked_stream.getvalue())
                     except Exception:
                         pass
+                else:
+                    # Fast zero-RAM disk streaming
+                    abs_p = storage.get_absolute_path(media.storage_key) if hasattr(storage, 'get_absolute_path') else None
+                    if abs_p and os.path.exists(abs_p):
+                        z.write(str(abs_p), arcname=clean_name)
+                    else:
+                        try:
+                            file_bytes = storage.download(media.storage_key)
+                            z.writestr(clean_name, file_bytes)
+                        except Exception:
+                            continue
 
-                z.writestr(clean_name, file_bytes)
                 processed_count += 1
-                job.progress_percent = min(90, 5 + int((processed_count / total_count) * 85))
-                job.save(update_fields=["progress_percent"])
+                if processed_count % 10 == 0 or processed_count == total_count:
+                    job.progress_percent = min(95, 5 + int((processed_count / total_count) * 90))
+                    job.save(update_fields=["progress_percent"])
 
-        zip_bytes = zip_buffer.getvalue()
+        # Atomically move completed archive into final position
+        try:
+            os.replace(archive_tmp_path, archive_final_path)
+        except OSError:
+            import shutil
+            shutil.move(archive_tmp_path, archive_final_path)
+
+        archive_size = os.path.getsize(archive_final_path)
         archive_key = f"archives/{gallery.id}/{job.id}.zip"
-        storage.upload(archive_key, zip_bytes, content_type="application/zip")
 
         job.status = "ready"
         job.progress_percent = 100
         job.archive_storage_key = archive_key
         job.selected_count = len(used_filenames)
-        job.file_size = len(zip_bytes)
+        job.file_size = archive_size
         job.expires_at = timezone.now() + timedelta(hours=24)
         job.save()
 
     except Exception as e:
+        if os.path.exists(archive_tmp_path):
+            try:
+                os.unlink(archive_tmp_path)
+            except Exception:
+                pass
         job.status = "failed"
         job.error_message = str(e)
         job.save(update_fields=["status", "error_message"])

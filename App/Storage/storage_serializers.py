@@ -416,9 +416,13 @@ class GallerySerializer(serializers.ModelSerializer):
     is_password_protected = serializers.BooleanField(required=False)
     face_search_enabled = serializers.BooleanField(required=False)
     watermark_enabled = serializers.BooleanField(required=False)
+    watermark_type = serializers.CharField(max_length=10, required=False, allow_null=True, allow_blank=True)
     watermark_text = serializers.CharField(max_length=120, required=False, allow_null=True, allow_blank=True)
     watermark_opacity = serializers.FloatField(required=False, allow_null=True)
     watermark_position = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
+    watermark_font_size = serializers.CharField(max_length=10, required=False, allow_null=True, allow_blank=True)
+    watermark_font_color = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
+    watermark_font_style = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
     watermark_image = serializers.SerializerMethodField()
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     expires_at = serializers.DateTimeField(allow_null=True, required=False)
@@ -462,9 +466,13 @@ class GallerySerializer(serializers.ModelSerializer):
             'allow_favorites',
             'face_search_enabled',
             'watermark_enabled',
+            'watermark_type',
             'watermark_text',
             'watermark_opacity',
             'watermark_position',
+            'watermark_font_size',
+            'watermark_font_color',
+            'watermark_font_style',
             'watermark_image',
             'views_count',
             'downloads_count',
@@ -523,10 +531,14 @@ class GallerySerializer(serializers.ModelSerializer):
         data['is_expired'] = bool(instance.is_expired)
         data['favorites_count'] = self.get_favorites_count(instance)
         data['section_counts'] = self.get_section_counts(instance)
-        data['watermark_enabled'] = bool(instance.watermark_enabled)
+        data['watermark_enabled'] = self.get_watermark_enabled(instance)
+        data['watermark_type'] = self.get_watermark_type(instance)
         data['watermark_text'] = self.get_watermark_text(instance)
         data['watermark_opacity'] = self.get_watermark_opacity(instance)
         data['watermark_position'] = self.get_watermark_position(instance)
+        data['watermark_font_size'] = self.get_watermark_font_size(instance)
+        data['watermark_font_color'] = self.get_watermark_font_color(instance)
+        data['watermark_font_style'] = self.get_watermark_font_style(instance)
         data['watermark_image'] = self.get_watermark_image(instance)
         if 'next_cursor' in self.context:
             data['next_cursor'] = self.context.get('next_cursor')
@@ -605,13 +617,43 @@ class GallerySerializer(serializers.ModelSerializer):
                         })
         return value
 
+    def _get_profile(self, obj):
+        p = getattr(obj, 'photographer', None)
+        if p and hasattr(p, 'enable_watermark'):
+            return p
+        if p and hasattr(p, 'profile'):
+            return getattr(p, 'profile', None)
+        if p and hasattr(p, 'photographer_profile'):
+            return getattr(p, 'photographer_profile', None)
+        user = getattr(obj, 'user', None)
+        if user and hasattr(user, 'photographer_profile'):
+            return user.photographer_profile
+        return None
+
+    def get_watermark_enabled(self, obj):
+        if hasattr(obj, 'watermark_enabled') and obj.watermark_enabled is not None:
+            return bool(obj.watermark_enabled)
+        if hasattr(obj, 'enable_watermark') and obj.enable_watermark is not None:
+            return bool(obj.enable_watermark)
+        profile = self._get_profile(obj)
+        return getattr(profile, 'enable_watermark', True) if profile else True
+
+    def get_watermark_type(self, obj):
+        if hasattr(obj, 'watermark_type') and obj.watermark_type:
+            return obj.watermark_type
+        profile = self._get_profile(obj)
+        # Defaults strictly to 'text'
+        return getattr(profile, 'watermark_type', 'text') or 'text'
+
     def get_watermark_text(self, obj):
         legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
         if obj.watermark_text and str(obj.watermark_text).strip():
             txt = str(obj.watermark_text).strip()
             if txt.lower() not in legacy_placeholders:
                 return txt if txt.startswith('©') else f"© {txt}"
-        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        profile = self._get_profile(obj)
+        if profile and hasattr(profile, 'get_watermark_text'):
+            return profile.get_watermark_text()
         if profile and hasattr(profile, 'get_effective_watermark_text'):
             return profile.get_effective_watermark_text()
         user = getattr(profile, 'user', None) or getattr(obj, 'user', None)
@@ -620,28 +662,59 @@ class GallerySerializer(serializers.ModelSerializer):
         return f"© {name}"
 
     def get_watermark_opacity(self, obj):
-        if obj.watermark_opacity is not None:
-            return obj.watermark_opacity
-        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
-        return getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45
+        if hasattr(obj, 'watermark_opacity') and obj.watermark_opacity is not None:
+            return float(obj.watermark_opacity)
+        profile = self._get_profile(obj)
+        return float(getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45)
 
     def get_watermark_position(self, obj):
-        if obj.watermark_position:
-            return obj.watermark_position
-        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        if hasattr(obj, 'watermark_position') and obj.watermark_position:
+            return str(obj.watermark_position).replace('_', '-')
+        profile = self._get_profile(obj)
         pos = getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'
-        return pos.replace('_', '-') if pos else 'bottom-right'
+        return str(pos).replace('_', '-') if pos else 'bottom-right'
 
     def get_watermark_image(self, obj):
-        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
-        if profile and getattr(profile, 'watermark_image', None):
+        # STRICT ONE-AT-A-TIME:
+        # If watermark_type is 'text', image MUST be null!
+        active_type = self.get_watermark_type(obj)
+        if active_type != 'image':
+            return None
+
+        # If active_type == 'image', return the logo URL
+        img = None
+        if hasattr(obj, 'watermark_image') and obj.watermark_image:
+            img = obj.watermark_image
+        else:
+            profile = self._get_profile(obj)
+            img = getattr(profile, 'watermark_image', None)
+
+        if img:
             request = self.context.get('request')
             try:
-                url = profile.watermark_image.url
+                url = img.url
                 return request.build_absolute_uri(url) if request else url
             except Exception:
                 return None
         return None
+
+    def get_watermark_font_size(self, obj):
+        if hasattr(obj, 'watermark_font_size') and obj.watermark_font_size:
+            return obj.watermark_font_size
+        profile = self._get_profile(obj)
+        return getattr(profile, 'watermark_font_size', 'md') if profile else 'md'
+
+    def get_watermark_font_color(self, obj):
+        if hasattr(obj, 'watermark_font_color') and obj.watermark_font_color:
+            return obj.watermark_font_color
+        profile = self._get_profile(obj)
+        return getattr(profile, 'watermark_font_color', '#FFFFFF') if profile else '#FFFFFF'
+
+    def get_watermark_font_style(self, obj):
+        if hasattr(obj, 'watermark_font_style') and obj.watermark_font_style:
+            return obj.watermark_font_style
+        profile = self._get_profile(obj)
+        return getattr(profile, 'watermark_font_style', 'serif') if profile else 'serif'
 
     def update(self, instance, validated_data):
         cover_image = validated_data.pop('cover_image', None)
@@ -778,9 +851,13 @@ class PublicGallerySerializer(serializers.ModelSerializer):
     is_expired = serializers.SerializerMethodField()
     section_counts = serializers.SerializerMethodField()
     watermark_enabled = serializers.SerializerMethodField()
+    watermark_type = serializers.SerializerMethodField()
     watermark_text = serializers.SerializerMethodField()
     watermark_opacity = serializers.SerializerMethodField()
     watermark_position = serializers.SerializerMethodField()
+    watermark_font_size = serializers.SerializerMethodField()
+    watermark_font_color = serializers.SerializerMethodField()
+    watermark_font_style = serializers.SerializerMethodField()
     watermark_image = serializers.SerializerMethodField()
 
     class Meta:
@@ -803,9 +880,13 @@ class PublicGallerySerializer(serializers.ModelSerializer):
             'is_expired',
             'face_search_enabled',
             'watermark_enabled',
+            'watermark_type',
             'watermark_text',
             'watermark_opacity',
             'watermark_position',
+            'watermark_font_size',
+            'watermark_font_color',
+            'watermark_font_style',
             'watermark_image',
             'photos_count',
             'videos_count',
@@ -834,9 +915,13 @@ class PublicGallerySerializer(serializers.ModelSerializer):
         data['favorites_count'] = self.get_favorites_count(instance)
         data['section_counts'] = self.get_section_counts(instance)
         data['watermark_enabled'] = self.get_watermark_enabled(instance)
+        data['watermark_type'] = self.get_watermark_type(instance)
         data['watermark_text'] = self.get_watermark_text(instance)
         data['watermark_opacity'] = self.get_watermark_opacity(instance)
         data['watermark_position'] = self.get_watermark_position(instance)
+        data['watermark_font_size'] = self.get_watermark_font_size(instance)
+        data['watermark_font_color'] = self.get_watermark_font_color(instance)
+        data['watermark_font_style'] = self.get_watermark_font_style(instance)
         data['watermark_image'] = self.get_watermark_image(instance)
         data['photographer_name'] = self.get_photographer_name(instance)
         data['studio_name'] = self.get_studio_name(instance)
@@ -918,16 +1003,47 @@ class PublicGallerySerializer(serializers.ModelSerializer):
             return str(profile.watermark_position).replace('_', '-')
         return 'bottom-right'
 
-    def get_watermark_image(self, obj):
+    def get_watermark_type(self, obj) -> str:
+        if hasattr(obj, 'watermark_type') and obj.watermark_type:
+            return obj.watermark_type
         profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
-        if profile and getattr(profile, 'watermark_image', None):
+        return getattr(profile, 'watermark_type', 'text') or 'text'
+
+    def get_watermark_image(self, obj):
+        # STRICT ONE-AT-A-TIME:
+        # If watermark_type is 'text', image MUST be null!
+        active_type = self.get_watermark_type(obj)
+        if active_type != 'image':
+            return None
+
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        img = getattr(profile, 'watermark_image', None) if profile else None
+        if img:
             request = self.context.get('request')
             try:
-                url = profile.watermark_image.url
+                url = img.url
                 return request.build_absolute_uri(url) if request else url
             except Exception:
                 return None
         return None
+
+    def get_watermark_font_size(self, obj) -> str:
+        if hasattr(obj, 'watermark_font_size') and obj.watermark_font_size:
+            return obj.watermark_font_size
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        return getattr(profile, 'watermark_font_size', 'md') if profile else 'md'
+
+    def get_watermark_font_color(self, obj) -> str:
+        if hasattr(obj, 'watermark_font_color') and obj.watermark_font_color:
+            return obj.watermark_font_color
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        return getattr(profile, 'watermark_font_color', '#FFFFFF') if profile else '#FFFFFF'
+
+    def get_watermark_font_style(self, obj) -> str:
+        if hasattr(obj, 'watermark_font_style') and obj.watermark_font_style:
+            return obj.watermark_font_style
+        profile = getattr(obj.photographer, 'photographer_profile', None) or getattr(obj, 'photographer', None)
+        return getattr(profile, 'watermark_font_style', 'serif') if profile else 'serif'
 
     def get_favorites_count(self, obj):
         count = obj.media_items.filter(deleted_at__isnull=True, is_favorite=True).count()
@@ -1108,9 +1224,13 @@ class GallerySettingsUpdateSerializer(serializers.ModelSerializer):
             'allow_favorites',
             'face_search_enabled',
             'watermark_enabled',
+            'watermark_type',
             'watermark_text',
             'watermark_opacity',
             'watermark_position',
+            'watermark_font_size',
+            'watermark_font_color',
+            'watermark_font_style',
             'expires_at',
             'is_expired',
             'status',

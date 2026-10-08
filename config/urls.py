@@ -38,16 +38,22 @@ from django.http import HttpResponse, Http404
 logger = logging.getLogger(__name__)
 
 
+_failed_recovery_cache = {}
+
 def try_recover_missing_media(path, document_root):
     """
     Resilient self-healing helper for media requests.
-    If a file under /media/storage_objects/... or /media/... was moved or requested
-    at a storage provider path but is not yet placed at that exact disk location,
-    locates the source file from database Media/GalleryMedia records, alternative folders,
-    or on-the-fly generates missing thumbnails/previews.
+    Fast, bounded lookup with negative result TTL cache to eliminate runaway disk I/O.
     """
     if not document_root or not path:
         return False
+
+    now_ts = timezone.now().timestamp()
+    # Check negative lookup cache (30 second TTL)
+    if path in _failed_recovery_cache:
+        failed_time = _failed_recovery_cache[path]
+        if now_ts - failed_time < 30.0:
+            return False
 
     target_full_path = os.path.normpath(os.path.join(document_root, path))
     if os.path.exists(target_full_path):
@@ -59,7 +65,6 @@ def try_recover_missing_media(path, document_root):
     # 1. If requesting storage_objects/<key>
     if clean_path.startswith('storage_objects/'):
         key = clean_path[len('storage_objects/'):]
-        # Check if the file exists directly under document_root without storage_objects/ prefix
         alt_path = os.path.normpath(os.path.join(document_root, key))
         if os.path.exists(alt_path) and os.path.isfile(alt_path):
             try:
@@ -92,45 +97,6 @@ def try_recover_missing_media(path, document_root):
                         if os.path.exists(candidate):
                             source_file = candidate
 
-                if not source_file or not os.path.exists(source_file):
-                    fn = getattr(media_item, 'original_filename', None)
-                    if not fn and '_' in base_name:
-                        fn = base_name.split('_', 1)[-1]
-                    if fn:
-                        # Quick check in common media directories
-                        for sub_folder in [
-                            os.path.join(document_root, 'events', 'media'),
-                            os.path.join(document_root, 'events', 'media', '2026', '10', '07'),
-                            os.path.join(document_root, 'galleries'),
-                            os.path.join(document_root, 'culling_staging'),
-                            os.path.join(document_root, 'storage_objects'),
-                        ]:
-                            if os.path.exists(sub_folder):
-                                for root, dirs, files in os.walk(sub_folder):
-                                    if fn in files:
-                                        source_file = os.path.join(root, fn)
-                                        break
-                                    for f in files:
-                                        if f == fn or f.endswith('_' + fn):
-                                            source_file = os.path.join(root, f)
-                                            break
-                                    if source_file:
-                                        break
-                            if source_file:
-                                break
-
-                        if not source_file:
-                            for root, dirs, files in os.walk(document_root):
-                                if fn in files:
-                                    source_file = os.path.join(root, fn)
-                                    break
-                                for f in files:
-                                    if f == fn or f.endswith('_' + fn):
-                                        source_file = os.path.join(root, f)
-                                        break
-                                if source_file:
-                                    break
-
                 if source_file and os.path.exists(source_file):
                     os.makedirs(os.path.dirname(target_full_path), exist_ok=True)
                     from PIL import Image, ImageOps
@@ -150,36 +116,9 @@ def try_recover_missing_media(path, document_root):
                             return True
                         else:
                             shutil.copy2(source_file, target_full_path)
-                            # Also proactively create thumbnail and preview if media_item exists
-                            if media_item and media_item.gallery_id:
-                                try:
-                                    gid = media_item.gallery_id
-                                    mid = media_item.id
-                                    t_key = f'galleries/{gid}/thumbnails/{mid}.jpg'
-                                    p_key = f'galleries/{gid}/previews/{mid}.jpg'
-                                    t_full = os.path.join(document_root, 'storage_objects', t_key)
-                                    p_full = os.path.join(document_root, 'storage_objects', p_key)
-                                    os.makedirs(os.path.dirname(t_full), exist_ok=True)
-                                    os.makedirs(os.path.dirname(p_full), exist_ok=True)
-
-                                    if not os.path.exists(t_full):
-                                        t_img = img.copy()
-                                        t_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-                                        t_img.convert('RGB').save(t_full, format='JPEG', quality=85)
-                                    if not os.path.exists(p_full):
-                                        p_img = img.copy()
-                                        p_img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
-                                        p_img.convert('RGB').save(p_full, format='JPEG', quality=90)
-
-                                    media_item.thumbnail_storage_key = t_key
-                                    media_item.preview_storage_key = p_key
-                                    media_item.processing_status = 'ready'
-                                    media_item.save(update_fields=['thumbnail_storage_key', 'preview_storage_key', 'processing_status'])
-                                except Exception:
-                                    pass
                             return True
                     except Exception as err:
-                        logger.warning(f"Error copying/transforming media from {source_file}: {err}")
+                        logger.warning(f"Error transforming media from {source_file}: {err}")
                         shutil.copy2(source_file, target_full_path)
                         return True
         except Exception as e:
@@ -196,36 +135,39 @@ def try_recover_missing_media(path, document_root):
             except Exception as e:
                 logger.warning(f"Failed to copy from storage_objects to {target_full_path}: {e}")
 
-    # 3. Fallback: match by UUID or filename
-    base_name = os.path.basename(clean_path)
-    lookup_names = []
-    match_uuid = re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', base_name, re.I)
-    if match_uuid:
-        lookup_names.append(match_uuid.group(0))
-    if '_' in base_name:
-        lookup_names.append(base_name.split('_', 1)[-1])
+    success = os.path.exists(target_full_path)
+    if not success:
+        _failed_recovery_cache[path] = now_ts
+        # Prune cache if over 1000 items
+        if len(_failed_recovery_cache) > 1000:
+            oldest = [k for k, v in _failed_recovery_cache.items() if now_ts - v > 60.0]
+            for k in oldest:
+                _failed_recovery_cache.pop(k, None)
 
-    for look_n in lookup_names:
-        for root, dirs, files in os.walk(document_root):
-            for f in files:
-                if (look_n in f or f == look_n or f.endswith('_' + look_n)) and not f.endswith('.tmp'):
-                    cand = os.path.join(root, f)
-                    if cand != target_full_path and os.path.exists(cand):
-                        try:
-                            os.makedirs(os.path.dirname(target_full_path), exist_ok=True)
-                            shutil.copy2(cand, target_full_path)
-                            return True
-                        except Exception:
-                            pass
-                    break
-
-    return os.path.exists(target_full_path)
+    return success
 
 
 def serve_media_with_cors(request, path, document_root=None, show_indexes=False):
     if request.method == 'OPTIONS':
         response = HttpResponse()
     else:
+        clean_p = path.replace('\\', '/').lstrip('/')
+        target_full_path = os.path.normpath(os.path.join(document_root, path)) if document_root else None
+
+        # Nginx X-Accel-Redirect zero-copy optimization if enabled
+        use_x_accel = getattr(settings, 'USE_X_ACCEL_REDIRECT', False) or request.headers.get('X-Accel-Support') == 'true'
+        if use_x_accel and target_full_path and os.path.exists(target_full_path):
+            import mimetypes
+            mime, _ = mimetypes.guess_type(target_full_path)
+            response = HttpResponse()
+            response['X-Accel-Redirect'] = f"/protected_media/{clean_p}"
+            response['Content-Type'] = mime or 'application/octet-stream'
+            response['Cache-Control'] = 'public, max-age=86400, stale-while-revalidate=604800'
+            response['Access-Control-Allow-Origin'] = '*'
+            response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            response['Access-Control-Allow-Headers'] = '*'
+            return response
+
         try:
             response = serve(request, path, document_root=document_root, show_indexes=show_indexes)
         except Http404:
@@ -233,6 +175,10 @@ def serve_media_with_cors(request, path, document_root=None, show_indexes=False)
                 response = serve(request, path, document_root=document_root, show_indexes=show_indexes)
             else:
                 raise
+
+        # Add browser caching headers for image/video media
+        response['Cache-Control'] = 'public, max-age=86400, stale-while-revalidate=604800'
+
     response['Access-Control-Allow-Origin'] = '*'
     response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
     response['Access-Control-Allow-Headers'] = '*'

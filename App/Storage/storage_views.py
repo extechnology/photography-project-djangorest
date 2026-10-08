@@ -1934,8 +1934,8 @@ class StandardMediaUploadView(APIView):
                 except Exception:
                     pass
 
-            file_bytes = f.read()
-            actual_size = len(file_bytes)
+            # Stream file directly to storage provider on disk (Zero RAM buffering)
+            actual_size = getattr(f, 'size', 0)
             media_id = uuid.uuid4()
             safe_name = os.path.basename(f.name)
             base_title = os.path.splitext(safe_name)[0]
@@ -1943,20 +1943,31 @@ class StandardMediaUploadView(APIView):
             mime = content_type or default_mime
             key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
 
-            storage.upload(key, file_bytes, content_type=mime)
+            if hasattr(storage, "save_file"):
+                storage.save_file(key, f, content_type=mime)
+            else:
+                file_bytes = f.read()
+                storage.upload(key, file_bytes, content_type=mime)
 
+            # Fast metadata probe from file header on disk (instant, no image decoding)
             width = None
             height = None
             aspect_ratio = None
             if media_type == 'photo':
                 try:
                     from PIL import Image
-                    with Image.open(io.BytesIO(file_bytes)) as img:
-                        width, height = img.size
-                        if height > 0:
-                            aspect_ratio = round(width / height, 2)
+                    abs_p = storage.get_absolute_path(key) if hasattr(storage, 'get_absolute_path') else None
+                    if abs_p and abs_p.exists():
+                        with Image.open(abs_p) as img:
+                            width, height = img.size
+                            if height > 0:
+                                aspect_ratio = round(width / height, 2)
                 except Exception:
                     pass
+
+            if not actual_size:
+                meta = storage.get_metadata(key)
+                actual_size = meta.get("size", 0)
 
             media = Media(
                 id=media_id,
@@ -2002,10 +2013,10 @@ class StandardMediaUploadView(APIView):
                     details={"count": len(created_media), "bytes": committed_bytes, "section": section_title},
                 )
 
-        # 6. Background Derivatives & Face Search for Photos
+        # 6. Background Derivatives & Face Search for Photos (Decoupled, never blocks response)
         for media_item in created_media:
             if media_item.media_type == 'photo':
-                run_or_queue_task(process_media_derivatives_and_faces_task, str(media_item.id), skip_sync_fallback=is_large_batch)
+                run_or_queue_task(process_media_derivatives_and_faces_task, str(media_item.id), skip_sync_fallback=True)
 
         # 7. Storage Usage Metrics
         final_used_bytes = profile.storage_used_bytes or 0
@@ -2582,11 +2593,20 @@ class MediaDownloadView(APIView):
                 (getattr(profile, 'studio_name', None) if profile else None) or 
                 "ATELIER PHOTOGRAPHY"
             )
-            watermark_image_path = (
-                profile.watermark_image.path 
-                if (profile and getattr(profile, 'watermark_image', None) and hasattr(profile.watermark_image, 'path') and os.path.exists(profile.watermark_image.path)) 
-                else None
-            )
+            wm_type = getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text'
+            wm_type = str(wm_type).lower().strip()
+            if wm_type != 'image':
+                wm_type = 'text'
+
+            # Strict one-at-a-time rule: Logo is ONLY resolved if watermark_type is 'image'
+            logo_file = None
+            if wm_type == 'image' and profile and getattr(profile, 'watermark_image', None):
+                logo_file = profile.watermark_image
+
+            font_size = getattr(gallery, 'watermark_font_size', None) or (getattr(profile, 'watermark_font_size', None) if profile else None) or 'md'
+            font_color = getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', None) if profile else None) or '#FFFFFF'
+            font_style = getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', None) if profile else None) or 'serif'
+
             raw_bytes = None
             try:
                 raw_bytes = storage.download(media.storage_key)
@@ -2610,9 +2630,13 @@ class MediaDownloadView(APIView):
                     watermarked_stream = stamp_watermark_on_image(
                         io.BytesIO(raw_bytes),
                         watermark_text=watermark_text,
-                        watermark_image_path=watermark_image_path,
+                        logo_file=logo_file,
                         opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
                         position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                        font_style=font_style,
+                        font_size=font_size,
+                        font_color=font_color,
+                        watermark_type=wm_type,
                     )
                     return FileResponse(watermarked_stream, as_attachment=True, filename=filename)
                 except Exception as err:
@@ -2620,10 +2644,19 @@ class MediaDownloadView(APIView):
 
         signed_url = storage.generate_signed_download_url(media.storage_key, expires_in=3600, filename=filename)
 
-        # For LocalStorageProvider, direct FileResponse can also be served
+        # For LocalStorageProvider, direct FileResponse or Nginx X-Accel-Redirect
         if isinstance(storage, type(get_storage_provider())) and hasattr(storage, "_resolve_path"):
             path = storage._resolve_path(media.storage_key)
             if path.exists():
+                use_x_accel = getattr(settings, 'USE_X_ACCEL_REDIRECT', False) or request.headers.get('X-Accel-Support') == 'true'
+                if use_x_accel:
+                    clean_key = media.storage_key.lstrip("/").replace("\\", "/")
+                    response = HttpResponse()
+                    response['X-Accel-Redirect'] = f"/protected_media/storage_objects/{clean_key}"
+                    response['Content-Type'] = media.mime_type or 'application/octet-stream'
+                    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                    response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+                    return response
                 return FileResponse(open(path, "rb"), as_attachment=True, filename=filename)
 
         if signed_url and signed_url.startswith('/'):
@@ -3840,11 +3873,14 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
     except Exception:
         storage = None
 
-    # 5. Create an in-memory ZIP file
-    zip_buffer = io.BytesIO()
+    # 5. Create a high-performance disk-streamed ZIP file with ZIP_STORED (Zero RAM buffering)
+    zip_dir = os.path.join(settings.MEDIA_ROOT, 'storage_objects', 'archives', 'temp')
+    os.makedirs(zip_dir, exist_ok=True)
+    temp_zip_id = uuid.uuid4().hex
+    zip_temp_path = os.path.join(zip_dir, f"dl_{temp_zip_id}.zip")
     used_filenames = set()
 
-    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as zip_file:
+    with zipfile.ZipFile(zip_temp_path, mode='w', compression=zipfile.ZIP_STORED, allowZip64=True) as zip_file:
         for idx, item in enumerate(media_list, start=1):
             file_field = getattr(item, 'file', None) or getattr(item, 'image', None)
             file_url = getattr(item, 'file_url', None) or getattr(item, 'url', None)
@@ -3968,13 +4004,30 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                                 name = name or (getattr(profile, 'name', '') if profile else '') or getattr(user, 'username', 'Photographer')
                                 wm_text = f"© {name}"
 
-                        logo_file = profile.watermark_image if (profile and getattr(profile, 'watermark_image', None)) else None
+                        wm_type = getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text'
+                        wm_type = str(wm_type).lower().strip()
+                        if wm_type != 'image':
+                            wm_type = 'text'
+
+                        # Strict one-at-a-time rule: Logo is ONLY resolved if watermark_type is 'image'
+                        logo_file = None
+                        if wm_type == 'image' and profile and getattr(profile, 'watermark_image', None):
+                            logo_file = profile.watermark_image
+
+                        font_size = getattr(gallery, 'watermark_font_size', None) or (getattr(profile, 'watermark_font_size', None) if profile else None) or 'md'
+                        font_color = getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', None) if profile else None) or '#FFFFFF'
+                        font_style = getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', None) if profile else None) or 'serif'
+
                         watermarked_stream = stamp_watermark_on_image(
                             io.BytesIO(file_bytes),
                             watermark_text=wm_text,
                             logo_file=logo_file,
                             opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
                             position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                            font_style=font_style,
+                            font_size=font_size,
+                            font_color=font_color,
+                            watermark_type=wm_type,
                         )
                         file_bytes = watermarked_stream.getvalue()
                     except Exception as wm_err:
@@ -3993,13 +4046,31 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
     except Exception:
         pass
 
-    # 6. Prepare response
-    zip_buffer.seek(0)
+    # 6. Prepare streaming response directly from disk
     gallery_slug = getattr(gallery, 'slug', None) or slugify(getattr(gallery, 'title', 'gallery')) or 'gallery'
     zip_filename = f"{gallery_slug}_photos.zip"
     
-    response = HttpResponse(zip_buffer.getvalue(), content_type='application/zip')
-    response['Content-Disposition'] = f'attachment; filename="{zip_filename}"'
+    use_x_accel = getattr(settings, 'USE_X_ACCEL_REDIRECT', False) or request.headers.get('X-Accel-Support') == 'true'
+    if use_x_accel:
+        response = HttpResponse()
+        response['X-Accel-Redirect'] = f"/protected_media/storage_objects/archives/temp/dl_{temp_zip_id}.zip"
+        response['Content-Type'] = 'application/zip'
+        response['Content-Disposition'] = f'attachment; filename="{zip_filename}"'
+        response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+    class StreamingZipFileResponse(FileResponse):
+        def __init__(self, file_path, *args, **kwargs):
+            self._disk_path = file_path
+            self._cached_content = None
+            super().__init__(open(file_path, 'rb'), *args, **kwargs)
+
+        @property
+        def content(self):
+            if self._cached_content is None:
+                with open(self._disk_path, 'rb') as f:
+                    self._cached_content = f.read()
+            return self._cached_content
+
+    response = StreamingZipFileResponse(zip_temp_path, content_type='application/zip', as_attachment=True, filename=zip_filename)
     response['Access-Control-Expose-Headers'] = 'Content-Disposition'
     return response
 

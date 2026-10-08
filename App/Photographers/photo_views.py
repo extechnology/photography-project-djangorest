@@ -21,6 +21,7 @@ from .photo_serializers import (
     PhotoCategorySerializer,
     PhotographerProfileSerializer,
     WatermarkConfigSerializer,
+    WatermarkSettingsSerializer,
     NotificationPreferenceSerializer,
     PostImageSerializer,
     PostFeedbackSerializer,
@@ -489,7 +490,7 @@ class MyPhotographerWatermarkView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        serializer = WatermarkConfigSerializer(profile, context={'request': request})
+        serializer = WatermarkSettingsSerializer(profile, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def patch(self, request):
@@ -513,15 +514,26 @@ class MyPhotographerWatermarkView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-        serializer = WatermarkConfigSerializer(profile, data=request.data, partial=True, context={'request': request})
+        serializer = WatermarkSettingsSerializer(profile, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             profile = serializer.save()
             return Response({
-                "message": "Watermark configuration saved successfully",
-                "data": WatermarkConfigSerializer(profile, context={'request': request}).data
+                "status": "success",
+                "message": "Watermark configuration updated successfully.",
+                "data": WatermarkSettingsSerializer(profile, context={'request': request}).data
             }, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request):
+        return self.patch(request)
+
+    def post(self, request):
+        return self.patch(request)
+
+
+# Direct API alias matching specification
+PhotographerWatermarkSettingsView = MyPhotographerWatermarkView
 
 
 class OnboardingCompleteView(APIView):

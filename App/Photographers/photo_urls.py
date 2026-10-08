@@ -17,6 +17,7 @@ from .photo_views import (
     MyPhotographerAvatarUploadView,
     ProfilePreviewView,
     MyPhotographerWatermarkView,
+    PhotographerWatermarkSettingsView,
     OnboardingCompleteView,
     PhotographerOnboardingView,
 
@@ -79,6 +80,7 @@ urlpatterns = [
     path('profiles/me/avatar/', MyPhotographerAvatarUploadView.as_view(), name='profile-me-avatar'),
     path('profiles/preview/', ProfilePreviewView.as_view(), name='profile-preview'),
     path('profiles/me/watermark/', MyPhotographerWatermarkView.as_view(), name='profile-me-watermark'),
+    path('profiles/me/watermark/settings/', PhotographerWatermarkSettingsView.as_view(), name='photographer-watermark-settings'),
     path('onboarding/', PhotographerOnboardingView.as_view(), name='photographer-onboarding'),
     path('onboarding/setup/', PhotographerOnboardingView.as_view(), name='photographer-onboarding-setup'),
     path('onboarding/complete/', OnboardingCompleteView.as_view(), name='onboarding-complete'),

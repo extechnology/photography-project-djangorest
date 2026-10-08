@@ -65,10 +65,14 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
             'instagram_handle',
             'default_template',
             'enable_watermark',
+            'watermark_type',
             'watermark_text',
             'watermark_image',
             'watermark_opacity',
             'watermark_position',
+            'watermark_font_size',
+            'watermark_font_color',
+            'watermark_font_style',
             'is_onboarded',
             'onboarding_step',
             'storage_used_bytes',
@@ -256,17 +260,111 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
             "description": "Unlock more storage and premium features."
         }
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Strict one-at-a-time rule:
+        # If watermark_type is 'text', watermark_image MUST be null
+        wm_type = getattr(instance, 'watermark_type', 'text') or 'text'
+        if wm_type == 'text':
+            data['watermark_image'] = None
+        elif instance.watermark_image:
+            request = self.context.get('request')
+            if request:
+                data['watermark_image'] = request.build_absolute_uri(instance.watermark_image.url)
+        return data
 
-class WatermarkConfigSerializer(serializers.ModelSerializer):
+
+class WatermarkSettingsSerializer(serializers.ModelSerializer):
+    remove_watermark_image = serializers.BooleanField(write_only=True, required=False, default=False)
+    watermark_image_url = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = PhotographerProfile
         fields = [
             'enable_watermark',
+            'watermark_type',
             'watermark_text',
             'watermark_image',
+            'watermark_image_url',
             'watermark_opacity',
             'watermark_position',
+            'watermark_font_size',
+            'watermark_font_color',
+            'watermark_font_style',
+            'remove_watermark_image',
         ]
+        extra_kwargs = {
+            'watermark_image': {'required': False, 'allow_null': True},
+            'watermark_type': {'required': False},
+            'watermark_text': {'required': False, 'allow_blank': True},
+            'watermark_position': {'required': False},
+            'watermark_font_size': {'required': False},
+            'watermark_font_color': {'required': False},
+            'watermark_font_style': {'required': False},
+        }
+
+    def get_watermark_image_url(self, obj):
+        # Strict one-at-a-time rule:
+        # If watermark_type is 'text', do not expose image url
+        if getattr(obj, 'watermark_type', 'text') == 'text':
+            return None
+        if obj.watermark_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.watermark_image.url)
+            return getattr(obj.watermark_image, 'url', None)
+        return None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Strict one-at-a-time rule:
+        # If watermark_type is 'text', watermark_image MUST be null
+        wm_type = getattr(instance, 'watermark_type', 'text') or 'text'
+        if wm_type == 'text':
+            data['watermark_image'] = None
+            data['watermark_image_url'] = None
+        else:
+            img_url = self.get_watermark_image_url(instance)
+            data['watermark_image'] = img_url
+            data['watermark_image_url'] = img_url
+        return data
+
+    def validate_watermark_opacity(self, value):
+        try:
+            val = float(value)
+        except (ValueError, TypeError):
+            raise serializers.ValidationError("Opacity must be a valid number between 0.05 and 1.0.")
+        if val < 0.05 or val > 1.0:
+            raise serializers.ValidationError("Opacity must be between 0.05 and 1.0.")
+        return val
+
+    def validate_watermark_image(self, file):
+        if file:
+            max_size_mb = 5
+            if hasattr(file, 'size') and file.size > max_size_mb * 1024 * 1024:
+                raise serializers.ValidationError(f"Logo file size cannot exceed {max_size_mb}MB.")
+        return file
+
+    def update(self, instance, validated_data):
+        remove_image = validated_data.pop('remove_watermark_image', False)
+        # Parse potential string booleans from multipart/form-data
+        if isinstance(remove_image, str):
+            remove_image = remove_image.strip().lower() in ('true', '1', 't')
+
+        if remove_image or ('watermark_image' in validated_data and validated_data['watermark_image'] is None):
+            if instance.watermark_image:
+                try:
+                    instance.watermark_image.delete(save=False)
+                except Exception:
+                    pass
+            instance.watermark_image = None
+            validated_data.pop('watermark_image', None)
+
+        return super().update(instance, validated_data)
+
+
+# Backward compatibility alias
+WatermarkConfigSerializer = WatermarkSettingsSerializer
 
 
 class NotificationPreferenceSerializer(serializers.ModelSerializer):

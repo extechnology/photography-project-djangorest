@@ -394,16 +394,18 @@ class LiveEventViewSet(viewsets.ModelViewSet):
         for p in photos:
             width, height, aspect_ratio = 1920, 1080, 1.77
             try:
-                content = p.read()
-                p.seek(0)
-                with Image.open(io.BytesIO(content)) as img:
+                with Image.open(p) as img:
                     width, height = img.size
                     if height > 0:
                         aspect_ratio = round(width / height, 2)
+                p.seek(0)
             except Exception:
-                pass
+                try:
+                    p.seek(0)
+                except Exception:
+                    pass
 
-            media = EventMedia.objects.create(
+            media = EventMedia(
                 event=event,
                 original_filename=p.name,
                 file=p,
@@ -415,14 +417,20 @@ class LiveEventViewSet(viewsets.ModelViewSet):
                 file_size=p.size,
                 size_mb=round(p.size / (1024 * 1024), 2)
             )
-            media.file_url = media.file.url
-            media.thumbnail_url = media.file.url
-            media.save(update_fields=['file_url', 'thumbnail_url'])
+            media.save()
+            # Set URLs in single pass if not populated
+            if hasattr(media.file, 'url'):
+                EventMedia.objects.filter(id=media.id).update(
+                    file_url=media.file.url,
+                    thumbnail_url=media.file.url
+                )
+                media.file_url = media.file.url
+                media.thumbnail_url = media.file.url
             _trigger_face_indexing(str(media.id))
             created_items.append(media)
 
         for v in videos:
-            media = EventMedia.objects.create(
+            media = EventMedia(
                 event=event,
                 original_filename=v.name,
                 file=v,
@@ -431,9 +439,14 @@ class LiveEventViewSet(viewsets.ModelViewSet):
                 file_size=v.size,
                 size_mb=round(v.size / (1024 * 1024), 2)
             )
-            media.file_url = media.file.url
-            media.thumbnail_url = media.file.url
-            media.save(update_fields=['file_url', 'thumbnail_url'])
+            media.save()
+            if hasattr(media.file, 'url'):
+                EventMedia.objects.filter(id=media.id).update(
+                    file_url=media.file.url,
+                    thumbnail_url=media.file.url
+                )
+                media.file_url = media.file.url
+                media.thumbnail_url = media.file.url
             created_items.append(media)
 
         return Response({

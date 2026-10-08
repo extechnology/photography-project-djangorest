@@ -47,7 +47,17 @@ from App.Storage.storage_views import (
     MediaDetailDeleteView,
     MediaBulkDeleteView,
     MediaToggleFavoriteView,
-
+)
+from App.Storage.resumable_views import (
+    ResumableUploadInitView,
+    ResumableUploadChunkView,
+    ResumableUploadStatusView,
+    ResumableUploadCompleteView,
+    ResumableUploadCancelView,
+    DirectUploadExecuteView,
+    DirectMediaFileServeView,
+)
+from App.Storage.storage_views import (
     # Enterprise Public & Client Access
     PublicGallerySlugOrIdView,
     PublicGalleryDetailView,
@@ -132,6 +142,21 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/upload-init/', DirectUploadInitView.as_view(), name='direct-upload-init'),
     path('galleries/<str:gallery_id>/upload-confirm/', DirectUploadConfirmView.as_view(), name='direct-upload-confirm'),
     path('galleries/<str:gallery_id>/upload/', StandardMediaUploadView.as_view(), name='standard-media-upload'),
+
+    # High-Performance Resumable Chunked Upload Engine
+    path('uploads/init/', ResumableUploadInitView.as_view(), name='resumable-upload-init'),
+    path('uploads/<str:upload_id>/chunk/', ResumableUploadChunkView.as_view(), name='resumable-upload-chunk'),
+    path('uploads/chunk/', ResumableUploadChunkView.as_view(), name='resumable-upload-chunk-body'),
+    path('uploads/<str:upload_id>/status/', ResumableUploadStatusView.as_view(), name='resumable-upload-status'),
+    path('uploads/status/', ResumableUploadStatusView.as_view(), name='resumable-upload-status-param'),
+    path('uploads/<str:upload_id>/complete/', ResumableUploadCompleteView.as_view(), name='resumable-upload-complete'),
+    path('uploads/complete/', ResumableUploadCompleteView.as_view(), name='resumable-upload-complete-body'),
+    path('uploads/<str:upload_id>/cancel/', ResumableUploadCancelView.as_view(), name='resumable-upload-cancel'),
+    path('uploads/cancel/', ResumableUploadCancelView.as_view(), name='resumable-upload-cancel-body'),
+
+    # Local Direct Upload Stream & Signed Media Delivery
+    path('direct-upload/', DirectUploadExecuteView.as_view(), name='storage-direct-upload-exec'),
+    path('media-file/', DirectMediaFileServeView.as_view(), name='storage-media-file-serve'),
 
     # Public Gallery endpoints (No login required - locked when studio subscription expired)
     path('galleries/<str:slug_or_id>/public/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-detail-direct'),

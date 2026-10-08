@@ -205,8 +205,6 @@ def transfer_media_to_gallery(
     safe_name = os.path.basename(str(raw_name).replace('\\', '/'))
     storage_key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
 
-    file_bytes = read_media_bytes(file_source, filename=safe_name)
-
     # Determine MIME
     ext = os.path.splitext(safe_name)[1].lower()
     if media_type == 'video' or ext in ('.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'):
@@ -220,15 +218,52 @@ def transfer_media_to_gallery(
         mime = "image/jpeg"
 
     storage = get_storage_provider()
+    local_src_path = None
 
-    # Upload original to storage provider
-    if file_bytes:
+    # Check for direct local disk path (e.g. from culling_staging or events)
+    if hasattr(file_source, 'path') and os.path.exists(file_source.path):
+        local_src_path = file_source.path
+    elif hasattr(file_source, 'name') and file_source.name:
+        cand = os.path.join(settings.MEDIA_ROOT, str(file_source.name))
+        if os.path.exists(cand) and os.path.isfile(cand):
+            local_src_path = cand
+    elif isinstance(file_source, (str, Path)) and os.path.exists(str(file_source)):
+        local_src_path = str(file_source)
+
+    file_size_bytes = 0
+    file_bytes = None
+
+    # FAST-PATH: Atomic or streaming transfer directly from disk (Zero RAM buffering)
+    if local_src_path and isinstance(storage, LocalStorageProvider):
         try:
-            storage.upload(storage_key, file_bytes, content_type=mime)
-            if isinstance(storage, LocalStorageProvider):
-                fix_local_permissions(str(storage._resolve_path(storage_key)))
-        except Exception as e:
-            logger.warning(f"Error uploading original {storage_key}: {e}")
+            target_dst = storage.get_absolute_path(storage_key)
+            target_dst.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            # If staged in temporary culling_staging, move atomically
+            if 'culling_staging' in str(local_src_path):
+                try:
+                    os.replace(str(local_src_path), str(target_dst))
+                except OSError:
+                    shutil.move(str(local_src_path), str(target_dst))
+            else:
+                shutil.copy2(str(local_src_path), str(target_dst))
+
+            fix_local_permissions(str(target_dst))
+            file_size_bytes = target_dst.stat().st_size
+        except Exception as err:
+            logger.warning(f"Fast disk transfer failed for {safe_name}, falling back to bytes: {err}")
+            local_src_path = None
+
+    if not file_size_bytes:
+        file_bytes = read_media_bytes(file_source, filename=safe_name)
+        if file_bytes:
+            file_size_bytes = len(file_bytes)
+            try:
+                storage.upload(storage_key, file_bytes, content_type=mime)
+                if isinstance(storage, LocalStorageProvider):
+                    fix_local_permissions(str(storage._resolve_path(storage_key)))
+            except Exception as e:
+                logger.warning(f"Error uploading original {storage_key}: {e}")
 
     thumb_key = None
     prev_key = None
@@ -238,9 +273,15 @@ def transfer_media_to_gallery(
     img_h = height
     img_ar = aspect_ratio
 
-    if file_bytes and media_type == 'photo':
+    if media_type == 'photo' and (local_src_path or file_bytes):
         try:
-            img = Image.open(io.BytesIO(file_bytes))
+            from PIL import Image, ImageOps
+            if local_src_path:
+                target_dst = storage.get_absolute_path(storage_key)
+                img = Image.open(str(target_dst))
+            else:
+                img = Image.open(io.BytesIO(file_bytes))
+
             img = ImageOps.exif_transpose(img)
             img_w, img_h = img.size
             if img_h > 0:
