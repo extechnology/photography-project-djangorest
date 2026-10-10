@@ -12,7 +12,13 @@ from .views import (
     PortfolioInquiryAnalyticsView,
     PortfolioAnalyticsView,
     PublicPortfolioTrackView,
+    PortfolioSubdomainAvailabilityView,
+    PortfolioSubdomainClaimView,
+    PublicTenantPortfolioSiteView,
+    PublicTenantInquiryCreateView,
+    PublicTenantTrackView,
 )
+
 
 urlpatterns = [
     # 1 & 2. Portfolio Configuration (Studio branding, templates, socials)
@@ -36,6 +42,10 @@ urlpatterns = [
     path('track-view', PublicPortfolioTrackView.as_view(), name='portfolio-track-view-direct-noslash'),
     path('public/portfolio/<str:photographer_slug>/', PublicPortfolioDetailView.as_view(), name='public-portfolio-detail'),
     path('public/portfolio/<str:photographer_slug>', PublicPortfolioDetailView.as_view(), name='public-portfolio-detail-noslash'),
+    path('public/portfolio/<str:slug>/', PublicPortfolioDetailView.as_view(), name='public-portfolio'),
+    path('public/portfolio/<str:slug>', PublicPortfolioDetailView.as_view(), name='public-portfolio-noslash'),
+    path('tenant/portfolio/', PublicTenantPortfolioSiteView.as_view(), name='tenant-portfolio'),
+    path('tenant/portfolio', PublicTenantPortfolioSiteView.as_view(), name='tenant-portfolio-noslash'),
 
     # 4 & 7. Portfolio Projects / Featured Works
     path('portfolio/projects/', PortfolioWorkListCreateView.as_view(), name='portfolio-projects'),
@@ -68,4 +78,19 @@ urlpatterns = [
     path('inquiries', PortfolioInquiryListView.as_view(), name='portfolio-inquiries-list-noslash'),
     path('inquiries/<str:pk>/', PortfolioInquiryDetailView.as_view(), name='portfolio-inquiry-detail'),
     path('inquiries/<str:pk>', PortfolioInquiryDetailView.as_view(), name='portfolio-inquiry-detail-noslash'),
+
+    # 11. Photographer Portfolio Subdomain Suite
+    path('portfolio/subdomain/availability/', PortfolioSubdomainAvailabilityView.as_view(), name='portfolio-subdomain-availability'),
+    path('portfolio/subdomain/availability', PortfolioSubdomainAvailabilityView.as_view(), name='portfolio-subdomain-availability-noslash'),
+    path('portfolio/subdomain/', PortfolioSubdomainClaimView.as_view(), name='portfolio-subdomain-claim'),
+    path('portfolio/subdomain', PortfolioSubdomainClaimView.as_view(), name='portfolio-subdomain-claim-noslash'),
+
+    # 12. Public Host-Based Tenant Portfolio Site
+    path('public/portfolio-site/', PublicTenantPortfolioSiteView.as_view(), name='public-tenant-portfolio-site'),
+    path('public/portfolio-site', PublicTenantPortfolioSiteView.as_view(), name='public-tenant-portfolio-site-noslash'),
+    path('public/portfolio-site/inquiries/', PublicTenantInquiryCreateView.as_view(), name='public-tenant-portfolio-inquiries'),
+    path('public/portfolio-site/inquiries', PublicTenantInquiryCreateView.as_view(), name='public-tenant-portfolio-inquiries-noslash'),
+    path('public/portfolio-site/track-view/', PublicTenantTrackView.as_view(), name='public-tenant-portfolio-track-view'),
+    path('public/portfolio-site/track-view', PublicTenantTrackView.as_view(), name='public-tenant-portfolio-track-view-noslash'),
 ]
+

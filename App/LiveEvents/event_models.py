@@ -247,6 +247,7 @@ class EventMedia(models.Model):
     aspect_ratio = models.FloatField(default=1.77)
     media_type = models.CharField(max_length=20, default='photo', choices=[('photo', 'Photo'), ('video', 'Video')])
     file_size = models.BigIntegerField(default=0, help_text="File size in bytes")
+    file_hash = models.CharField(max_length=64, blank=True, null=True, db_index=True)
     size_mb = models.FloatField(default=3.5)
     is_favorite = models.BooleanField(default=False)
     is_cover = models.BooleanField(default=False)
@@ -257,6 +258,22 @@ class EventMedia(models.Model):
 
     def __str__(self):
         return f"{self.original_filename} ({self.event.title})"
+
+    @property
+    def url(self) -> str:
+        return self.file_url or (self.file.url if self.file else "")
+
+    @property
+    def preview_url(self) -> str:
+        return self.file_url or (self.file.url if self.file else "")
+
+    @property
+    def type(self) -> str:
+        return self.media_type
+
+    @type.setter
+    def type(self, val: str):
+        self.media_type = val
 
     def save(self, *args, **kwargs):
         if not self.file_size and self.file:

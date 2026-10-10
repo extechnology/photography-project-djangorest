@@ -1,6 +1,10 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .event_views import LiveEventViewSet, PublicEventDetailView, EventFaceSearchView
+from galleries.views_upload import (
+    BulkUploadEventMediaView,
+    EventUploadResumeStatusView,
+)
 
 router = DefaultRouter()
 router.register(r'events', LiveEventViewSet, basename='events')
@@ -15,6 +19,12 @@ urlpatterns = [
     path('events/<uuid:event_id>/face-search/', EventFaceSearchView.as_view(), name='event-face-search'),
     path('events/<str:event_id>/face-search/', EventFaceSearchView.as_view(), name='event-face-search-str'),
 
-    # 3. Router actions (includes events/, events/counts/, events/<pk>/, tether, upload, etc.)
+    # 3. Batch Bulk Upload & Resume Status
+    path('events/<uuid:event_id>/media/bulk-upload/', BulkUploadEventMediaView.as_view(), name='event-media-bulk-upload-uuid'),
+    path('events/<str:event_id>/media/bulk-upload/', BulkUploadEventMediaView.as_view(), name='event-media-bulk-upload'),
+    path('events/<uuid:event_id>/upload-status/', EventUploadResumeStatusView.as_view(), name='event-upload-status-uuid'),
+    path('events/<str:event_id>/upload-status/', EventUploadResumeStatusView.as_view(), name='event-upload-status'),
+
+    # 4. Router actions (includes events/, events/counts/, events/<pk>/, tether, upload, etc.)
     path('', include(router.urls)),
 ]

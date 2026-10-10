@@ -85,6 +85,12 @@ from App.Storage.storage_views import (
     # Enterprise Storage Usage
     PhotographerStorageUsageView,
 )
+from galleries.views.bulk_favorite import BulkMediaFavoriteAPIView
+from galleries.views_upload import (
+    BulkUploadGalleryMediaView,
+    GalleryUploadResumeStatusView,
+)
+
 
 urlpatterns = [
     # -------------------------------------------------------------------------
@@ -127,6 +133,15 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/media/reorder/', GalleryMediaReorderView.as_view(), name='gallery-media-reorder'),
     path('galleries/<str:gallery_id>/reorder-media/', GalleryReorderMediaView.as_view(), name='gallery-reorder-media'),
     path('galleries/<str:gallery_id>/media/<uuid:media_id>/favorite/', GalleryMediaFavoriteToggleView.as_view(), name='gallery-media-toggle-favorite'),
+    path('galleries/<uuid:gallery_id>/media/bulk-favorite/', BulkMediaFavoriteAPIView.as_view(), name='storage-gallery-media-bulk-favorite'),
+    path('galleries/<str:gallery_id>/media/bulk-favorite/', BulkMediaFavoriteAPIView.as_view(), name='storage-gallery-media-bulk-favorite-str'),
+    path('galleries/media/bulk-favorite/', BulkMediaFavoriteAPIView.as_view(), name='storage-gallery-media-bulk-favorite-flat'),
+
+    # High-Performance Batch Chunked Uploads & Resume Status
+    path('galleries/<uuid:gallery_id>/media/bulk-upload/', BulkUploadGalleryMediaView.as_view(), name='storage-gallery-media-bulk-upload-uuid'),
+    path('galleries/<str:gallery_id>/media/bulk-upload/', BulkUploadGalleryMediaView.as_view(), name='storage-gallery-media-bulk-upload'),
+    path('galleries/<uuid:gallery_id>/upload-status/', GalleryUploadResumeStatusView.as_view(), name='storage-gallery-upload-status-uuid'),
+    path('galleries/<str:gallery_id>/upload-status/', GalleryUploadResumeStatusView.as_view(), name='storage-gallery-upload-status'),
 
     # Analytics & Visitor Intelligence
     path('galleries/<str:gallery_id>/analytics/', GalleryAnalyticsView.as_view(), name='gallery-analytics'),

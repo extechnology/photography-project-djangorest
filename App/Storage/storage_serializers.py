@@ -13,6 +13,7 @@ from App.Storage.storage_models import (
     BulkDownloadJob,
 )
 from App.Storage.services.storage_service import get_storage_provider
+from gallery_favorites_api import GalleryDetailFavoritesMixin
 
 
 # =============================================================================
@@ -560,8 +561,14 @@ class GallerySerializer(serializers.ModelSerializer):
         }
 
     def get_favorites_count(self, obj):
-        count = obj.media_items.filter(deleted_at__isnull=True, is_favorite=True).count()
-        return count if count > 0 else getattr(obj, 'favorites_count', 0)
+        # Priority 1: Use O(1) queryset annotation if present
+        if hasattr(obj, 'annotated_favorites_count') and obj.annotated_favorites_count is not None:
+            return obj.annotated_favorites_count
+        # Priority 2: Fallback query directly against the Media table (NEVER sliced)
+        media_attr = getattr(obj, 'media', None)
+        if media_attr is not None and hasattr(media_attr, 'filter'):
+            return media_attr.filter(is_favorite=True).count()
+        return obj.media_items.filter(deleted_at__isnull=True, is_favorite=True).count()
 
     def get_total_media_count(self, obj):
         return (getattr(obj, 'photos_count', 0) or 0) + (getattr(obj, 'videos_count', 0) or 0)
@@ -1046,8 +1053,14 @@ class PublicGallerySerializer(serializers.ModelSerializer):
         return getattr(profile, 'watermark_font_style', 'serif') if profile else 'serif'
 
     def get_favorites_count(self, obj):
-        count = obj.media_items.filter(deleted_at__isnull=True, is_favorite=True).count()
-        return count if count > 0 else getattr(obj, 'favorites_count', 0)
+        # Priority 1: Use O(1) queryset annotation if present
+        if hasattr(obj, 'annotated_favorites_count') and obj.annotated_favorites_count is not None:
+            return obj.annotated_favorites_count
+        # Priority 2: Fallback query directly against the Media table (NEVER sliced)
+        media_attr = getattr(obj, 'media', None)
+        if media_attr is not None and hasattr(media_attr, 'filter'):
+            return media_attr.filter(is_favorite=True).count()
+        return obj.media_items.filter(deleted_at__isnull=True, is_favorite=True).count()
 
     def get_template_banners(self, obj):
         return _sanitize_banner_dict(obj.template_banners, obj, self.context.get('request'))
@@ -1149,7 +1162,7 @@ class DirectUploadConfirmSerializer(serializers.Serializer):
     duration = serializers.CharField(max_length=50, required=False)
 
 
-class GalleryDetailResponseSerializer(GallerySerializer):
+class GalleryDetailResponseSerializer(GalleryDetailFavoritesMixin, GallerySerializer):
     """
     Upgraded Gallery Serializer for Ex Share Atelier frontend.
     Returns gallery metadata along with the dynamically paginated media slice.
@@ -1181,16 +1194,28 @@ class GalleryDetailResponseSerializer(GallerySerializer):
         ).data
 
     def get_photos_count(self, obj):
+        if hasattr(obj, 'annotated_photos_count') and obj.annotated_photos_count is not None:
+            return obj.annotated_photos_count
         if hasattr(obj, 'photos_count') and obj.photos_count is not None:
             return obj.photos_count
+        media_attr = getattr(obj, 'media', None)
+        if media_attr is not None and hasattr(media_attr, 'filter'):
+            return media_attr.filter(media_type='photo').count()
         return obj.media_items.filter(media_type='photo', deleted_at__isnull=True).count()
 
     def get_videos_count(self, obj):
+        if hasattr(obj, 'annotated_videos_count') and obj.annotated_videos_count is not None:
+            return obj.annotated_videos_count
         if hasattr(obj, 'videos_count') and obj.videos_count is not None:
             return obj.videos_count
+        media_attr = getattr(obj, 'media', None)
+        if media_attr is not None and hasattr(media_attr, 'filter'):
+            return media_attr.filter(media_type='video').count()
         return obj.media_items.filter(media_type='video', deleted_at__isnull=True).count()
 
     def get_total_media_count(self, obj):
+        if hasattr(obj, 'annotated_total_media_count') and obj.annotated_total_media_count is not None:
+            return obj.annotated_total_media_count
         if 'total_media_count' in self.context:
             return self.context['total_media_count']
         return getattr(obj, '_total_media_count', None) or obj.total_media_count
@@ -1199,6 +1224,8 @@ class GalleryDetailResponseSerializer(GallerySerializer):
         return super().get_section_counts(obj)
 
     def get_favorites_count(self, obj):
+        if hasattr(obj, 'annotated_favorites_count') and obj.annotated_favorites_count is not None:
+            return obj.annotated_favorites_count
         return super().get_favorites_count(obj)
 
 

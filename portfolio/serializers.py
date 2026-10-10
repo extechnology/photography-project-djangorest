@@ -49,28 +49,116 @@ class PortfolioConfigSerializer(serializers.ModelSerializer):
     youtubeHandle = serializers.CharField(source='youtube_handle', required=False, allow_blank=True)
     websiteUrl = serializers.CharField(source='website_url', required=False, allow_blank=True)
     isBookingOpen = serializers.BooleanField(source='is_booking_open', required=False)
+    is_booking_open = serializers.BooleanField(required=False)
+    subdomain = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    customDomain = serializers.CharField(source='custom_domain', required=False, allow_null=True, allow_blank=True)
+    custom_domain = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    isPublished = serializers.BooleanField(source='is_published', required=False)
+    is_published = serializers.BooleanField(required=False)
+    portfolioUrl = serializers.CharField(source='public_url', read_only=True)
+    portfolio_url = serializers.CharField(source='public_url', read_only=True)
+    fullDomain = serializers.CharField(source='full_domain', read_only=True)
+    full_domain = serializers.CharField(read_only=True)
     featuredWorks = PortfolioWorkSerializer(source='works', many=True, read_only=True)
     photographerSlug = serializers.SerializerMethodField()
     photographer_slug = serializers.SerializerMethodField()
+    photographer_id = serializers.ReadOnlyField(source='user_id')
+    photographerId = serializers.ReadOnlyField(source='user_id')
+
+    # WhatsApp Direct Connect Fields
+    whatsapp_enabled = serializers.BooleanField(required=False)
+    whatsappEnabled = serializers.BooleanField(source='whatsapp_enabled', required=False)
+    whatsapp_number = serializers.CharField(required=False, allow_blank=True)
+    whatsappNumber = serializers.CharField(source='whatsapp_number', required=False, allow_blank=True)
+    whatsapp_prefill_message = serializers.CharField(required=False, allow_blank=True)
+    whatsappPrefillMessage = serializers.CharField(source='whatsapp_prefill_message', required=False, allow_blank=True)
+    whatsapp_button_label = serializers.CharField(required=False, allow_blank=True)
+    whatsappButtonLabel = serializers.CharField(source='whatsapp_button_label', required=False, allow_blank=True)
+    clean_whatsapp_number = serializers.CharField(source='get_clean_whatsapp_number', read_only=True)
+    cleanWhatsappNumber = serializers.CharField(source='get_clean_whatsapp_number', read_only=True)
+
+    # Branding & Custom Styling Fields
+    pricingStartingAt = serializers.CharField(source='pricing_starting_at', required=False, allow_blank=True)
+    pricing_starting_at = serializers.CharField(required=False, allow_blank=True)
+    philosophyQuote = serializers.CharField(source='philosophy_quote', required=False, allow_blank=True)
+    philosophy_quote = serializers.CharField(required=False, allow_blank=True)
+    philosophyAuthor = serializers.CharField(source='philosophy_author', required=False, allow_blank=True)
+    philosophy_author = serializers.CharField(required=False, allow_blank=True)
+    accentColor = serializers.CharField(source='accent_color', required=False, allow_blank=True)
+    accent_color = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = PortfolioConfig
         fields = [
-            'id', 'templateId', 'template_id', 'studioName', 'studio_name',
+            'id', 'photographer_id', 'photographerId',
+            'templateId', 'template_id', 'studioName', 'studio_name',
             'artistName', 'artist_name', 'tagline', 'bio', 'aboutStory',
             'about_story', 'location', 'avatarUrl', 'avatar_url',
             'bannerUrl', 'banner_url', 'contactEmail', 'contact_email',
             'contactPhone', 'contact_phone', 'instagramHandle', 'instagram_handle',
             'youtubeHandle', 'youtube_handle', 'websiteUrl', 'website_url',
+            'subdomain', 'customDomain', 'custom_domain',
+            'isPublished', 'is_published', 'portfolioUrl', 'portfolio_url',
+            'fullDomain', 'full_domain',
             'isBookingOpen', 'is_booking_open', 'featuredWorks',
-            'photographerSlug', 'photographer_slug'
+            'photographerSlug', 'photographer_slug',
+            'pricingStartingAt', 'pricing_starting_at',
+            'philosophyQuote', 'philosophy_quote',
+            'philosophyAuthor', 'philosophy_author',
+            'accentColor', 'accent_color',
+            # WhatsApp fields (snake_case)
+            'whatsapp_enabled', 'whatsapp_number',
+            'whatsapp_prefill_message', 'whatsapp_button_label',
+            'clean_whatsapp_number',
+            # WhatsApp fields (camelCase)
+            'whatsappEnabled', 'whatsappNumber',
+            'whatsappPrefillMessage', 'whatsappButtonLabel',
+            'cleanWhatsappNumber',
         ]
+
+    def validate_whatsapp_number(self, value):
+        if not value:
+            return ""
+        # Strip extraneous spaces or hyphens before validating
+        clean_val = "".join(c for c in value if c.isdigit() or c == '+')
+        digits_only = "".join(c for c in clean_val if c.isdigit())
+        if clean_val and not (7 <= len(digits_only) <= 15):
+            raise serializers.ValidationError("Phone number must have between 7 and 15 digits.")
+        return clean_val
+
+    def validate_whatsappNumber(self, value):
+        return self.validate_whatsapp_number(value)
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Ensure default phone number fallback if whatsapp_number is not set
+        if not ret.get('whatsapp_number') and hasattr(instance, 'contact_phone') and instance.contact_phone:
+            ret['whatsapp_number'] = instance.contact_phone
+            ret['whatsappNumber'] = instance.contact_phone
+        return ret
 
     def get_photographerSlug(self, obj):
         return obj.user.username or str(obj.user.id)
 
     def get_photographer_slug(self, obj):
         return obj.user.username or str(obj.user.id)
+
+
+class SubdomainAvailabilityQuerySerializer(serializers.Serializer):
+    name = serializers.CharField(
+        required=True,
+        max_length=63,
+        help_text="Subdomain label to check for availability."
+    )
+
+
+class SubdomainClaimSerializer(serializers.Serializer):
+    subdomain = serializers.CharField(
+        required=True,
+        max_length=63,
+        help_text="Subdomain label to claim, e.g. 'mridhul'."
+    )
+
 
 
 class PortfolioInquirySerializer(serializers.ModelSerializer):

@@ -85,6 +85,7 @@ from App.Storage.storage_serializers import (
     BulkDownloadJobSerializer,
 )
 from App.Storage.services.storage_service import get_storage_provider
+from gallery_favorites_api import get_annotated_gallery_queryset
 from App.Storage.services.quota_service import StorageQuotaService, StorageQuotaExceededException
 from App.Storage.services.face_service import FaceService
 from App.Storage.tasks import (
@@ -200,8 +201,8 @@ def get_photographer_profile(user):
 
 
 def _get_gallery_or_404(gallery_id_or_slug: str, user=None):
-    """Helper to query gallery by UUID or Slug with optimal prefetching and ownership verification."""
-    qs = Gallery.objects.select_related('photographer', 'photographer__user').prefetch_related('section_items', 'media_items')
+    """Helper to query gallery by UUID or Slug with optimal prefetching, unpaginated count annotations, and ownership verification."""
+    qs = get_annotated_gallery_queryset(user).select_related('photographer', 'photographer__user').prefetch_related('section_items', 'media_items')
     if user and user.is_authenticated and not (user.is_staff or user.is_superuser):
         qs = qs.filter(Q(photographer__user=user) | Q(photographer__user_id=user.id))
 
@@ -969,6 +970,10 @@ class GalleryMediaCursorPagination:
 
 
 class GalleryDetailView(APIView):
+    def get_queryset(self):
+        user = getattr(self.request, 'user', None) if hasattr(self, 'request') else None
+        return get_annotated_gallery_queryset(user)
+
     def _get_gallery(self, pk, user):
         return _get_gallery_or_404(pk, user)
 
@@ -3313,7 +3318,11 @@ class GalleryMediaFavoriteToggleView(APIView):
             deleted_at__isnull=True
         )
 
-        new_status = not media.is_favorite
+        explicit_state = request.data.get('is_favorite') if hasattr(request, 'data') and isinstance(request.data, dict) else None
+        if explicit_state is not None:
+            new_status = bool(explicit_state)
+        else:
+            new_status = not media.is_favorite
         media.is_favorite = new_status
         if new_status:
             media.favorites_count = F('favorites_count') + 1

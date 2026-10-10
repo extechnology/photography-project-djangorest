@@ -210,6 +210,18 @@ class PhotographerProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
 
+    @property
+    def subdomain(self):
+        config = getattr(self.user, 'portfolio_config', None)
+        return config.subdomain if config else None
+
+    @subdomain.setter
+    def subdomain(self, value):
+        config = getattr(self.user, 'portfolio_config', None)
+        if config:
+            config.subdomain = value
+            config.save(update_fields=['subdomain', 'updated_at'])
+
     def check_onboarded(self):
         return bool((self.name or '').strip() and ((self.phone or '').strip() or (self.occupation or '').strip()))
 

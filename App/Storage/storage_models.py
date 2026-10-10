@@ -562,6 +562,22 @@ class Media(models.Model):
             kwargs['display_order'] = kwargs['order']
         elif 'display_order' in kwargs and 'order' not in kwargs:
             kwargs['order'] = kwargs['display_order']
+        if 'type' in kwargs and 'media_type' not in kwargs:
+            kwargs['media_type'] = kwargs.pop('type')
+        elif 'type' in kwargs:
+            kwargs.pop('type')
+        if 'url' in kwargs:
+            u_val = kwargs.pop('url')
+            if 'storage_key' not in kwargs and u_val:
+                kwargs['storage_key'] = u_val
+        if 'thumbnail_url' in kwargs:
+            t_val = kwargs.pop('thumbnail_url')
+            if 'thumbnail_storage_key' not in kwargs and t_val:
+                kwargs['thumbnail_storage_key'] = t_val
+        if 'preview_url' in kwargs:
+            p_val = kwargs.pop('preview_url')
+            if 'preview_storage_key' not in kwargs and p_val:
+                kwargs['preview_storage_key'] = p_val
         if 'storage_key' not in kwargs and 'original_filename' in kwargs:
             g_id = getattr(kwargs.get('gallery'), 'id', 'default')
             fn = kwargs.get('original_filename', 'photo')
@@ -626,6 +642,7 @@ class Media(models.Model):
     mime_type = models.CharField(max_length=100, default='image/jpeg')
     file_extension = models.CharField(max_length=20, default='.jpg')
     file_size = models.BigIntegerField(default=0, help_text="Exact file size in bytes")
+    file_hash = models.CharField(max_length=64, blank=True, null=True, db_index=True)
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
     aspect_ratio = models.FloatField(null=True, blank=True)
@@ -656,6 +673,7 @@ class Media(models.Model):
             models.Index(fields=['gallery', 'display_order', '-created_at', 'id']),
             models.Index(fields=['gallery', 'section_title', 'display_order', '-created_at', 'id']),
             models.Index(fields=['gallery', 'is_favorite', 'display_order', '-created_at', 'id']),
+            models.Index(fields=['gallery', 'is_favorite'], name='idx_media_gallery_favorite'),
 
             models.Index(fields=['gallery', 'display_order']),
             models.Index(fields=['gallery', 'section_title']),
@@ -707,6 +725,46 @@ class Media(models.Model):
     @property
     def size_bytes(self) -> int:
         return self.file_size
+
+    @property
+    def type(self) -> str:
+        return self.media_type
+
+    @type.setter
+    def type(self, val: str):
+        self.media_type = val
+
+    @property
+    def url(self) -> str:
+        if self.preview_storage_key or self.storage_key:
+            from App.Storage.services.storage_service import get_storage_provider
+            storage = get_storage_provider()
+            key = self.preview_storage_key or self.storage_key
+            return storage.generate_cdn_url(key) if key else ""
+        if self.file:
+            try:
+                return self.file.url
+            except Exception:
+                return ""
+        return ""
+
+    @property
+    def thumbnail_url(self) -> str:
+        key = self.thumbnail_storage_key or self.preview_storage_key or self.storage_key
+        if key:
+            from App.Storage.services.storage_service import get_storage_provider
+            storage = get_storage_provider()
+            return storage.generate_cdn_url(key)
+        return self.url
+
+    @property
+    def preview_url(self) -> str:
+        key = self.preview_storage_key or self.storage_key
+        if key:
+            from App.Storage.services.storage_service import get_storage_provider
+            storage = get_storage_provider()
+            return storage.generate_cdn_url(key)
+        return self.url
 
 
 class GalleryAnalyticsEvent(models.Model):

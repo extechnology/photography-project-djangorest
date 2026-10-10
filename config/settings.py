@@ -30,6 +30,14 @@ DEBUG = config('DEBUG', default=True, cast=bool)
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 
+# Portfolio Subdomain Configuration
+PORTFOLIO_BASE_DOMAIN = config('PORTFOLIO_BASE_DOMAIN', default='exshare.ai').strip().lower()
+RESERVED_SUBDOMAINS = config(
+    'RESERVED_SUBDOMAINS',
+    default='',
+    cast=lambda v: [s.strip().lower() for s in v.split(',') if s.strip()]
+)
+
 
 # Application definition
 

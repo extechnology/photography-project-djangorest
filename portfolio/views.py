@@ -3,7 +3,7 @@ import uuid
 import hashlib
 from datetime import timedelta
 from django.utils import timezone
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.db.models import Q, Count
 from django.shortcuts import get_object_or_404
 from django.core.files.storage import default_storage
@@ -22,17 +22,27 @@ from .models import (
     PortfolioInquiry,
     PortfolioView,
     PortfolioVisit,
+    ReservedSubdomain,
 )
 from .serializers import (
     PortfolioConfigSerializer,
     PortfolioWorkSerializer,
     PortfolioWorkPhotoSerializer,
-    PortfolioInquirySerializer
+    PortfolioInquirySerializer,
+    SubdomainAvailabilityQuerySerializer,
+    SubdomainClaimSerializer,
 )
 from .utils import (
     get_or_create_starter_portfolio,
     send_inquiry_notification
 )
+from .subdomain_service import (
+    normalize_subdomain,
+    validate_subdomain_label,
+    check_subdomain_availability,
+    resolve_portfolio_from_request,
+)
+
 
 User = get_user_model()
 
@@ -161,6 +171,14 @@ class PortfolioConfigView(APIView):
             'youtubeHandle': 'youtube_handle',
             'websiteUrl': 'website_url',
             'isBookingOpen': 'is_booking_open',
+            'whatsappEnabled': 'whatsapp_enabled',
+            'whatsappNumber': 'whatsapp_number',
+            'whatsappPrefillMessage': 'whatsapp_prefill_message',
+            'whatsappButtonLabel': 'whatsapp_button_label',
+            'pricingStartingAt': 'pricing_starting_at',
+            'philosophyQuote': 'philosophy_quote',
+            'philosophyAuthor': 'philosophy_author',
+            'accentColor': 'accent_color',
         }
         for camel, snake in field_mappings.items():
             if camel in data and snake not in data:
@@ -1242,3 +1260,31 @@ class PublicPortfolioTrackView(APIView):
 TrackPortfolioViewAPIView = PublicPortfolioTrackView
 TrackPortfolioViewApi = PublicPortfolioTrackView
 TrackPortfolioView = PublicPortfolioTrackView
+
+
+# =============================================================================
+# 11 & 12. Photographer Portfolio Subdomains & Tenant Ingress Suite
+# =============================================================================
+
+from .views_subdomain import (
+    SubdomainAvailabilityView,
+    ClaimSubdomainView,
+    PortfolioSubdomainAvailabilityView,
+    PortfolioSubdomainClaimView,
+)
+
+from .views_public_tenant import (
+    PublicTenantPortfolioView,
+    PublicTenantInquiryView,
+    PublicTenantTrackView,
+    PublicTenantPortfolioSiteView,
+    PublicTenantInquiryCreateView,
+)
+
+# Standalone functional view aliases
+studio_portfolio_config_view = PortfolioConfigView.as_view()
+public_portfolio_view = PublicPortfolioDetailView.as_view()
+public_tenant_portfolio_view = PublicTenantPortfolioView.as_view()
+
+
+
