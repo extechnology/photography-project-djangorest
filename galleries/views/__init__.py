@@ -26,4 +26,10 @@ __all__ = [
     'GalleryUploadResumeStatusView',
     'BulkUploadEventMediaView',
     'EventUploadResumeStatusView',
+    'MediaDownloadView',
+    'GalleryZipDownloadView',
 ]
+
+from .media_download import MediaDownloadView
+from .gallery_zip_download import GalleryZipDownloadView
+

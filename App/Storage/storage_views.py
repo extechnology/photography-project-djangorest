@@ -2572,112 +2572,8 @@ class VerifyGalleryPasswordView(APIView):
 # 5. Secure Download APIs (Single & Async Bulk)
 # =============================================================================
 
-class MediaDownloadView(APIView):
-    """
-    Generates a secure, temporary signed download URL for an original photo.
-    Validates downloads_enabled and client permissions.
-    """
-    permission_classes = [AllowAny]
-    throttle_classes = [DownloadRateThrottle]
+from galleries.views.media_download import MediaDownloadView
 
-    def get(self, request, media_id):
-        media = get_object_or_404(Media.objects.select_related('gallery', 'photographer'), id=media_id)
-        gallery = media.gallery
-
-        if not gallery.downloads_enabled:
-            return Response({"code": "DOWNLOAD_DISABLED", "detail": "Downloads are disabled for this gallery."}, status=status.HTTP_403_FORBIDDEN)
-
-        # Verify password if protected
-        password = request.headers.get("X-Gallery-Password") or request.query_params.get("password")
-        if gallery.visibility == "password_protected" and not gallery.check_access_password(password):
-            return Response({"code": "PASSWORD_REQUIRED", "detail": "Valid gallery password required to download."}, status=status.HTTP_403_FORBIDDEN)
-
-        # Increment download counts
-        Media.objects.filter(id=media.id).update(downloads_count=F("downloads_count") + 1)
-        Gallery.objects.filter(id=gallery.id).update(downloads_count=F("downloads_count") + 1)
-
-        storage = get_storage_provider()
-        filename = media.original_filename or f"photo_{media.id}.jpg"
-
-        # Check watermark baking on single download:
-        if getattr(gallery, 'watermark_enabled', False) and getattr(media, 'media_type', 'photo') != 'video':
-            profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
-            watermark_text = (
-                gallery.watermark_text or 
-                (profile.get_effective_watermark_text() if profile and hasattr(profile, 'get_effective_watermark_text') else None) or 
-                (getattr(profile, 'studio_name', None) if profile else None) or 
-                "ATELIER PHOTOGRAPHY"
-            )
-            wm_type = getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text'
-            wm_type = str(wm_type).lower().strip()
-            if wm_type != 'image':
-                wm_type = 'text'
-
-            # Strict one-at-a-time rule: Logo is ONLY resolved if watermark_type is 'image'
-            logo_file = None
-            if wm_type == 'image' and profile and getattr(profile, 'watermark_image', None):
-                logo_file = profile.watermark_image
-
-            font_size = getattr(gallery, 'watermark_font_size', None) or (getattr(profile, 'watermark_font_size', None) if profile else None) or 'md'
-            font_color = getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', None) if profile else None) or '#FFFFFF'
-            font_style = getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', None) if profile else None) or 'serif'
-
-            raw_bytes = None
-            try:
-                raw_bytes = storage.download(media.storage_key)
-            except Exception:
-                if hasattr(media, 'file') and media.file:
-                    try:
-                        raw_bytes = media.file.read()
-                    except Exception:
-                        pass
-            if not raw_bytes and hasattr(storage, '_resolve_path'):
-                try:
-                    p = storage._resolve_path(media.storage_key)
-                    if p.exists():
-                        with open(p, 'rb') as f:
-                            raw_bytes = f.read()
-                except Exception:
-                    pass
-
-            if raw_bytes:
-                try:
-                    watermarked_stream = stamp_watermark_on_image(
-                        io.BytesIO(raw_bytes),
-                        watermark_text=watermark_text,
-                        logo_file=logo_file,
-                        opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
-                        position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
-                        font_style=font_style,
-                        font_size=font_size,
-                        font_color=font_color,
-                        watermark_type=wm_type,
-                    )
-                    return FileResponse(watermarked_stream, as_attachment=True, filename=filename)
-                except Exception as err:
-                    logger.warning(f"Watermark baking failed on single download: {err}")
-
-        signed_url = storage.generate_signed_download_url(media.storage_key, expires_in=3600, filename=filename)
-
-        # For LocalStorageProvider, direct FileResponse or Nginx X-Accel-Redirect
-        if isinstance(storage, type(get_storage_provider())) and hasattr(storage, "_resolve_path"):
-            path = storage._resolve_path(media.storage_key)
-            if path.exists():
-                use_x_accel = getattr(settings, 'USE_X_ACCEL_REDIRECT', False) or request.headers.get('X-Accel-Support') == 'true'
-                if use_x_accel:
-                    clean_key = media.storage_key.lstrip("/").replace("\\", "/")
-                    response = HttpResponse()
-                    response['X-Accel-Redirect'] = f"/protected_media/storage_objects/{clean_key}"
-                    response['Content-Type'] = media.mime_type or 'application/octet-stream'
-                    response['Content-Disposition'] = f'attachment; filename="{filename}"'
-                    response['Access-Control-Expose-Headers'] = 'Content-Disposition'
-                    return response
-                return FileResponse(open(path, "rb"), as_attachment=True, filename=filename)
-
-        if signed_url and signed_url.startswith('/'):
-            signed_url = request.build_absolute_uri(signed_url)
-
-        return Response({"download_url": signed_url, "expires_in": 3600}, status=status.HTTP_200_OK)
 
 
 class GalleryBulkDownloadView(APIView):
@@ -3754,6 +3650,7 @@ def robust_api_view(view_func):
     via Django HttpRequest routing, DRF request wrapper, or directly in tests.
     """
     wrapped = api_view(['GET'])(permission_classes([AllowAny])(view_func))
+    wrapped.cls.perform_content_negotiation = lambda self, request, force=False: (self.get_renderers()[0], self.get_renderers()[0].media_type)
     @functools.wraps(view_func)
     def inner(request, *args, **kwargs):
         if isinstance(request, Request):
@@ -3892,6 +3789,17 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
     except Exception:
         storage = None
 
+    format_param = (request.GET.get('format') or (hasattr(request, 'query_params') and request.query_params.get('format')) or '').lower()
+    if format_param in ('raw', 'jpeg'):
+        format_choice = format_param
+    else:
+        format_choice = 'original'
+
+    apply_watermark_param = (
+        request.GET.get('watermark', '').lower() == 'true' or
+        (hasattr(request, 'query_params') and request.query_params.get('watermark', '').lower() == 'true')
+    )
+
     # 5. Create a high-performance disk-streamed ZIP file with ZIP_STORED (Zero RAM buffering)
     zip_dir = os.path.join(settings.MEDIA_ROOT, 'storage_objects', 'archives', 'temp')
     os.makedirs(zip_dir, exist_ok=True)
@@ -3902,7 +3810,13 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
 
     with zipfile.ZipFile(zip_temp_path, mode='w', compression=zipfile.ZIP_STORED, allowZip64=True) as zip_file:
         for idx, item in enumerate(media_list, start=1):
-            file_field = getattr(item, 'file', None) or getattr(item, 'image', None)
+            is_raw = False
+            if format_choice == 'raw' and getattr(item, 'raw_file', None) and bool(item.raw_file):
+                file_field = item.raw_file
+                is_raw = True
+            else:
+                file_field = getattr(item, 'file', None) or getattr(item, 'image', None)
+
             file_url = getattr(item, 'file_url', None) or getattr(item, 'url', None)
             storage_key = getattr(item, 'storage_key', None) or getattr(item, 'original_storage_key', None)
 
@@ -3910,7 +3824,18 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
             raw_title = getattr(item, 'title', None) or getattr(item, 'original_filename', None) or f"photo_{idx:03d}"
             raw_title_clean = os.path.basename(str(raw_title).replace('\\', '/'))
             base_name, ext = os.path.splitext(raw_title_clean)
-            ext = ext if ext else getattr(item, 'file_extension', None) or '.jpg'
+            if format_choice == 'jpeg':
+                ext = '.jpg'
+            elif format_choice == 'raw' and is_raw:
+                if file_field and hasattr(file_field, 'name'):
+                    _, raw_ext = os.path.splitext(file_field.name)
+                    if raw_ext:
+                        ext = raw_ext
+                if not ext or ext == '.jpg':
+                    ext = getattr(item, 'file_extension', None) or '.cr3'
+            else:
+                ext = ext if ext else getattr(item, 'file_extension', None) or '.jpg'
+
             clean_base = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_', '.')).strip() or f"photo_{idx:03d}"
             filename = f"{idx:03d}_{clean_base}{ext}".replace('/', '_').replace('\\', '_')
             
@@ -3921,8 +3846,19 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
             # Read file content safely across all storage backends:
             file_bytes = None
 
-            # Attempt A: Custom Storage Provider (LocalStorageProvider, S3, Cloudinary, etc.)
-            if storage and storage_key:
+            # Attempt A1: For RAW files, prioritize reading the raw_file field directly
+            if is_raw and file_field:
+                file_bytes = read_media_bytes(file_field, filename=clean_base)
+                if not file_bytes and hasattr(file_field, 'open'):
+                    try:
+                        file_field.open('rb')
+                        file_bytes = file_field.read()
+                        file_field.close()
+                    except Exception:
+                        file_bytes = None
+
+            # Attempt A2: Custom Storage Provider (LocalStorageProvider, S3, Cloudinary, etc.)
+            if not file_bytes and storage and storage_key and not is_raw:
                 try:
                     if hasattr(storage, 'download') and storage.exists(storage_key):
                         file_bytes = storage.download(storage_key)
@@ -3944,6 +3880,7 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                         file_field.close()
                 except Exception:
                     file_bytes = None
+
 
             # Attempt D: Local filesystem path if exists on disk (handles NotImplementedError on S3)
             if not file_bytes and file_field and hasattr(file_field, 'path'):
@@ -4012,8 +3949,9 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
 
             # Write file bytes into the ZIP archive
             if file_bytes:
-                # Watermark baking if enabled on gallery and media item is a photo
-                if getattr(gallery, 'watermark_enabled', False) and getattr(item, 'media_type', 'photo') != 'video':
+                # Watermark baking if enabled on gallery (or requested) and media item is a photo and not RAW
+                should_watermark = (getattr(gallery, 'watermark_enabled', False) or apply_watermark_param) and not is_raw and getattr(item, 'media_type', 'photo') != 'video'
+                if should_watermark:
                     try:
                         profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
                         legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
@@ -4090,7 +4028,10 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
 
     # 6. Prepare streaming response directly from disk
     gallery_slug = getattr(gallery, 'slug', None) or slugify(getattr(gallery, 'title', 'gallery')) or 'gallery'
-    zip_filename = f"{gallery_slug}_photos.zip"
+    if format_param in ('raw', 'jpeg'):
+        zip_filename = f"{gallery_slug}-{format_choice}-collection.zip"
+    else:
+        zip_filename = f"{gallery_slug}_photos.zip"
     
     use_x_accel = getattr(settings, 'USE_X_ACCEL_REDIRECT', False) or request.headers.get('X-Accel-Support') == 'true'
     if use_x_accel:
@@ -4098,7 +4039,10 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
         response['X-Accel-Redirect'] = f"/protected_media/storage_objects/archives/temp/dl_{temp_zip_id}.zip"
         response['Content-Type'] = 'application/zip'
         response['Content-Disposition'] = f'attachment; filename="{zip_filename}"'
-        response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+        response['Access-Control-Allow-Origin'] = '*'
+        response['Access-Control-Expose-Headers'] = 'Content-Disposition, Content-Length'
+        return response
+
     class StreamingZipFileResponse(FileResponse):
         def __init__(self, file_path, *args, **kwargs):
             self._disk_path = file_path
@@ -4113,7 +4057,8 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
             return self._cached_content
 
     response = StreamingZipFileResponse(zip_temp_path, content_type='application/zip', as_attachment=True, filename=zip_filename)
-    response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+    response['Access-Control-Allow-Origin'] = '*'
+    response['Access-Control-Expose-Headers'] = 'Content-Disposition, Content-Length'
     return response
 
 
@@ -4123,6 +4068,10 @@ class PublicGalleryDownloadZipView(APIView):
     GET /api/public/galleries/{slug_or_id}/download-zip/
     """
     permission_classes = [AllowAny]
+
+    def perform_content_negotiation(self, request, force=False):
+        renderers = self.get_renderers()
+        return (renderers[0], renderers[0].media_type)
 
     def get(self, request, slug_or_id=None, id_or_slug=None, *args, **kwargs):
         target = slug_or_id or id_or_slug or kwargs.get('pk')

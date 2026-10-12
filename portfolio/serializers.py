@@ -183,6 +183,8 @@ class PortfolioInquirySerializer(serializers.ModelSerializer):
     eventDate = serializers.DateField(source='event_date', required=False, allow_null=True)
     photographerId = serializers.SerializerMethodField()
     projectId = serializers.CharField(source='project_id', required=False, allow_null=True)
+    galleryTitle = serializers.CharField(source='gallery_title', required=False, allow_null=True)
+    galleryId = serializers.SerializerMethodField()
     is_locked = serializers.SerializerMethodField()
     isLocked = serializers.SerializerMethodField()
 
@@ -193,11 +195,15 @@ class PortfolioInquirySerializer(serializers.ModelSerializer):
             'client_email', 'clientEmail', 'client_phone', 'clientPhone',
             'event_type', 'eventType', 'event_date', 'eventDate',
             'location', 'budget', 'message', 'status', 'notes',
+            'gallery', 'gallery_title', 'galleryTitle', 'galleryId', 'source',
             'project_id', 'projectId',
             'is_locked', 'isLocked',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'photographer']
+
+    def get_galleryId(self, obj):
+        return str(obj.gallery_id) if getattr(obj, 'gallery_id', None) else None
 
     def get_photographerId(self, obj):
         if obj.photographer:

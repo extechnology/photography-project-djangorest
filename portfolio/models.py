@@ -300,16 +300,17 @@ class PortfolioWorkPhoto(models.Model):
 
 
 class PortfolioInquiry(models.Model):
-    EVENT_TYPE_CHOICES = (
-        ('wedding', 'Wedding'),
-        ('pre-wedding', 'Pre-Wedding'),
-        ('editorial', 'Editorial / Fashion'),
-        ('commercial', 'Commercial'),
+    EVENT_TYPES = (
+        ('wedding', 'Wedding / Ceremony'),
+        ('pre-wedding', 'Pre-Wedding / Destination'),
+        ('editorial', 'Fashion / Editorial'),
+        ('commercial', 'Commercial / Architecture'),
         ('portrait', 'Portrait Session'),
+        ('maternity', 'Maternity & Family'),
         ('workshop', 'Workshop / Mentorship'),
-        ('maternity', 'Maternity'),
-        ('other', 'Other'),
+        ('other', 'Other Bespoke Service'),
     )
+    EVENT_TYPE_CHOICES = EVENT_TYPES
 
     STATUS_CHOICES = (
         ('new', 'New Lead'),
@@ -321,8 +322,19 @@ class PortfolioInquiry(models.Model):
     photographer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
+        related_name='inquiries',
+        db_index=True
+    )
+    gallery = models.ForeignKey(
+        'App.Gallery',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='inquiries'
     )
+    gallery_title = models.CharField(max_length=255, blank=True, null=True)
+    source = models.CharField(max_length=100, default='portfolio', help_text="e.g. 'gallery:cinematic', 'portfolio'")
+
     client_name = models.CharField(max_length=255)
     client_email = models.EmailField()
     client_phone = models.CharField(max_length=64, blank=True, default='')
@@ -342,9 +354,16 @@ class PortfolioInquiry(models.Model):
         ordering = ['-created_at']
         verbose_name = 'Portfolio Inquiry'
         verbose_name_plural = 'Portfolio Inquiries'
+        indexes = [
+            models.Index(fields=['photographer', 'status']),
+            models.Index(fields=['photographer', '-created_at']),
+        ]
 
     def __str__(self):
-        return f"{self.client_name} ({self.event_type}) -> {self.photographer.username or self.photographer_id}"
+        return f"{self.client_name} - {self.event_type} ({self.status})"
+
+
+Inquiry = PortfolioInquiry
 
 
 class PortfolioView(models.Model):

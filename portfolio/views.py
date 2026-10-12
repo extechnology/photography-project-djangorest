@@ -532,14 +532,52 @@ class PublicInquiryCreateView(APIView):
 
     def post(self, request):
         data = request.data
+        gallery_identifier = (
+            data.get('gallery_id')
+            or data.get('galleryId')
+            or data.get('gallery_slug')
+            or data.get('gallerySlug')
+        )
+
+        gallery = None
+        user = None
+
+        # 1. Resolve gallery if provided
+        if gallery_identifier:
+            raw_ident = str(gallery_identifier).strip()
+            try:
+                from galleries.models import Gallery
+                if raw_ident.isdigit():
+                    gallery = Gallery.objects.select_related('photographer').filter(id=int(raw_ident)).first()
+                else:
+                    try:
+                        val_uuid = uuid.UUID(raw_ident)
+                        gallery = Gallery.objects.select_related('photographer').filter(id=val_uuid).first()
+                    except (ValueError, TypeError):
+                        gallery = None
+                    if not gallery:
+                        gallery = Gallery.objects.select_related('photographer').filter(slug=raw_ident).first()
+                    if not gallery:
+                        gallery = Gallery.objects.select_related('photographer').filter(share_token=raw_ident).first()
+
+                if gallery:
+                    if hasattr(gallery, 'user') and getattr(gallery, 'user', None):
+                        user = gallery.user
+                    elif hasattr(gallery.photographer, 'user') and getattr(gallery.photographer, 'user', None):
+                        user = gallery.photographer.user
+                    elif hasattr(gallery, 'photographer'):
+                        user = gallery.photographer
+            except Exception as e:
+                logger.warning(f"Error resolving gallery {gallery_identifier}: {e}")
+
+        # 2. Resolve photographer explicitly if not resolved from gallery
         photographer_identifier = (
             data.get('photographer_id')
             or data.get('photographerId')
             or data.get('photographer')
         )
 
-        user = None
-        if photographer_identifier:
+        if not user and photographer_identifier:
             raw_id = str(photographer_identifier).strip()
             # 1. Lookup by username
             user = User.objects.filter(username__iexact=raw_id).first()
@@ -585,9 +623,23 @@ class PublicInquiryCreateView(APIView):
         message = data.get('message', '')
         project_id = data.get('project_id') or data.get('projectId') or None
 
+        source = data.get('source')
+        if not source:
+            if gallery and getattr(gallery, 'template_id', None):
+                source = f"gallery:{gallery.template_id}"
+            elif gallery:
+                source = 'gallery'
+            else:
+                source = 'portfolio'
+
+        gallery_title = gallery.title if gallery else (data.get('gallery_title') or data.get('galleryTitle') or '')
+
         # 1. Create PortfolioInquiry
         inquiry = PortfolioInquiry.objects.create(
             photographer=user,
+            gallery=gallery,
+            gallery_title=gallery_title,
+            source=source,
             client_name=client_name,
             client_email=client_email,
             client_phone=client_phone,
@@ -629,6 +681,7 @@ class PublicInquiryCreateView(APIView):
             {
                 "success": True,
                 "message": "Inquiry delivered successfully.",
+                "inquiry_id": str(inquiry.id),
                 "id": str(inquiry.id),
                 "inquiry": PortfolioInquirySerializer(inquiry).data
             },

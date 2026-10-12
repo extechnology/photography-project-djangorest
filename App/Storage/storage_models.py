@@ -344,6 +344,22 @@ class Gallery(models.Model):
         name = full_name or getattr(user, 'username', 'Photographer')
         return f"© {name}"
 
+    @property
+    def photographer_name(self):
+        profile = getattr(self.photographer, 'photographer_profile', None) or getattr(self, 'photographer', None)
+        user = getattr(self.photographer, 'user', None) or getattr(self, 'user', None) or self.photographer
+        return (
+            (getattr(profile, 'studio_name', None) if profile else None) or
+            (getattr(profile, 'name', None) if profile else None) or
+            (user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else '') or
+            getattr(user, 'username', 'PHOTOGRAPHER')
+        )
+
+    @property
+    def watermark_image(self):
+        profile = getattr(self.photographer, 'photographer_profile', None) or getattr(self, 'photographer', None)
+        return getattr(profile, 'watermark_image', None) if profile else None
+
     def get_watermark_type(self) -> str:
         """Returns gallery watermark_type override or inherits from photographer profile, defaulting strictly to 'text'."""
         if self.watermark_type:
@@ -552,6 +568,10 @@ class GallerySection(models.Model):
 
 class Media(models.Model):
     def __init__(self, *args, **kwargs):
+        if 'name' in kwargs and 'original_filename' not in kwargs:
+            kwargs['original_filename'] = kwargs.pop('name')
+        if 'size' in kwargs and 'file_size' not in kwargs:
+            kwargs['file_size'] = kwargs.pop('size')
         if 'size_bytes' in kwargs and 'file_size' not in kwargs:
             kwargs['file_size'] = kwargs.pop('size_bytes')
         elif 'size_bytes' in kwargs:
@@ -626,7 +646,10 @@ class Media(models.Model):
     caption = models.TextField(blank=True, default='')
     section_title = models.CharField(max_length=100, default='Highlights', db_index=True)
     file = models.FileField(upload_to='galleries/%Y/%m/', null=True, blank=True)
-    original_filename = models.CharField(max_length=255)
+    raw_file = models.FileField(upload_to='galleries/%Y/%m/raw/', null=True, blank=True)
+    preview = models.FileField(upload_to='galleries/%Y/%m/previews/', null=True, blank=True)
+    thumbnail = models.FileField(upload_to='galleries/%Y/%m/thumbnails/', null=True, blank=True)
+    original_filename = models.CharField(max_length=255, blank=True)
 
     # Object storage keys (decoupled from storage provider/CDN URLs)
     storage_key = models.CharField(max_length=512, db_index=True)
@@ -682,15 +705,6 @@ class Media(models.Model):
             models.Index(fields=['processing_status']),
             models.Index(fields=['deleted_at']),
         ]
-
-    def __init__(self, *args, **kwargs):
-        if 'name' in kwargs and 'original_filename' not in kwargs:
-            kwargs['original_filename'] = kwargs.pop('name')
-        if 'size' in kwargs and 'file_size' not in kwargs:
-            kwargs['file_size'] = kwargs.pop('size')
-        if 'gallery' in kwargs and 'photographer' not in kwargs and getattr(kwargs['gallery'], 'photographer', None):
-            kwargs['photographer'] = kwargs['gallery'].photographer
-        super().__init__(*args, **kwargs)
 
     def save(self, *args, **kwargs):
         if not self.storage_key and self.gallery_id:

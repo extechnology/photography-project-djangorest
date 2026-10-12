@@ -3,7 +3,7 @@ import math
 import os
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageColor
 
-__all__ = ['stamp_watermark_on_image', 'apply_watermark', 'hex_to_rgba']
+__all__ = ['stamp_watermark_on_image', 'apply_watermark', 'hex_to_rgba', 'apply_watermark_to_image']
 
 
 def hex_to_rgba(hex_code, opacity=1.0):
@@ -338,3 +338,123 @@ def stamp_watermark_on_image(
     stamped.convert('RGB').save(out, format='JPEG', quality=quality, optimize=True)
     out.seek(0)
     return out
+
+
+def apply_watermark_to_image(image_bytes: bytes, watermark_config: dict) -> bytes:
+    """
+    Applies text or logo watermark to image bytes using Pillow and returns watermarked JPEG bytes.
+    """
+    if not watermark_config or not watermark_config.get('enabled', False):
+        return image_bytes
+
+    try:
+        base_image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        width, height = base_image.size
+        
+        watermark_type = str(watermark_config.get('type', 'text') or 'text').lower().strip()
+        opacity = float(watermark_config.get('opacity', 0.45) if watermark_config.get('opacity') is not None else 0.45)
+        if opacity > 1.0:
+            opacity /= 100.0
+        opacity = max(0.1, min(1.0, opacity))
+
+        position = str(watermark_config.get('position', 'bottom-right') or 'bottom-right').replace('_', '-').strip().lower()
+        
+        # 1. Image / Logo Watermark
+        logo_path = watermark_config.get('image_path')
+        logo_file = watermark_config.get('image_file') or watermark_config.get('logo_file') or watermark_config.get('watermark_image')
+        
+        if watermark_type == 'image' and (logo_path or logo_file):
+            logo = None
+            if logo_path and isinstance(logo_path, (str, os.PathLike)) and os.path.exists(str(logo_path)):
+                logo = Image.open(str(logo_path)).convert("RGBA")
+            elif logo_file:
+                if hasattr(logo_file, 'path') and os.path.exists(logo_file.path):
+                    logo = Image.open(logo_file.path).convert("RGBA")
+                elif hasattr(logo_file, 'open'):
+                    try:
+                        with logo_file.open('rb') as lf:
+                            logo = Image.open(lf).convert("RGBA")
+                    except Exception:
+                        pass
+                elif hasattr(logo_file, 'seek'):
+                    try:
+                        logo_file.seek(0)
+                        logo = Image.open(logo_file).convert("RGBA")
+                    except Exception:
+                        pass
+
+            if logo:
+                max_w, max_h = int(width * 0.22), int(height * 0.18)
+                logo.thumbnail((max(20, max_w), max(20, max_h)), Image.Resampling.LANCZOS)
+                lw, lh = logo.size
+
+                # Adjust opacity
+                alpha = logo.split()[3]
+                alpha = ImageEnhance.Brightness(alpha).enhance(opacity)
+                logo.putalpha(alpha)
+
+                padding = max(20, int(min(width, height) * 0.035))
+                if position == 'bottom-left':
+                    coords = (padding, height - lh - padding)
+                elif position == 'top-right':
+                    coords = (width - lw - padding, padding)
+                elif position == 'top-left':
+                    coords = (padding, padding)
+                elif position == 'center':
+                    coords = ((width - lw) // 2, (height - lh) // 2)
+                else: # bottom-right
+                    coords = (width - lw - padding, height - lh - padding)
+
+                base_image.paste(logo, coords, logo)
+                output = io.BytesIO()
+                rgb_image = base_image.convert("RGB")
+                rgb_image.save(output, format="JPEG", quality=95, optimize=True)
+                return output.getvalue()
+
+        # 2. Typographic Watermark
+        text = str(watermark_config.get('text', 'PHOTOGRAPHER') or 'PHOTOGRAPHER')
+        overlay = Image.new("RGBA", base_image.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        font_size = max(20, int(min(width, height) * 0.035))
+        font_style = watermark_config.get('font_style', 'serif') or 'serif'
+        font = _resolve_font(font_style, font_size)
+        if not font:
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except IOError:
+                font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        padding = max(20, int(min(width, height) * 0.035))
+
+        if position == 'bottom-left':
+            coords = (padding, height - th - padding)
+        elif position == 'top-right':
+            coords = (width - tw - padding, padding)
+        elif position == 'top-left':
+            coords = (padding, padding)
+        elif position == 'center':
+            coords = ((width - tw) // 2, (height - th) // 2)
+        else: # bottom-right
+            coords = (width - tw - padding, height - th - padding)
+
+        alpha_int = int(opacity * 255)
+        font_color = watermark_config.get('font_color', '#FFFFFF') or '#FFFFFF'
+        fill_rgba = hex_to_rgba(font_color, opacity)
+        
+        # Draw subtle dropshadow for legibility
+        draw.text((coords[0] + 2, coords[1] + 2), text, font=font, fill=(0, 0, 0, int(alpha_int * 0.8)))
+        draw.text(coords, text, font=font, fill=fill_rgba)
+
+        base_image = Image.alpha_composite(base_image, overlay)
+
+        output = io.BytesIO()
+        rgb_image = base_image.convert("RGB")
+        rgb_image.save(output, format="JPEG", quality=95, optimize=True)
+        return output.getvalue()
+    except Exception as e:
+        # If watermarking encounters an unexpected error, return untouched bytes
+        return image_bytes
+

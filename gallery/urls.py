@@ -14,6 +14,9 @@ from galleries.views_upload import (
     BulkUploadGalleryMediaView,
     GalleryUploadResumeStatusView,
 )
+from galleries.views.media_download import MediaDownloadView
+from galleries.views.gallery_zip_download import GalleryZipDownloadView
+
 
 
 urlpatterns = [
@@ -47,5 +50,12 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/media/bulk-upload/', BulkUploadGalleryMediaView.as_view(), name='gallery-media-bulk-upload'),
     path('galleries/<uuid:gallery_id>/upload-status/', GalleryUploadResumeStatusView.as_view(), name='gallery-upload-status-uuid'),
     path('galleries/<str:gallery_id>/upload-status/', GalleryUploadResumeStatusView.as_view(), name='gallery-upload-status'),
+
+    # Direct Media Attachment & Format Selection Downloads (RAW vs JPEG)
+    path('galleries/media/<uuid:media_id>/download/', MediaDownloadView.as_view(), name='gallery-media-download'),
+    path('public/galleries/<str:id_or_slug>/download-zip/', GalleryZipDownloadView.as_view(), name='public-gallery-download-zip-galleryapp'),
+    path('galleries/<uuid:gallery_id>/download-zip/', GalleryZipDownloadView.as_view(), name='gallery-download-zip-galleryapp'),
+    path('galleries/<str:gallery_id>/download-zip/', GalleryZipDownloadView.as_view(), name='gallery-download-zip-galleryapp-str'),
 ]
+
 
