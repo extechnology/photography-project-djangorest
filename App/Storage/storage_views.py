@@ -84,7 +84,8 @@ from App.Storage.storage_serializers import (
     StorageUsageSerializer,
     BulkDownloadJobSerializer,
 )
-from App.Storage.services.storage_service import get_storage_provider
+from App.Storage.services.storage_service import get_storage_provider, LocalStorageProvider
+from App.Storage.services.media_transfer import read_media_bytes, fix_local_permissions
 from gallery_favorites_api import get_annotated_gallery_queryset
 from App.Storage.services.quota_service import StorageQuotaService, StorageQuotaExceededException
 from App.Storage.services.face_service import FaceService
@@ -712,14 +713,19 @@ class PublicEventDownloadAllZipView(APIView):
             return Response({"message": "No photos available to download."}, status=status.HTTP_404_NOT_FOUND)
 
         zip_buffer = io.BytesIO()
+        files_written = 0
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             used_names = set()
             for idx, photo in enumerate(photos, start=1):
-                if not photo.image:
-                    continue
-                try:
-                    photo_data = photo.image.read()
-                except Exception:
+                photo_field = getattr(photo, 'image', None) or getattr(photo, 'file', None)
+                photo_data = read_media_bytes(
+                    photo_field,
+                    filename=photo.original_filename,
+                    storage_key=getattr(photo, 'storage_key', None)
+                )
+                if not photo_data and getattr(photo, 'preview_storage_key', None):
+                    photo_data = read_media_bytes(None, storage_key=photo.preview_storage_key)
+                if not photo_data:
                     continue
 
                 raw_name = photo.original_filename or f"photo_{photo.id}.jpg"
@@ -735,6 +741,10 @@ class PublicEventDownloadAllZipView(APIView):
                 used_names.add(clean_name)
 
                 zip_file.writestr(clean_name, photo_data)
+                files_written += 1
+
+        if files_written == 0:
+            return Response({"message": "No photos could be found in storage to bundle into archive."}, status=status.HTTP_404_NOT_FOUND)
 
         SharedEvent.objects.filter(pk=event.pk).update(downloads_count=F('downloads_count') + 1)
 
@@ -3888,6 +3898,7 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
     temp_zip_id = uuid.uuid4().hex
     zip_temp_path = os.path.join(zip_dir, f"dl_{temp_zip_id}.zip")
     used_filenames = set()
+    files_written = 0
 
     with zipfile.ZipFile(zip_temp_path, mode='w', compression=zipfile.ZIP_STORED, allowZip64=True) as zip_file:
         for idx, item in enumerate(media_list, start=1):
@@ -3897,7 +3908,8 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
 
             # Determine clean unique filename inside ZIP
             raw_title = getattr(item, 'title', None) or getattr(item, 'original_filename', None) or f"photo_{idx:03d}"
-            base_name, ext = os.path.splitext(raw_title)
+            raw_title_clean = os.path.basename(str(raw_title).replace('\\', '/'))
+            base_name, ext = os.path.splitext(raw_title_clean)
             ext = ext if ext else getattr(item, 'file_extension', None) or '.jpg'
             clean_base = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_', '.')).strip() or f"photo_{idx:03d}"
             filename = f"{idx:03d}_{clean_base}{ext}".replace('/', '_').replace('\\', '_')
@@ -3912,14 +3924,18 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
             # Attempt A: Custom Storage Provider (LocalStorageProvider, S3, Cloudinary, etc.)
             if storage and storage_key:
                 try:
-                    if hasattr(storage, 'download'):
+                    if hasattr(storage, 'download') and storage.exists(storage_key):
                         file_bytes = storage.download(storage_key)
                     elif hasattr(storage, 'download_bytes'):
                         file_bytes = storage.download_bytes(storage_key)
                 except Exception:
                     file_bytes = None
 
-            # Attempt B: Open via Django Storage backend (works with S3, Cloudinary, FileSystemStorage)
+            # Attempt B: Resilient multi-strategy reader (disk scan, MEDIA_ROOT fallback)
+            if not file_bytes:
+                file_bytes = read_media_bytes(file_field, filename=clean_base, storage_key=storage_key)
+
+            # Attempt C: Open via Django Storage backend (works with S3, Cloudinary, FileSystemStorage)
             if not file_bytes and file_field and hasattr(file_field, 'open'):
                 try:
                     if getattr(file_field, 'name', None):
@@ -3929,7 +3945,7 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                 except Exception:
                     file_bytes = None
 
-            # Attempt C: Local filesystem path if exists on disk (handles NotImplementedError on S3)
+            # Attempt D: Local filesystem path if exists on disk (handles NotImplementedError on S3)
             if not file_bytes and file_field and hasattr(file_field, 'path'):
                 try:
                     if getattr(file_field, 'name', None) and os.path.exists(file_field.path):
@@ -3938,23 +3954,30 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                 except (NotImplementedError, ValueError, Exception):
                     file_bytes = None
 
-            # Attempt D: Direct local media_root path fallback for storage_key
+            # Attempt E: Direct local media_root path fallback for storage_key
             if not file_bytes and storage_key and hasattr(settings, 'MEDIA_ROOT'):
                 try:
-                    clean_k = storage_key.lstrip('/')
+                    clean_k = str(storage_key).replace('\\', '/').lstrip('/')
                     local_obj_path = os.path.join(settings.MEDIA_ROOT, 'storage_objects', clean_k)
-                    if os.path.exists(local_obj_path):
+                    if os.path.exists(local_obj_path) and os.path.isfile(local_obj_path):
                         with open(local_obj_path, 'rb') as f:
                             file_bytes = f.read()
                     else:
                         local_path = os.path.join(settings.MEDIA_ROOT, clean_k)
-                        if os.path.exists(local_path):
+                        if os.path.exists(local_path) and os.path.isfile(local_path):
                             with open(local_path, 'rb') as f:
                                 file_bytes = f.read()
                 except Exception:
                     file_bytes = None
 
-            # Attempt E: Fetch from URL if remote storage URL is available (S3, Cloudinary, CDN, DevTunnel)
+            # Attempt F: Fallback to preview_storage_key or thumbnail_storage_key if original missing
+            if not file_bytes and getattr(item, 'preview_storage_key', None):
+                file_bytes = read_media_bytes(None, storage_key=item.preview_storage_key)
+            if not file_bytes and getattr(item, 'thumbnail_storage_key', None):
+                file_bytes = read_media_bytes(None, storage_key=item.thumbnail_storage_key)
+
+            # Attempt G: Fetch from URL ONLY for truly remote external storage (S3, Cloudinary, etc.)
+            # Guard against dangerous self-loopback deadlocks on live Gunicorn!
             if not file_bytes:
                 target_url = None
                 if file_field and getattr(file_field, 'name', None) and hasattr(file_field, 'url'):
@@ -3977,19 +4000,15 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                                 target_url = request.build_absolute_uri(target_url)
                         except Exception:
                             pass
-                    try:
-                        resp = requests.get(target_url, timeout=12)
-                        if resp.status_code == 200:
-                            file_bytes = resp.content
-                    except Exception:
-                        file_bytes = None
-
-            # Attempt F: Fallback to preview_storage_key if original missing
-            if not file_bytes and storage and getattr(item, 'preview_storage_key', None):
-                try:
-                    file_bytes = storage.download(item.preview_storage_key)
-                except Exception:
-                    file_bytes = None
+                    target_str = str(target_url).lower()
+                    is_loopback = any(h in target_str for h in ('127.0.0.1', 'localhost', '0.0.0.0'))
+                    if not is_loopback and target_str.startswith(('http://', 'https://')):
+                        try:
+                            resp = requests.get(target_url, timeout=5)
+                            if resp.status_code == 200:
+                                file_bytes = resp.content
+                        except Exception:
+                            file_bytes = None
 
             # Write file bytes into the ZIP archive
             if file_bytes:
@@ -4040,9 +4059,23 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                         )
                         file_bytes = watermarked_stream.getvalue()
                     except Exception as wm_err:
-                        logger.warning(f"Watermark baking failed for item {item.id} in ZIP download: {wm_err}")
+                        logger.warning(f"Watermark baking failed for item {item.id} in ZIP download: {wm_err}. Using original image bytes.")
 
                 zip_file.writestr(filename, file_bytes)
+                files_written += 1
+
+    if files_written == 0:
+        if os.path.exists(zip_temp_path):
+            try:
+                os.unlink(zip_temp_path)
+            except Exception:
+                pass
+        return Response(
+            {"detail": "No photo files could be located in storage to build the archive."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    fix_local_permissions(zip_temp_path)
 
     # Update gallery downloads count telemetry
     try:

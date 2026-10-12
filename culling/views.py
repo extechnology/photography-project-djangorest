@@ -33,7 +33,7 @@ from .ai_engine import run_server_side_culling, run_server_side_ai_analysis
 from .permissions import HasAICullingAccess, HasAICullingPlanPermission
 from App.Storage.storage_models import Gallery, GallerySection, Media as GalleryMedia
 from App.Storage.services.storage_service import get_storage_provider
-from App.Storage.services.media_transfer import transfer_media_to_gallery
+from App.Storage.services.media_transfer import transfer_media_to_gallery, read_media_bytes
 from App.Photographers.photo_models import PhotographerProfile
 
 
@@ -657,15 +657,17 @@ class ExportCullingZipView(APIView):
             keepers = session.photos.all()
 
         zip_buffer = io.BytesIO()
+        files_written = 0
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in keepers:
-                if p.file:
-                    try:
-                        filename = p.original_filename or os.path.basename(p.file.name)
-                        p.file.seek(0)
-                        zf.writestr(filename, p.file.read())
-                    except Exception:
-                        pass
+                filename = p.original_filename or (os.path.basename(p.file.name) if getattr(p, 'file', None) else f"photo_{p.id}.jpg")
+                photo_bytes = read_media_bytes(getattr(p, 'file', None), filename=filename, storage_key=getattr(p, 'storage_key', None))
+                if photo_bytes:
+                    zf.writestr(filename, photo_bytes)
+                    files_written += 1
+
+        if files_written == 0:
+            return Response({"error": "No keeper photos could be located in storage to build the archive."}, status=status.HTTP_404_NOT_FOUND)
 
         zip_buffer.seek(0)
         resp = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")

@@ -182,3 +182,90 @@ class GalleryZipDownloadTests(TestCase):
         """When gallery does not exist, returns 404."""
         res = self.client.get("/api/public/galleries/non-existent-gallery-slug/download-zip/")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_download_zip_with_root_media_directory_and_backslashes(self):
+        """Photos saved directly under MEDIA_ROOT (e.g. via BulkUploadGalleryMediaView) with Windows backslashes resolve correctly."""
+        rel_dir = os.path.join(settings.MEDIA_ROOT, "galleries", str(self.gallery.id), "highlights")
+        os.makedirs(rel_dir, exist_ok=True)
+        file_path = os.path.join(rel_dir, "wedding_shot.jpg")
+        with open(file_path, "wb") as f:
+            f.write(b"\xFF\xD8\xFF\xE0\x00\x10JFIF" + b"ROOT_MEDIA_BYTES")
+
+        # Key with Windows backslashes
+        win_key = f"galleries\\{self.gallery.id}\\highlights\\wedding_shot.jpg"
+        media = Media.objects.create(
+            photographer=self.profile,
+            gallery=self.gallery,
+            title="Root Shot",
+            original_filename="wedding_shot.jpg",
+            storage_key=win_key,
+            section_title="HIGHLIGHTS",
+            file_size=32,
+            upload_status="completed",
+        )
+
+        res = self.client.get(f"/api/public/galleries/{self.gallery.slug}/download-zip/?media_ids={media.id}")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        zip_file = zipfile.ZipFile(io.BytesIO(res.content))
+        file_list = zip_file.namelist()
+        self.assertEqual(len(file_list), 1)
+        self.assertEqual(zip_file.read(file_list[0]), b"\xFF\xD8\xFF\xE0\x00\x10JFIF" + b"ROOT_MEDIA_BYTES")
+
+        try:
+            os.unlink(file_path)
+        except Exception:
+            pass
+
+    def test_bulk_download_celery_task_produces_populated_archive(self):
+        """generate_bulk_download_archive_task creates non-empty archive and marks job ready."""
+        from App.Storage.storage_models import BulkDownloadJob
+        from App.Storage.tasks import generate_bulk_download_archive_task
+
+        job = BulkDownloadJob.objects.create(
+            gallery=self.gallery,
+            download_type="all_photos",
+            status="pending",
+        )
+
+        generate_bulk_download_archive_task(str(job.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, "ready")
+        self.assertEqual(job.progress_percent, 100)
+        self.assertGreater(job.selected_count, 0)
+        self.assertGreater(job.file_size, 0)
+
+        # Verify archive on disk is a valid zip with files
+        storage = get_storage_provider()
+        archive_path = storage.get_absolute_path(job.archive_storage_key)
+        self.assertTrue(os.path.exists(archive_path))
+        with zipfile.ZipFile(str(archive_path), "r") as z:
+            names = z.namelist()
+            self.assertEqual(len(names), 2)
+
+    def test_bulk_download_task_with_watermarking_fallback(self):
+        """When watermarking fails, original image bytes are preserved so no photos are dropped."""
+        from App.Storage.storage_models import BulkDownloadJob
+        from App.Storage.tasks import generate_bulk_download_archive_task
+
+        self.gallery.watermark_enabled = True
+        self.gallery.watermark_text = "Studio Watermark"
+        self.gallery.save()
+
+        job = BulkDownloadJob.objects.create(
+            gallery=self.gallery,
+            download_type="all_photos",
+            status="pending",
+        )
+
+        with patch("App.Storage.tasks.stamp_watermark_on_image", side_effect=Exception("Font missing on Linux")):
+            generate_bulk_download_archive_task(str(job.id))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, "ready")
+        self.assertEqual(job.selected_count, 2)
+
+        storage = get_storage_provider()
+        archive_path = storage.get_absolute_path(job.archive_storage_key)
+        with zipfile.ZipFile(str(archive_path), "r") as z:
+            names = z.namelist()
+            self.assertEqual(len(names), 2)

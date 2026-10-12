@@ -10,6 +10,7 @@ from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 
 from App.Storage.services.resumable_upload_service import ResumableUploadService
 from App.Storage.services.storage_service import get_storage_provider, LocalStorageProvider
+from App.Storage.services.media_transfer import fix_local_permissions
 
 
 class ResumableUploadInitView(APIView):
@@ -309,17 +310,21 @@ class DirectMediaFileServeView(APIView):
             raise Http404("File not found.")
 
         use_x_accel = getattr(settings, 'USE_X_ACCEL_REDIRECT', False) or request.headers.get('X-Accel-Support') == 'true'
-        clean_key = key.lstrip("/").replace("\\", "/")
-
-        if use_x_accel and isinstance(storage, LocalStorageProvider):
-            response = HttpResponse()
-            response['X-Accel-Redirect'] = f"/protected_media/storage_objects/{clean_key}"
-            response['Content-Type'] = 'application/octet-stream'
-            response['Content-Disposition'] = f'attachment; filename="{filename}"'
-            return response
 
         if isinstance(storage, LocalStorageProvider):
             abs_p = storage.get_absolute_path(key)
+            if hasattr(abs_p, 'exists') and abs_p.exists():
+                fix_local_permissions(str(abs_p))
+                if use_x_accel:
+                    try:
+                        rel_media = abs_p.relative_to(settings.MEDIA_ROOT).as_posix()
+                    except ValueError:
+                        rel_media = key.lstrip("/").replace("\\", "/")
+                    response = HttpResponse()
+                    response['X-Accel-Redirect'] = f"/protected_media/{rel_media}"
+                    response['Content-Type'] = 'application/octet-stream'
+                    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                    return response
             return FileResponse(open(abs_p, "rb"), as_attachment=True, filename=filename)
 
         return FileResponse(storage.open_stream(key), as_attachment=True, filename=filename)

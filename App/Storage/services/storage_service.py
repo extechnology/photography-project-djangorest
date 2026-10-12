@@ -68,10 +68,68 @@ class LocalStorageProvider(BaseStorageProvider):
         self.cdn_base = getattr(settings, "CDN_BASE_URL", None) or settings.MEDIA_URL.rstrip("/") + "/storage_objects"
 
     def _resolve_path(self, key: str) -> Path:
-        clean_key = key.lstrip("/").replace("\\", "/")
-        full_path = self.base_dir / clean_key
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        return full_path
+        if not key:
+            return self.base_dir
+
+        raw = str(key).strip().replace("\\", "/")
+        clean_key = raw.lstrip("/")
+
+        # If already an existing absolute path, return it directly
+        if os.path.isabs(raw):
+            p = Path(raw)
+            if p.is_file() or p.is_dir():
+                return p
+
+        media_root = Path(settings.MEDIA_ROOT)
+
+        # Build candidate paths to test for existing files on disk
+        candidates = []
+
+        # 1. Base storage_objects dir + clean_key
+        candidates.append(self.base_dir / clean_key)
+
+        # 2. MEDIA_ROOT + clean_key (for files uploaded via default_storage or FileField directly to MEDIA_ROOT)
+        candidates.append(media_root / clean_key)
+
+        # 3. If clean_key starts with "storage_objects/", test stripped
+        if clean_key.startswith("storage_objects/"):
+            so_sub = clean_key[len("storage_objects/"):].lstrip("/")
+            candidates.append(self.base_dir / so_sub)
+            candidates.append(media_root / so_sub)
+
+        # 4. If clean_key starts with "media/", test stripped
+        if clean_key.startswith("media/"):
+            m_sub = clean_key[len("media/"):].lstrip("/")
+            candidates.append(media_root / m_sub)
+            candidates.append(self.base_dir / m_sub)
+            if m_sub.startswith("storage_objects/"):
+                m_so_sub = m_sub[len("storage_objects/"):].lstrip("/")
+                candidates.append(self.base_dir / m_so_sub)
+                candidates.append(media_root / m_so_sub)
+
+        # Check existing candidates in priority order
+        for cand in candidates:
+            if cand.is_file():
+                return cand
+
+        # Fast search in common MEDIA_ROOT subfolders
+        fname = os.path.basename(clean_key)
+        for sub in ("galleries", "events", "storage_objects", "culling_staging", "previews", "thumbnails"):
+            sub_cand = media_root / sub / clean_key
+            if sub_cand.is_file():
+                return sub_cand
+
+        # Fallback for write operations (new file uploads):
+        # Prevent double storage_objects/ nesting
+        target_sub = clean_key
+        if target_sub.startswith("storage_objects/"):
+            target_sub = target_sub[len("storage_objects/"):].lstrip("/")
+        elif target_sub.startswith("media/storage_objects/"):
+            target_sub = target_sub[len("media/storage_objects/"):].lstrip("/")
+
+        fallback_path = self.base_dir / target_sub
+        fallback_path.parent.mkdir(parents=True, exist_ok=True)
+        return fallback_path
 
     def get_absolute_path(self, key: str) -> Path:
         return self._resolve_path(key)
@@ -132,7 +190,7 @@ class LocalStorageProvider(BaseStorageProvider):
 
     def download(self, key: str) -> bytes:
         path = self._resolve_path(key)
-        if not path.exists():
+        if not path.exists() or not path.is_file():
             raise FileNotFoundError(f"Storage key '{key}' not found.")
         with open(path, "rb") as f:
             return f.read()
@@ -148,7 +206,8 @@ class LocalStorageProvider(BaseStorageProvider):
         return False
 
     def exists(self, key: str) -> bool:
-        return self._resolve_path(key).exists()
+        path = self._resolve_path(key)
+        return path.exists() and path.is_file()
 
     def get_metadata(self, key: str) -> dict:
         path = self._resolve_path(key)

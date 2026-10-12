@@ -105,9 +105,17 @@ def read_media_bytes(file_source, filename=None, storage_key=None):
     media_root = str(settings.MEDIA_ROOT)
 
     for cand_name in candidate_names:
-        clean = cand_name.replace('\\', '/').lstrip('/')
+        clean = str(cand_name).replace('\\', '/').strip().lstrip('/')
 
-        # 4a: Direct join with MEDIA_ROOT
+        # 4a: Direct check if cand_name was already an absolute path
+        if os.path.isabs(str(cand_name)) and os.path.exists(cand_name) and os.path.isfile(cand_name):
+            try:
+                with open(cand_name, "rb") as f:
+                    return f.read()
+            except Exception:
+                pass
+
+        # 4b: Direct join with MEDIA_ROOT
         direct_path = os.path.normpath(os.path.join(media_root, clean))
         if os.path.exists(direct_path) and os.path.isfile(direct_path):
             try:
@@ -116,7 +124,7 @@ def read_media_bytes(file_source, filename=None, storage_key=None):
             except Exception:
                 pass
 
-        # 4b: Strip leading 'media/' if present
+        # 4c: Strip leading 'media/' if present
         stripped = re.sub(r'^/?media/', '', clean)
         stripped_path = os.path.normpath(os.path.join(media_root, stripped))
         if os.path.exists(stripped_path) and os.path.isfile(stripped_path):
@@ -126,7 +134,7 @@ def read_media_bytes(file_source, filename=None, storage_key=None):
             except Exception:
                 pass
 
-        # 4c: Check under storage_objects/
+        # 4d: Check under storage_objects/
         so_path = os.path.normpath(os.path.join(media_root, 'storage_objects', clean))
         if os.path.exists(so_path) and os.path.isfile(so_path):
             try:
@@ -135,7 +143,25 @@ def read_media_bytes(file_source, filename=None, storage_key=None):
             except Exception:
                 pass
 
-        # 4d: Check storage provider download
+        # 4e: If clean already had storage_objects/, check without it
+        if clean.startswith("storage_objects/"):
+            clean_no_so = clean[len("storage_objects/"):].lstrip('/')
+            cand_p1 = os.path.normpath(os.path.join(media_root, 'storage_objects', clean_no_so))
+            if os.path.exists(cand_p1) and os.path.isfile(cand_p1):
+                try:
+                    with open(cand_p1, "rb") as f:
+                        return f.read()
+                except Exception:
+                    pass
+            cand_p2 = os.path.normpath(os.path.join(media_root, clean_no_so))
+            if os.path.exists(cand_p2) and os.path.isfile(cand_p2):
+                try:
+                    with open(cand_p2, "rb") as f:
+                        return f.read()
+                except Exception:
+                    pass
+
+        # 4f: Check storage provider download
         try:
             storage = get_storage_provider()
             if hasattr(storage, 'download') and storage.exists(clean):
@@ -145,35 +171,24 @@ def read_media_bytes(file_source, filename=None, storage_key=None):
         except Exception:
             pass
 
-    # Strategy 5: Deep lookup by filename in MEDIA_ROOT
-    lookup_file = filename or (os.path.basename(candidate_names[0]) if candidate_names else None)
+    # Strategy 5: Targeted lookup by filename in MEDIA_ROOT subdirectories
+    lookup_file = filename or (os.path.basename(str(candidate_names[0]).replace('\\', '/')) if candidate_names else None)
     if lookup_file:
-        base_target = os.path.basename(lookup_file)
-        if base_target:
-            # First check common subdirectories for speed
-            for sub in ['events', 'culling_staging', 'storage_objects', 'galleries']:
+        base_target = os.path.basename(str(lookup_file).replace('\\', '/'))
+        if base_target and len(base_target) > 3:
+            # Check common subdirectories for speed
+            for sub in ['galleries', 'storage_objects', 'events', 'culling_staging', 'previews', 'thumbnails']:
                 sub_dir = os.path.join(media_root, sub)
                 if os.path.exists(sub_dir):
                     for root, _, files in os.walk(sub_dir):
                         if base_target in files:
                             found_p = os.path.join(root, base_target)
-                            if os.path.exists(found_p):
+                            if os.path.exists(found_p) and os.path.isfile(found_p):
                                 try:
                                     with open(found_p, "rb") as f:
                                         return f.read()
                                 except Exception:
                                     pass
-
-            # Search full MEDIA_ROOT
-            for root, _, files in os.walk(media_root):
-                if base_target in files:
-                    found_p = os.path.join(root, base_target)
-                    if os.path.exists(found_p):
-                        try:
-                            with open(found_p, "rb") as f:
-                                return f.read()
-                        except Exception:
-                            pass
 
     return b""
 
