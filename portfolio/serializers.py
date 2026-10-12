@@ -55,10 +55,10 @@ class PortfolioConfigSerializer(serializers.ModelSerializer):
     custom_domain = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     isPublished = serializers.BooleanField(source='is_published', required=False)
     is_published = serializers.BooleanField(required=False)
-    portfolioUrl = serializers.CharField(source='public_url', read_only=True)
-    portfolio_url = serializers.CharField(source='public_url', read_only=True)
-    fullDomain = serializers.CharField(source='full_domain', read_only=True)
-    full_domain = serializers.CharField(read_only=True)
+    portfolioUrl = serializers.SerializerMethodField()
+    portfolio_url = serializers.SerializerMethodField()
+    fullDomain = serializers.SerializerMethodField()
+    full_domain = serializers.SerializerMethodField()
     featuredWorks = PortfolioWorkSerializer(source='works', many=True, read_only=True)
     photographerSlug = serializers.SerializerMethodField()
     photographer_slug = serializers.SerializerMethodField()
@@ -136,6 +136,20 @@ class PortfolioConfigSerializer(serializers.ModelSerializer):
             ret['whatsapp_number'] = instance.contact_phone
             ret['whatsappNumber'] = instance.contact_phone
         return ret
+
+    def get_portfolioUrl(self, obj):
+        request = self.context.get('request')
+        return obj.get_public_url(request=request) if hasattr(obj, 'get_public_url') else obj.public_url
+
+    def get_portfolio_url(self, obj):
+        return self.get_portfolioUrl(obj)
+
+    def get_fullDomain(self, obj):
+        request = self.context.get('request')
+        return obj.get_full_domain(request=request) if hasattr(obj, 'get_full_domain') else obj.full_domain
+
+    def get_full_domain(self, obj):
+        return self.get_fullDomain(obj)
 
     def get_photographerSlug(self, obj):
         return obj.user.username or str(obj.user.id)

@@ -183,19 +183,29 @@ class PortfolioConfig(models.Model):
     def projects(self):
         return self.works
 
-    @property
-    def full_domain(self):
-        base_domain = getattr(settings, 'PORTFOLIO_BASE_DOMAIN', 'exshare.ai')
+    def get_full_domain(self, request=None):
         if self.custom_domain:
             return self.custom_domain
         if self.subdomain:
-            return f"{self.subdomain}.{base_domain}"
+            from .subdomain_service import build_subdomain_full_domain
+            return build_subdomain_full_domain(self.subdomain, request=request)
+        return None
+
+    def get_public_url(self, request=None):
+        if self.custom_domain:
+            return f"https://{self.custom_domain}"
+        if self.subdomain:
+            from .subdomain_service import build_subdomain_live_url
+            return build_subdomain_live_url(self.subdomain, request=request, custom_domain=self.custom_domain)
         return None
 
     @property
+    def full_domain(self):
+        return self.get_full_domain(request=None)
+
+    @property
     def public_url(self):
-        domain = self.full_domain
-        return f"https://{domain}" if domain else None
+        return self.get_public_url(request=None)
 
 
 class ReservedSubdomain(models.Model):

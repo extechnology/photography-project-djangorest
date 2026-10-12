@@ -97,7 +97,7 @@ class PublicTenantPortfolioView(APIView):
             "artist_name": artist_display,
             "avatar_url": profile.avatar_url,
             "banner_url": profile.banner_url,
-            "portfolio_url": profile.public_url or f"https://{profile.subdomain}.exshare.ai",
+            "portfolio_url": profile.get_public_url(request=request) or profile.public_url,
             "is_published": profile.is_published,
             "is_booking_open": profile.is_booking_open,
         }

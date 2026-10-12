@@ -1,4 +1,5 @@
 import os
+import sys
 
 from celery import Celery
 
@@ -10,6 +11,12 @@ app.config_from_object(
     "django.conf:settings",
     namespace="CELERY"
 )
+
+# Windows does not support billiard prefork multiprocessing (causes WinError 5 Access is denied).
+# Automatically default to 'solo' execution pool when running on Windows:
+if sys.platform == "win32" or os.name == "nt":
+    app.conf.worker_pool = "solo"
+
 
 # Use ExShare queue
 app.conf.task_default_queue = "exshare"

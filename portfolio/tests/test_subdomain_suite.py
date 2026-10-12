@@ -214,6 +214,62 @@ class SubdomainAPITests(APITestCase):
             self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
             self.assertEqual(res.json()['code'], 'SUBDOMAIN_ALREADY_TAKEN')
 
+    def test_claim_subdomain_with_custom_host_dynamic_live_url(self):
+        self.client.force_authenticate(user=self.user1)
+        res = self.client.put(
+            '/api/portfolio/subdomain/',
+            data={'subdomain': 'sample'},
+            format='json',
+            HTTP_HOST='example.com'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['status'], 'success')
+        self.assertEqual(data['subdomain'], 'sample')
+        self.assertEqual(data['domain'], 'sample.example.com')
+        self.assertEqual(data['url'], 'https://sample.example.com')
+        self.assertEqual(data['live_url'], 'https://sample.example.com')
+
+    def test_claim_subdomain_with_app_prefix_host(self):
+        self.client.force_authenticate(user=self.user1)
+        res = self.client.put(
+            '/api/portfolio/subdomain/',
+            data={'subdomain': 'sample'},
+            format='json',
+            HTTP_HOST='app.example.com'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['domain'], 'sample.example.com')
+        self.assertEqual(data['url'], 'https://sample.example.com')
+
+    def test_claim_subdomain_with_x_forwarded_host_https(self):
+        self.client.force_authenticate(user=self.user1)
+        res = self.client.put(
+            '/api/portfolio/subdomain/',
+            data={'subdomain': 'sample'},
+            format='json',
+            HTTP_X_FORWARDED_HOST='example.com',
+            HTTP_X_FORWARDED_PROTO='https'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['domain'], 'sample.example.com')
+        self.assertEqual(data['url'], 'https://sample.example.com')
+
+    def test_availability_endpoint_includes_live_url_preview(self):
+        self.client.force_authenticate(user=self.user1)
+        res = self.client.get(
+            '/api/portfolio/subdomain/availability/?name=sample',
+            HTTP_HOST='example.com'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['name'], 'sample')
+        self.assertTrue(data['available'])
+        self.assertEqual(data['domain'], 'sample.example.com')
+        self.assertEqual(data['url'], 'https://sample.example.com')
+
 
 class PublicTenantHostRoutingTests(APITestCase):
     def setUp(self):
@@ -311,3 +367,17 @@ class PublicTenantHostRoutingTests(APITestCase):
         # Verify telemetry in DB is scoped to elena
         view_event = PortfolioView.objects.get(id=res.json()['view_id'])
         self.assertEqual(view_event.photographer_id, self.user.id)
+
+    def test_public_tenant_routing_on_dynamic_host(self):
+        res = self.client.get('/api/public/portfolio-site/', HTTP_HOST='elena.example.com')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['subdomain'], 'elena')
+        self.assertEqual(data['portfolio_url'], 'https://elena.example.com')
+
+    def test_public_portfolio_detail_lookup_by_subdomain(self):
+        res = self.client.get('/api/public/portfolio/elena/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['subdomain'], 'elena')
+        self.assertEqual(data['studio_name'], 'Elena Rostova Studio')

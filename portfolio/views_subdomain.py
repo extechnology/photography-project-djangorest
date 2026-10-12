@@ -14,6 +14,9 @@ from .subdomain_service import (
     check_subdomain_availability,
     validate_subdomain_label,
     normalize_subdomain,
+    build_subdomain_full_domain,
+    build_subdomain_live_url,
+    build_direct_portfolio_url,
 )
 
 
@@ -91,12 +94,17 @@ class SubdomainAvailabilityView(APIView):
                 status=status.HTTP_200_OK
             )
 
+        full_domain = build_subdomain_full_domain(name, request=request)
+        live_url = build_subdomain_live_url(name, request=request)
         return Response(
             {
                 "name": name,
                 "available": True,
                 "reason": None,
                 "is_current_owner": False,
+                "domain": full_domain,
+                "url": live_url,
+                "live_url": live_url,
             },
             status=status.HTTP_200_OK
         )
@@ -154,13 +162,17 @@ class ClaimSubdomainView(APIView):
 
         # Idempotent repeat: if already assigned to current user
         if current_profile.subdomain and current_profile.subdomain.lower() == subdomain:
-            full_url = current_profile.public_url or f"https://{subdomain}.exshare.ai"
+            full_domain = current_profile.get_full_domain(request=request)
+            full_url = current_profile.get_public_url(request=request)
+            direct_url = build_direct_portfolio_url(subdomain, request=request)
             return Response(
                 {
                     "status": "success",
                     "subdomain": subdomain,
-                    "domain": current_profile.full_domain or f"{subdomain}.exshare.ai",
+                    "domain": full_domain,
                     "url": full_url,
+                    "live_url": full_url,
+                    "direct_url": direct_url,
                     "message": "Subdomain is already assigned to your portfolio."
                 },
                 status=status.HTTP_200_OK
@@ -209,13 +221,17 @@ class ClaimSubdomainView(APIView):
                 status=status.HTTP_409_CONFLICT
             )
 
-        full_url = current_profile.public_url or f"https://{subdomain}.exshare.ai"
+        full_domain = current_profile.get_full_domain(request=request)
+        full_url = current_profile.get_public_url(request=request)
+        direct_url = build_direct_portfolio_url(subdomain, request=request)
         return Response(
             {
                 "status": "success",
                 "subdomain": subdomain,
-                "domain": current_profile.full_domain or f"{subdomain}.exshare.ai",
+                "domain": full_domain,
                 "url": full_url,
+                "live_url": full_url,
+                "direct_url": direct_url,
                 "message": f"Subdomain '{subdomain}' successfully claimed."
             },
             status=status.HTTP_200_OK

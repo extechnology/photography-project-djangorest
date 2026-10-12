@@ -43,6 +43,21 @@ def resolve_tenant_subdomain(request: HttpRequest) -> Optional[str]:
         if sub and sub not in reserved and '.' not in sub:
             return sub
 
+    # Handle dynamic base domain (e.g. *.example.com)
+    from .subdomain_service import extract_base_domain_from_host
+    dynamic_base = extract_base_domain_from_host(host)
+    if dynamic_base and host.endswith(f'.{dynamic_base}'):
+        sub = host[:-len(dynamic_base) - 1].strip().lower()
+        if sub and sub not in reserved and '.' not in sub:
+            return sub
+
+    # Check if first label matches an active registered subdomain
+    if '.' in host:
+        candidate = host.split('.')[0].strip().lower()
+        if candidate and candidate not in reserved:
+            if PortfolioConfig.objects.filter(subdomain__iexact=candidate).exists():
+                return candidate
+
     # 3. Query parameter fallback
     query_sub = request.GET.get('subdomain')
     if query_sub:

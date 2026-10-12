@@ -132,7 +132,7 @@ class PortfolioConfigView(APIView):
 
     def get(self, request):
         config = get_or_create_starter_portfolio(request.user)
-        serializer = PortfolioConfigSerializer(config)
+        serializer = PortfolioConfigSerializer(config, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def patch(self, request, *args, **kwargs):
@@ -200,7 +200,7 @@ class PortfolioConfigView(APIView):
                             portfolio=config
                         ).update(order=w_item.get('order', idx + 1))
 
-        serializer = PortfolioConfigSerializer(config, data=data, partial=partial)
+        serializer = PortfolioConfigSerializer(config, data=data, partial=partial, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -238,13 +238,19 @@ class PublicPortfolioDetailView(APIView):
             except (ValueError, TypeError):
                 pass
 
-        # 4. Lookup by studio_name in PortfolioConfig
+        # 4. Lookup by subdomain in PortfolioConfig
+        if not user:
+            cfg = PortfolioConfig.objects.filter(subdomain__iexact=slug).first()
+            if cfg:
+                user = cfg.user
+
+        # 5. Lookup by studio_name in PortfolioConfig
         if not user:
             cfg = PortfolioConfig.objects.filter(studio_name__iexact=slug).first()
             if cfg:
                 user = cfg.user
 
-        # 5. Lookup by PhotographerProfile studio_name or name
+        # 6. Lookup by PhotographerProfile studio_name or name
         if not user:
             try:
                 from App.Photographers.photo_models import PhotographerProfile
@@ -266,7 +272,7 @@ class PublicPortfolioDetailView(APIView):
             )
 
         config = get_or_create_starter_portfolio(user)
-        serializer = PortfolioConfigSerializer(config)
+        serializer = PortfolioConfigSerializer(config, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
