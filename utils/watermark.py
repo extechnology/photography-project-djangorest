@@ -11,6 +11,7 @@ def hex_to_rgba(hex_code, opacity=1.0):
     Converts a hex color code (e.g. '#FFFFFF', '#D4AF37') and opacity float
     into an (R, G, B, A) 4-tuple.
     """
+    
     hex_code = (hex_code or '#FFFFFF').lstrip('#')
     if len(hex_code) == 3:
         hex_code = ''.join([c * 2 for c in hex_code])
