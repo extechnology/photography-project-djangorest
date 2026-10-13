@@ -40,15 +40,21 @@ def resolve_tenant_subdomain(request: HttpRequest) -> Optional[str]:
     base_domain = getattr(settings, 'PORTFOLIO_BASE_DOMAIN', 'exshare.ai').strip().lower()
     if host.endswith(f'.{base_domain}'):
         sub = host[:-len(base_domain) - 1].strip().lower()
-        if sub and sub not in reserved and '.' not in sub:
+        if '.' in sub:
+            # Multi-level / nested subdomains (e.g. foo.bar.exshare.ai) are strictly rejected
+            return None
+        if sub and sub not in reserved:
             return sub
+        return None
 
     # Handle dynamic base domain (e.g. *.example.com)
     from .subdomain_service import extract_base_domain_from_host
     dynamic_base = extract_base_domain_from_host(host)
-    if dynamic_base and host.endswith(f'.{dynamic_base}'):
+    if dynamic_base and dynamic_base != base_domain and host.endswith(f'.{dynamic_base}'):
         sub = host[:-len(dynamic_base) - 1].strip().lower()
-        if sub and sub not in reserved and '.' not in sub:
+        if '.' in sub:
+            return None
+        if sub and sub not in reserved:
             return sub
 
     # Check if first label matches an active registered subdomain
@@ -68,11 +74,21 @@ def resolve_tenant_subdomain(request: HttpRequest) -> Optional[str]:
     return None
 
 
-def get_tenant_profile(request: HttpRequest) -> Optional[PortfolioConfig]:
+def get_tenant_profile(request: HttpRequest, only_active: bool = True) -> Optional[PortfolioConfig]:
     """
     Returns the portfolio configuration / photographer profile bound to the incoming tenant host.
+    Ensures:
+    - Only published portfolios (is_published=True) are resolved for public traffic.
+    - Only active, provisioned subdomains (subdomain_status='active') are accessible.
     """
     subdomain = resolve_tenant_subdomain(request)
     if not subdomain:
         return None
-    return PortfolioConfig.objects.filter(subdomain__iexact=subdomain).first()
+    qs = PortfolioConfig.objects.select_related('user').filter(subdomain__iexact=subdomain)
+    if only_active:
+        qs = qs.filter(
+            is_published=True,
+            subdomain_status=PortfolioConfig.SubdomainStatus.ACTIVE
+        )
+    return qs.first()
+

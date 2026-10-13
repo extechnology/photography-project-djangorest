@@ -34,10 +34,12 @@ This guide details the complete frontend implementation for **Photographer Subdo
 
 ## 2. API Contract Reference
 
-| Method | Endpoint | Access | Purpose | Payload / Parameters | Success Response (200 OK) |
+| Method | Endpoint | Access | Purpose | Payload / Parameters | Success Response (200 / 202) |
 |---|---|---|---|---|---|
 | `GET` | `/api/portfolio/subdomain/availability/` | Authenticated | Live availability query | `?name=mridhul` | `{"name":"mridhul", "available":true, "reason":null, "is_current_owner":false}` |
-| `PUT` | `/api/portfolio/subdomain/` | Authenticated Owner | Atomically claim subdomain | `{"subdomain":"mridhul"}` | `{"status":"success", "subdomain":"mridhul", "domain":"mridhul.exshare.ai", "url":"https://mridhul.exshare.ai"}` |
+| `PUT` | `/api/portfolio/subdomain/` | Authenticated Owner | Atomically claim subdomain & enqueue DNS | `{"subdomain":"mridhul"}` | **202 Accepted**: `{"status":"pending", "subdomain":"mridhul", "domain":"mridhul.exshare.ai", "url":"https://mridhul.exshare.ai"}` |
+| `GET` | `/api/portfolio/subdomain/status/` | Authenticated Owner | Check DNS provisioning health & status | None | `{"subdomain":"mridhul", "status":"active", "domain":"mridhul.exshare.ai", "url":"https://mridhul.exshare.ai", "error":null, "retry_allowed":false}` |
+| `POST` | `/api/portfolio/subdomain/retry/` | Authenticated Owner | Retry failed DNS provisioning (throttled) | None | **202 Accepted**: `{"status":"pending", "subdomain":"mridhul", "message":"DNS provisioning retry scheduled."}` |
 | `GET` | `/api/public/portfolio-site/` | Public Visitor | Retrieve published portfolio resolved from `Host` | None | Serialized `PortfolioConfig` with featured works & photos |
 | `POST` | `/api/public/portfolio-site/inquiries/` | Public Visitor | Submit client inquiry bound to tenant | `{"client_name":"...", "client_email":"...", "message":"..."}` | `{"success":true, "inquiry_id": 42}` |
 | `POST` | `/api/public/portfolio-site/track-view/` | Public Visitor | Record telemetry / view metrics | `{"page_section":"hero", "device":"desktop"}` | `{"success":true, "tracked":true}` |
@@ -68,46 +70,120 @@ Create or update `src/components/portfolio/PortfolioSubdomainSetting.tsx` in you
 ```tsx
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { CheckCircle, XCircle, AlertCircle, Loader2, Copy, ExternalLink, Globe } from 'lucide-react';
+import {
+  CheckCircle,
+  XCircle,
+  AlertCircle,
+  Loader2,
+  Copy,
+  ExternalLink,
+  Globe,
+  RefreshCw,
+  Clock,
+  Sparkles
+} from 'lucide-react';
 
 interface PortfolioSubdomainSettingProps {
   currentSubdomain?: string | null;
+  currentStatus?: 'pending' | 'provisioning' | 'active' | 'failed' | null;
   onSubdomainUpdated?: (newSubdomain: string, fullUrl: string) => void;
 }
 
-type SubdomainState = 
+type SubdomainAvailabilityState = 
   | 'idle'
   | 'checking'
   | 'available'
-  | 'already_owned'
   | 'taken'
   | 'reserved'
   | 'invalid'
   | 'error';
 
+type ProvisioningStatus = 'pending' | 'provisioning' | 'active' | 'failed';
+
 export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps> = ({
   currentSubdomain = '',
+  currentStatus = null,
   onSubdomainUpdated,
 }) => {
   const [subdomainInput, setSubdomainInput] = useState<string>(currentSubdomain || '');
   const [assignedSubdomain, setAssignedSubdomain] = useState<string>(currentSubdomain || '');
-  const [statusState, setStatusState] = useState<SubdomainState>('idle');
+  const [provisioningStatus, setProvisioningStatus] = useState<ProvisioningStatus | null>(currentStatus || null);
+  const [availabilityState, setAvailabilityState] = useState<SubdomainAvailabilityState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isClaiming, setIsClaiming] = useState<boolean>(false);
+  const [isRetrying, setIsRetrying] = useState<boolean>(false);
+  const [retryCooldown, setRetryCooldown] = useState<number>(0);
   const [copied, setCopied] = useState<boolean>(false);
 
   // Stale-response & cancellation tracker
   const abortControllerRef = useRef<AbortController | null>(null);
   const requestSeqRef = useRef<number>(0);
+  const statusPollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Sync initial prop
+  // Sync initial props
   useEffect(() => {
     if (currentSubdomain) {
       setSubdomainInput(currentSubdomain);
       setAssignedSubdomain(currentSubdomain);
-      setStatusState('already_owned');
     }
-  }, [currentSubdomain]);
+    if (currentStatus) {
+      setProvisioningStatus(currentStatus);
+    }
+  }, [currentSubdomain, currentStatus]);
+
+  // Fetch initial provisioning status if a subdomain is already assigned
+  useEffect(() => {
+    if (assignedSubdomain && !provisioningStatus) {
+      fetchStatus();
+    }
+  }, [assignedSubdomain]);
+
+  // Polling hook: Poll status while pending or provisioning
+  useEffect(() => {
+    if (assignedSubdomain && (provisioningStatus === 'pending' || provisioningStatus === 'provisioning')) {
+      statusPollTimerRef.current = setInterval(() => {
+        fetchStatus();
+      }, 3000);
+    } else {
+      if (statusPollTimerRef.current) {
+        clearInterval(statusPollTimerRef.current);
+        statusPollTimerRef.current = null;
+      }
+    }
+
+    return () => {
+      if (statusPollTimerRef.current) {
+        clearInterval(statusPollTimerRef.current);
+      }
+    };
+  }, [assignedSubdomain, provisioningStatus]);
+
+  // Retry cooldown countdown timer
+  useEffect(() => {
+    if (retryCooldown <= 0) return;
+    const interval = setInterval(() => {
+      setRetryCooldown((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [retryCooldown]);
+
+  const fetchStatus = async () => {
+    try {
+      const response = await axios.get('/api/portfolio/subdomain/status/');
+      const data = response.data;
+      if (data.subdomain) {
+        setAssignedSubdomain(data.subdomain);
+        setProvisioningStatus(data.status);
+        if (data.error) {
+          setErrorMessage(data.error);
+        } else if (data.status === 'active') {
+          setErrorMessage(null);
+        }
+      }
+    } catch (err) {
+      // Background poll silently fails
+    }
+  };
 
   // Client-side quick syntax validation
   const validateFormat = (name: string): { valid: boolean; error?: string } => {
@@ -115,7 +191,10 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
     if (!clean) return { valid: false };
     if (clean.length < 3) return { valid: false, error: 'Must be at least 3 characters.' };
     if (clean.length > 63) return { valid: false, error: 'Cannot exceed 63 characters.' };
-    if (clean.startsWith('-') || clean.endsWith('-')) return { valid: false, error: 'Cannot start or end with a hyphen.' };
+    if (clean.startsWith('-') || clean.endsWith('-')) return { valid: false, error: 'Cannot begin or end with a hyphen.' };
+    if (clean.includes('.') || clean.includes('_') || clean.includes(' ') || clean.includes('/')) {
+      return { valid: false, error: 'Dots, spaces, underscores, and URLs are not permitted.' };
+    }
     if (!/^[a-z0-9-]+$/.test(clean)) return { valid: false, error: 'Only lowercase letters, numbers, and hyphens allowed.' };
     return { valid: true };
   };
@@ -126,25 +205,25 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
 
     // If input matches existing confirmed subdomain
     if (assignedSubdomain && clean === assignedSubdomain) {
-      setStatusState('already_owned');
+      setAvailabilityState('idle');
       setErrorMessage(null);
       return;
     }
 
     if (!clean) {
-      setStatusState('idle');
+      setAvailabilityState('idle');
       setErrorMessage(null);
       return;
     }
 
     const { valid, error } = validateFormat(clean);
     if (!valid) {
-      setStatusState('invalid');
+      setAvailabilityState('invalid');
       setErrorMessage(error || 'Invalid subdomain format.');
       return;
     }
 
-    setStatusState('checking');
+    setAvailabilityState('checking');
     setErrorMessage(null);
 
     // Cancel pending request
@@ -167,28 +246,24 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
 
         const data = response.data;
         if (data.available) {
-          if (data.is_current_owner) {
-            setStatusState('already_owned');
-          } else {
-            setStatusState('available');
-          }
+          setAvailabilityState('available');
           setErrorMessage(null);
         } else {
           if (data.reason === 'already_taken') {
-            setStatusState('taken');
+            setAvailabilityState('taken');
             setErrorMessage('This subdomain is already claimed by another photographer.');
           } else if (data.reason?.includes('reserved')) {
-            setStatusState('reserved');
+            setAvailabilityState('reserved');
             setErrorMessage('This name is reserved for platform infrastructure.');
           } else {
-            setStatusState('invalid');
+            setAvailabilityState('invalid');
             setErrorMessage(data.reason || 'This name is unavailable.');
           }
         }
       } catch (err: any) {
         if (axios.isCancel(err)) return;
         if (currentSeq === requestSeqRef.current) {
-          setStatusState('error');
+          setAvailabilityState('error');
           setErrorMessage('Could not verify availability. Check network connection.');
         }
       }
@@ -200,7 +275,7 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
   // Claim submission handler
   const handleClaim = async () => {
     const clean = subdomainInput.trim().toLowerCase();
-    if (!clean || statusState !== 'available') return;
+    if (!clean || availabilityState !== 'available') return;
 
     setIsClaiming(true);
     setErrorMessage(null);
@@ -210,21 +285,47 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
       const data = response.data;
 
       setAssignedSubdomain(data.subdomain);
-      setStatusState('already_owned');
+      setProvisioningStatus(data.status || 'pending');
+      setAvailabilityState('idle');
+
       if (onSubdomainUpdated) {
         onSubdomainUpdated(data.subdomain, data.url);
       }
     } catch (err: any) {
       if (err.response?.status === 409) {
-        setStatusState('taken');
+        setAvailabilityState('taken');
         setErrorMessage('Another photographer just claimed this name! Please choose a different subdomain.');
       } else if (err.response?.status === 400 && err.response?.data?.code === 'RENAME_PROHIBITED') {
-        setErrorMessage(err.response.data.error || 'Self-service domain renaming is not supported in v1.');
+        setErrorMessage(err.response.data.error || 'Subdomain renaming is not permitted.');
       } else {
         setErrorMessage(err.response?.data?.error || 'Failed to claim subdomain. Please try again.');
       }
     } finally {
       setIsClaiming(false);
+    }
+  };
+
+  // Retry failed provisioning handler
+  const handleRetry = async () => {
+    if (isRetrying || retryCooldown > 0) return;
+    setIsRetrying(true);
+    setErrorMessage(null);
+
+    try {
+      const response = await axios.post('/api/portfolio/subdomain/retry/');
+      const data = response.data;
+      setProvisioningStatus(data.status || 'pending');
+      setRetryCooldown(30);
+    } catch (err: any) {
+      if (err.response?.status === 429) {
+        const after = err.response.data?.retry_after_seconds || 30;
+        setRetryCooldown(after);
+        setErrorMessage(`Please wait ${after}s before retrying.`);
+      } else {
+        setErrorMessage(err.response?.data?.error || 'Retry request failed. Please check connection.');
+      }
+    } finally {
+      setIsRetrying(false);
     }
   };
 
@@ -236,23 +337,57 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const previewName = subdomainInput.trim().toLowerCase() || 'yourstudio';
+
   return (
     <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 text-white max-w-2xl shadow-xl">
-      <div className="flex items-center gap-3 mb-2">
-        <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400">
-          <Globe className="w-5 h-5" />
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-indigo-400">
+            <Globe className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-lg text-neutral-100 flex items-center gap-2">
+              Signature Portfolio Subdomain
+              <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-neutral-800 border border-neutral-700 text-neutral-400">
+                GoDaddy Automated DNS
+              </span>
+            </h3>
+            <p className="text-sm text-neutral-400">
+              Publish your atelier website to your bespoke vanity address.
+            </p>
+          </div>
         </div>
-        <div>
-          <h3 className="font-semibold text-lg text-neutral-100">Personal Portfolio Subdomain</h3>
-          <p className="text-sm text-neutral-400">
-            Publish your signature photography website to a direct, shareable web address.
-          </p>
-        </div>
+
+        {/* Status Pill Badge */}
+        {assignedSubdomain && (
+          <div>
+            {provisioningStatus === 'active' && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <CheckCircle className="w-3.5 h-3.5" />
+                Live & Verified
+              </span>
+            )}
+            {(provisioningStatus === 'pending' || provisioningStatus === 'provisioning') && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Provisioning DNS...
+              </span>
+            )}
+            {provisioningStatus === 'failed' && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                <XCircle className="w-3.5 h-3.5" />
+                Setup Needed
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="mt-5">
+      {/* Input Group */}
+      <div className="mt-4">
         <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-2">
-          Domain Address
+          Subdomain Prefix
         </label>
         
         <div className="flex items-center">
@@ -261,15 +396,15 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
               type="text"
               value={subdomainInput}
               onChange={(e) => setSubdomainInput(e.target.value)}
-              disabled={isClaiming}
-              placeholder="yourstudio"
+              disabled={isClaiming || provisioningStatus === 'active'}
+              placeholder="mridhul"
               className={`w-full bg-neutral-950 border px-4 py-3 rounded-l-lg text-neutral-100 placeholder-neutral-600 focus:outline-none transition-colors ${
-                statusState === 'available'
+                availabilityState === 'available'
                   ? 'border-emerald-500/80 focus:border-emerald-500'
-                  : statusState === 'taken' || statusState === 'invalid'
+                  : availabilityState === 'taken' || availabilityState === 'invalid'
                   ? 'border-rose-500/80 focus:border-rose-500'
-                  : statusState === 'already_owned'
-                  ? 'border-indigo-500/60 focus:border-indigo-500'
+                  : provisioningStatus === 'active'
+                  ? 'border-indigo-500/50 focus:border-indigo-500'
                   : 'border-neutral-800 focus:border-neutral-600'
               }`}
             />
@@ -280,48 +415,64 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
           </div>
         </div>
 
-        {/* Live Status Messaging */}
-        <div className="mt-3 flex items-center justify-between min-h-[24px]">
+        {/* Live URL Preview Indicator */}
+        <div className="mt-2 text-xs text-neutral-400 flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+          <span>Live URL Preview:</span>
+          <span className="font-mono text-neutral-200 underline decoration-neutral-700">
+            https://{previewName}.exshare.ai
+          </span>
+        </div>
+
+        {/* Real-time Status Messaging */}
+        <div className="mt-3 flex items-center justify-between min-h-[28px]">
           <div className="flex items-center gap-2 text-sm">
-            {statusState === 'checking' && (
+            {availabilityState === 'checking' && (
               <span className="flex items-center gap-1.5 text-neutral-400">
                 <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
-                Checking availability...
+                Checking GoDaddy availability...
               </span>
             )}
 
-            {statusState === 'available' && (
+            {availabilityState === 'available' && !assignedSubdomain && (
               <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
                 <CheckCircle className="w-4 h-4" />
                 Available to claim!
               </span>
             )}
 
-            {statusState === 'already_owned' && (
-              <span className="flex items-center gap-1.5 text-indigo-400 font-medium">
-                <CheckCircle className="w-4 h-4" />
-                Active live subdomain
-              </span>
-            )}
-
-            {(statusState === 'taken' || statusState === 'reserved' || statusState === 'invalid') && (
+            {(availabilityState === 'taken' || availabilityState === 'reserved' || availabilityState === 'invalid') && (
               <span className="flex items-center gap-1.5 text-rose-400 font-medium">
                 <XCircle className="w-4 h-4" />
                 {errorMessage}
               </span>
             )}
 
-            {statusState === 'error' && (
+            {availabilityState === 'error' && (
               <span className="flex items-center gap-1.5 text-amber-400 font-medium">
                 <AlertCircle className="w-4 h-4" />
                 {errorMessage}
               </span>
             )}
+
+            {assignedSubdomain && provisioningStatus === 'provisioning' && (
+              <span className="flex items-center gap-1.5 text-amber-400 text-xs">
+                <Clock className="w-4 h-4 animate-spin" />
+                Configuring DNS records on GoDaddy. This usually takes 10–30 seconds.
+              </span>
+            )}
+
+            {assignedSubdomain && provisioningStatus === 'failed' && (
+              <span className="flex items-center gap-1.5 text-rose-400 text-xs font-medium">
+                <AlertCircle className="w-4 h-4" />
+                {errorMessage || 'DNS record creation failed. Check API credentials or retry.'}
+              </span>
+            )}
           </div>
 
-          {/* Action Button: Claim vs Copy/Visit */}
-          <div>
-            {statusState === 'available' && (
+          {/* Action Buttons: Claim vs Retry vs Copy/Visit */}
+          <div className="flex items-center gap-2">
+            {availabilityState === 'available' && !assignedSubdomain && (
               <button
                 type="button"
                 onClick={handleClaim}
@@ -331,15 +482,31 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
                 {isClaiming ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Claiming...
+                    Reserving...
                   </>
                 ) : (
-                  'Claim Subdomain'
+                  'Claim & Provision DNS'
                 )}
               </button>
             )}
 
-            {assignedSubdomain && (
+            {provisioningStatus === 'failed' && (
+              <button
+                type="button"
+                onClick={handleRetry}
+                disabled={isRetrying || retryCooldown > 0}
+                className="px-3.5 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              >
+                {isRetrying ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                {retryCooldown > 0 ? `Wait ${retryCooldown}s` : 'Retry DNS Provisioning'}
+              </button>
+            )}
+
+            {assignedSubdomain && provisioningStatus === 'active' && (
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -356,7 +523,7 @@ export const PortfolioSubdomainSetting: React.FC<PortfolioSubdomainSettingProps>
                   className="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-indigo-500/30"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
-                  Visit Site
+                  Visit Portfolio
                 </a>
               </div>
             )}

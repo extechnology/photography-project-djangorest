@@ -87,6 +87,10 @@ class PortfolioConfigSerializer(serializers.ModelSerializer):
     accentColor = serializers.CharField(source='accent_color', required=False, allow_blank=True)
     accent_color = serializers.CharField(required=False, allow_blank=True)
 
+    subdomainStatus = serializers.CharField(source='subdomain_status', read_only=True)
+    subdomainError = serializers.CharField(source='subdomain_error', read_only=True)
+    subdomainProvisionedAt = serializers.DateTimeField(source='subdomain_provisioned_at', read_only=True)
+
     class Meta:
         model = PortfolioConfig
         fields = [
@@ -98,6 +102,9 @@ class PortfolioConfigSerializer(serializers.ModelSerializer):
             'contactPhone', 'contact_phone', 'instagramHandle', 'instagram_handle',
             'youtubeHandle', 'youtube_handle', 'websiteUrl', 'website_url',
             'subdomain', 'customDomain', 'custom_domain',
+            'subdomain_status', 'subdomainStatus',
+            'subdomain_error', 'subdomainError',
+            'subdomain_provisioned_at', 'subdomainProvisionedAt',
             'isPublished', 'is_published', 'portfolioUrl', 'portfolio_url',
             'fullDomain', 'full_domain',
             'isBookingOpen', 'is_booking_open', 'featuredWorks',

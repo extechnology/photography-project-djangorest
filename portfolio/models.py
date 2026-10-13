@@ -12,26 +12,41 @@ phone_validator = RegexValidator(
 )
 
 RESERVED_SUBDOMAINS = {
-    'app', 'api', 'admin', 'auth', 'www', 'cdn', 'static',
-    'mail', 'support', 'staging', 'billing', 'dashboard', 'dev', 'test',
-    'status', 'assets', 'culling', 'gallery', 'galleries', 'events', 'storage'
+    'www', 'api', 'admin', 'app', 'auth', 'mail', 'smtp', 'pop', 'imap',
+    'ftp', 'ns', 'ns1', 'ns2', 'dns', 'cdn', 'static', 'media', 'support',
+    'staging', 'stage', 'billing', 'dashboard', 'dev', 'test', 'status',
+    'assets', 'culling', 'gallery', 'galleries', 'events', 'storage', 'server',
+    'exshare', 'atelier', 'help', 'docs', 'mx', 'portal', 'root', 'login',
+    'signup', 'register', 'webmail', 'autodiscover', 'autoconfig', 'direct'
 }
 
 SUBDOMAIN_REGEX = re.compile(r'^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$')
 
 
 def validate_subdomain(value):
-    if not value:
+    if value is None:
         return
     clean = str(value).strip().lower()
+    if not clean:
+        raise ValidationError("Subdomain cannot be empty.")
     if len(clean) < 3 or len(clean) > 63:
         raise ValidationError("Subdomain must be between 3 and 63 characters long.")
     if clean.startswith('-') or clean.endswith('-'):
         raise ValidationError("Subdomain cannot begin or end with a hyphen.")
+    if '.' in clean or '_' in clean or ' ' in clean or '/' in clean or ':' in clean:
+        raise ValidationError("Dots, spaces, underscores, and URLs are not permitted in subdomains.")
     if not SUBDOMAIN_REGEX.match(clean):
         raise ValidationError("Only lowercase alphanumeric characters and hyphens are allowed.")
-    if clean in RESERVED_SUBDOMAINS:
+    
+    # Check both static and dynamic/configured reserved lists
+    from .subdomain_service import get_reserved_subdomains
+    all_reserved = get_reserved_subdomains().union(RESERVED_SUBDOMAINS)
+    if clean in all_reserved:
         raise ValidationError(f"'{clean}' is a reserved platform name and cannot be claimed.")
+
+    # Check dynamic database table
+    if ReservedSubdomain.objects.filter(name=clean).exists():
+        raise ValidationError(f"The subdomain '{clean}' is reserved and unavailable.")
 
 
 class PortfolioConfig(models.Model):
@@ -45,6 +60,12 @@ class PortfolioConfig(models.Model):
         ('cinematic-luxury', 'Cinematic Luxury'),
         ('minimal-zen', 'Minimal Zen'),
     )
+
+    class SubdomainStatus(models.TextChoices):
+        PENDING = 'pending', 'Pending Provisioning'
+        PROVISIONING = 'provisioning', 'Provisioning DNS'
+        ACTIVE = 'active', 'Active & Verified'
+        FAILED = 'failed', 'Provisioning Failed'
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -91,6 +112,57 @@ class PortfolioConfig(models.Model):
         db_index=True,
         validators=[validate_subdomain],
         help_text="Custom unique subdomain label under base domain, e.g. 'mridhul' for mridhul.exshare.ai"
+    )
+    subdomain_status = models.CharField(
+        max_length=20,
+        choices=SubdomainStatus.choices,
+        default=SubdomainStatus.ACTIVE,
+        db_index=True,
+        help_text="Provisioning status: pending, provisioning, active, or failed"
+    )
+    subdomain_error = models.TextField(
+        blank=True,
+        default='',
+        help_text="Safe error summary if DNS provisioning failed"
+    )
+    subdomain_provisioned_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when DNS record was successfully provisioned"
+    )
+    subdomain_dns_checked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp of the most recent DNS verification check"
+    )
+    subdomain_dns_record_type = models.CharField(
+        max_length=10,
+        default='A',
+        help_text="DNS record type managed by this application (e.g. A)"
+    )
+    subdomain_dns_record_data = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Target IPv4 address of the managed DNS A-record"
+    )
+    subdomain_dns_provider = models.CharField(
+        max_length=50,
+        default='godaddy',
+        help_text="DNS registrar or provider managing this record (e.g. godaddy)"
+    )
+    subdomain_dns_managed = models.BooleanField(
+        default=True,
+        help_text="Flag indicating whether this DNS record is managed by the application"
+    )
+    subdomain_retry_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of retry attempts made for failed provisioning"
+    )
+    subdomain_last_retry_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp of the last provisioning retry attempt"
     )
     custom_domain = models.CharField(
         max_length=255,

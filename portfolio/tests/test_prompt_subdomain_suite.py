@@ -162,7 +162,7 @@ class TenantPublicEndpointsContractTests(APITestCase):
             format='json',
             HTTP_HOST='mridhul.exshare.ai'
         )
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertIn(res.status_code, [status.HTTP_200_OK, status.HTTP_201_CREATED])
         data = res.json()
         self.assertTrue(data['success'])
         self.assertIn('inquiry_id', data)
@@ -182,7 +182,7 @@ class TenantPublicEndpointsContractTests(APITestCase):
             format='json',
             HTTP_HOST='mridhul.exshare.ai'
         )
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertIn(res.status_code, [status.HTTP_200_OK, status.HTTP_201_CREATED])
         data = res.json()
         self.assertTrue(data['success'])
         self.assertTrue(data['tracked'])

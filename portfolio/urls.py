@@ -14,6 +14,8 @@ from .views import (
     PublicPortfolioTrackView,
     PortfolioSubdomainAvailabilityView,
     PortfolioSubdomainClaimView,
+    PortfolioSubdomainStatusView,
+    PortfolioSubdomainRetryView,
     PublicTenantPortfolioSiteView,
     PublicTenantInquiryCreateView,
     PublicTenantTrackView,
@@ -82,6 +84,10 @@ urlpatterns = [
     # 11. Photographer Portfolio Subdomain Suite
     path('portfolio/subdomain/availability/', PortfolioSubdomainAvailabilityView.as_view(), name='portfolio-subdomain-availability'),
     path('portfolio/subdomain/availability', PortfolioSubdomainAvailabilityView.as_view(), name='portfolio-subdomain-availability-noslash'),
+    path('portfolio/subdomain/status/', PortfolioSubdomainStatusView.as_view(), name='portfolio-subdomain-status'),
+    path('portfolio/subdomain/status', PortfolioSubdomainStatusView.as_view(), name='portfolio-subdomain-status-noslash'),
+    path('portfolio/subdomain/retry/', PortfolioSubdomainRetryView.as_view(), name='portfolio-subdomain-retry'),
+    path('portfolio/subdomain/retry', PortfolioSubdomainRetryView.as_view(), name='portfolio-subdomain-retry-noslash'),
     path('portfolio/subdomain/', PortfolioSubdomainClaimView.as_view(), name='portfolio-subdomain-claim'),
     path('portfolio/subdomain', PortfolioSubdomainClaimView.as_view(), name='portfolio-subdomain-claim-noslash'),
 

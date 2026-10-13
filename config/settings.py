@@ -28,15 +28,36 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-w^01^8=!drxc9o$y08d@4
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
+ALLOWED_HOSTS = config(
+    'ALLOWED_HOSTS',
+    default='.exshare.ai,localhost,127.0.0.1,testserver,example.com,.example.com',
+    cast=lambda v: [s.strip() for s in v.split(',') if s.strip()]
+)
+
+# Host-only cookies: app.exshare.ai session & CSRF cookies never leak to tenant subdomains
+SESSION_COOKIE_DOMAIN = None
+CSRF_COOKIE_DOMAIN = None
 
 # Portfolio Subdomain Configuration
 PORTFOLIO_BASE_DOMAIN = config('PORTFOLIO_BASE_DOMAIN', default='exshare.ai').strip().lower()
+PORTFOLIO_DOMAIN = config('PORTFOLIO_DOMAIN', default=PORTFOLIO_BASE_DOMAIN).strip().lower()
+PORTFOLIO_SERVER_IP = config('PORTFOLIO_SERVER_IP', default='31.97.232.245').strip()
 RESERVED_SUBDOMAINS = config(
     'RESERVED_SUBDOMAINS',
     default='',
     cast=lambda v: [s.strip().lower() for s in v.split(',') if s.strip()]
 )
+
+# BigRock DNS Automated Provisioning Credentials
+# Obtain auth-userid & api-key from BigRock Control Panel -> Settings -> API
+BIGROCK_AUTH_USER_ID = config('BIGROCK_AUTH_USER_ID', default=config('BIGROCK_USER_ID', default='')).strip()
+BIGROCK_API_KEY = config('BIGROCK_API_KEY', default='').strip()
+BIGROCK_API_ENV = config('BIGROCK_API_ENV', default='production').strip().lower()
+
+# Legacy GoDaddy Credentials (Fallback support)
+GODADDY_API_KEY = config('GODADDY_API_KEY', default=BIGROCK_API_KEY).strip()
+GODADDY_API_SECRET = config('GODADDY_API_SECRET', default='').strip()
+GODADDY_API_ENV = config('GODADDY_API_ENV', default='production').strip().lower()
 
 
 # Application definition
@@ -322,6 +343,11 @@ CELERY_BEAT_SCHEDULE = {
     'cleanup-abandoned-culling-sessions-daily': {
         'task': 'culling.tasks.cleanup_abandoned_culling_sessions',
         'schedule': 86400.0,  # Every 24 hours
+        'options': {'queue': 'exshare'},
+    },
+    'reconcile-pending-subdomains-10min': {
+        'task': 'portfolio.tasks.reconcile_pending_subdomains_task',
+        'schedule': 600.0,  # Every 10 minutes
         'options': {'queue': 'exshare'},
     },
 }

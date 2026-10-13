@@ -1328,8 +1328,12 @@ TrackPortfolioView = PublicPortfolioTrackView
 from .views_subdomain import (
     SubdomainAvailabilityView,
     ClaimSubdomainView,
+    SubdomainStatusView,
+    SubdomainRetryProvisioningView,
     PortfolioSubdomainAvailabilityView,
     PortfolioSubdomainClaimView,
+    PortfolioSubdomainStatusView,
+    PortfolioSubdomainRetryView,
 )
 
 from .views_public_tenant import (

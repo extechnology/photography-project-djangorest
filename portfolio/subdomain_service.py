@@ -51,6 +51,9 @@ def validate_subdomain_label(label: str) -> Tuple[bool, Optional[str]]:
     if norm.startswith('-') or norm.endswith('-'):
         return False, "Subdomain cannot begin or end with a hyphen."
 
+    if '.' in norm or '_' in norm or ' ' in norm or '/' in norm or ':' in norm:
+        return False, "Subdomain may only contain lowercase letters, numbers, and internal hyphens (dots, spaces, underscores, and URLs are not permitted)."
+
     if not SUBDOMAIN_REGEX.match(norm):
         return False, "Subdomain may only contain lowercase letters, numbers, and internal hyphens."
 
@@ -301,7 +304,8 @@ def resolve_portfolio_from_request(request) -> Optional[PortfolioConfig]:
             norm_test = normalize_subdomain(test_subdomain)
             return PortfolioConfig.objects.select_related('user').filter(
                 subdomain=norm_test,
-                is_published=True
+                is_published=True,
+                subdomain_status=PortfolioConfig.SubdomainStatus.ACTIVE
             ).first()
         return None
 
@@ -326,7 +330,8 @@ def resolve_portfolio_from_request(request) -> Optional[PortfolioConfig]:
 
         return PortfolioConfig.objects.select_related('user').filter(
             subdomain=norm_label,
-            is_published=True
+            is_published=True,
+            subdomain_status=PortfolioConfig.SubdomainStatus.ACTIVE
         ).first()
 
     # 3. Check if candidate first segment is a known published subdomain
@@ -335,7 +340,8 @@ def resolve_portfolio_from_request(request) -> Optional[PortfolioConfig]:
         if candidate and candidate not in get_reserved_subdomains():
             found = PortfolioConfig.objects.select_related('user').filter(
                 subdomain=candidate,
-                is_published=True
+                is_published=True,
+                subdomain_status=PortfolioConfig.SubdomainStatus.ACTIVE
             ).first()
             if found:
                 return found

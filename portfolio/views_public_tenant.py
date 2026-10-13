@@ -152,7 +152,7 @@ class PublicTenantInquiryView(APIView):
             "success": True,
             "inquiry_id": inquiry.id,
             "message": "Inquiry submitted successfully."
-        }, status=status.HTTP_201_CREATED)
+        }, status=status.HTTP_200_OK)
 
 
 class PublicTenantTrackView(APIView):
@@ -180,7 +180,7 @@ class PublicTenantTrackView(APIView):
             "success": True,
             "tracked": True,
             "view_id": str(view_obj.id)
-        }, status=status.HTTP_201_CREATED)
+        }, status=status.HTTP_200_OK)
 
 
 # Backward-compatibility aliases
