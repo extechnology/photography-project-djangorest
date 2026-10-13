@@ -32,6 +32,9 @@ local_settings.py
 staticfiles/
 static_root/
 media/
+!media/.htaccess
+!media/**/.htaccess
+
 
 # Logs
 *.log

@@ -1,0 +1,26 @@
+# ==============================================================================
+# EX SHARE Media Storage - Apache CORS Configuration
+# ==============================================================================
+<IfModule mod_headers.c>
+    # 1. Match any incoming Origin (e.g., https://exshare.ai, http://localhost:3000)
+    SetEnvIfNoCase Origin "^(https?://.+)$" CORS_ORIGIN=$1
+
+    # 2. Echo back Origin and allow credentials
+    Header always set Access-Control-Allow-Origin "%{CORS_ORIGIN}e" env=CORS_ORIGIN
+    Header always set Access-Control-Allow-Credentials "true" env=CORS_ORIGIN
+
+    # 3. Fallback to wildcard if no Origin header was sent
+    Header always set Access-Control-Allow-Origin "*" env=!CORS_ORIGIN
+
+    # 4. Standard CORS methods and headers
+    Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS, HEAD"
+    Header always set Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization, Range, X-Gallery-Password, Cache-Control"
+    Header always set Access-Control-Expose-Headers "Content-Length, Content-Range, Content-Disposition"
+</IfModule>
+
+# Handle CORS preflight OPTIONS requests directly
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^(.*)$ $1 [R=204,L]
+</IfModule>

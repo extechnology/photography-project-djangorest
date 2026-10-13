@@ -164,9 +164,15 @@ def serve_media_with_cors(request, path, document_root=None, show_indexes=False)
             response['X-Accel-Redirect'] = f"/protected_media/{clean_p}"
             response['Content-Type'] = mime or 'application/octet-stream'
             response['Cache-Control'] = 'public, max-age=86400, stale-while-revalidate=604800'
-            response['Access-Control-Allow-Origin'] = '*'
-            response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-            response['Access-Control-Allow-Headers'] = '*'
+            req_origin = request.headers.get('Origin')
+            if req_origin:
+                response['Access-Control-Allow-Origin'] = req_origin
+                response['Access-Control-Allow-Credentials'] = 'true'
+            else:
+                response['Access-Control-Allow-Origin'] = '*'
+            response['Access-Control-Allow-Methods'] = 'GET, OPTIONS, HEAD'
+            response['Access-Control-Allow-Headers'] = 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range, X-Gallery-Password, Cache-Control'
+            response['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Content-Disposition'
             return response
 
         try:
@@ -180,10 +186,17 @@ def serve_media_with_cors(request, path, document_root=None, show_indexes=False)
         # Add browser caching headers for image/video media
         response['Cache-Control'] = 'public, max-age=86400, stale-while-revalidate=604800'
 
-    response['Access-Control-Allow-Origin'] = '*'
-    response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-    response['Access-Control-Allow-Headers'] = '*'
+    req_origin = request.headers.get('Origin')
+    if req_origin:
+        response['Access-Control-Allow-Origin'] = req_origin
+        response['Access-Control-Allow-Credentials'] = 'true'
+    else:
+        response['Access-Control-Allow-Origin'] = '*'
+    response['Access-Control-Allow-Methods'] = 'GET, OPTIONS, HEAD'
+    response['Access-Control-Allow-Headers'] = 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range, X-Gallery-Password, Cache-Control'
+    response['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Content-Disposition'
     return response
+
 
 
 urlpatterns += [
