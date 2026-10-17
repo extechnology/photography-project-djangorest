@@ -331,6 +331,8 @@ class ResumableUploadService:
                 section_title=section_title,
                 original_filename=filename,
                 storage_key=storage_key,
+                original_storage_key=storage_key,
+                file=storage_key,
                 file_size=assembled_size,
                 file_extension=ext,
                 width=width,

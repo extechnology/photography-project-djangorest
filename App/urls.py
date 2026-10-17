@@ -9,6 +9,7 @@ urlpatterns = [
     path('subscriptions/', include('App.Subscriptions.sub_urls')),
     path('notifications/', include('backend.atelier_notifications.urls')),
     path('billing/', include('backend.billing.urls')),
+    path('admin/dashboard/', include('backend.admin_dashboard.urls')),
     path('storage/', include('App.Storage.storage_urls')),
     path('culling/', include('App.Culling.culling_urls')),
     path('payments/verify/', VerifyPaymentView.as_view(), name='payment-verify-direct'),

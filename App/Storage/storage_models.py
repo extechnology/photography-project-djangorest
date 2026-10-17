@@ -6,6 +6,7 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.utils import timezone
 from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
+from django.core.validators import EmailValidator
 from django.conf import settings
 from App.Auth.auth_models import User
 from App.Photographers.photo_models import PhotographerProfile
@@ -602,6 +603,24 @@ class Media(models.Model):
             g_id = getattr(kwargs.get('gallery'), 'id', 'default')
             fn = kwargs.get('original_filename', 'photo')
             kwargs['storage_key'] = f"galleries/{g_id}/{uuid.uuid4().hex[:8]}_{fn}"
+
+        # Synchronize storage_key, original_storage_key, and file field to guarantee original photo preservation
+        if 'storage_key' in kwargs and kwargs['storage_key']:
+            if 'original_storage_key' not in kwargs or not kwargs['original_storage_key']:
+                kwargs['original_storage_key'] = kwargs['storage_key']
+            if 'file' not in kwargs or not kwargs['file']:
+                kwargs['file'] = kwargs['storage_key']
+        elif 'original_storage_key' in kwargs and kwargs['original_storage_key']:
+            if 'storage_key' not in kwargs or not kwargs['storage_key']:
+                kwargs['storage_key'] = kwargs['original_storage_key']
+            if 'file' not in kwargs or not kwargs['file']:
+                kwargs['file'] = kwargs['original_storage_key']
+        elif 'file' in kwargs and kwargs['file']:
+            f_val = getattr(kwargs['file'], 'name', str(kwargs['file']))
+            if 'storage_key' not in kwargs or not kwargs['storage_key']:
+                kwargs['storage_key'] = f_val
+            if 'original_storage_key' not in kwargs or not kwargs['original_storage_key']:
+                kwargs['original_storage_key'] = f_val
         super().__init__(*args, **kwargs)
 
     MEDIA_TYPE_CHOICES = [
@@ -1154,4 +1173,99 @@ class GalleryStoryVideo(models.Model):
 
     def __str__(self):
         return f"Reel '{self.title}' by {self.creator_name} ({self.aspect_ratio})"
+
+
+# =============================================================================
+# 11. Viewing User Liking & Email OTP Authentication Models
+# =============================================================================
+
+class GalleryViewer(models.Model):
+    """
+    Represents an authenticated viewing user (client or guest) within a specific gallery.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    gallery = models.ForeignKey(
+        Gallery,
+        on_delete=models.CASCADE,
+        related_name='viewers',
+        help_text="Gallery this viewer is accessing"
+    )
+    email = models.EmailField(
+        validators=[EmailValidator()],
+        db_index=True,
+        help_text="Viewing user's verified email address"
+    )
+    name = models.CharField(max_length=255, blank=True, default='')
+    session_token = models.CharField(max_length=128, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_active = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'gallery_viewers'
+        unique_together = ('gallery', 'email')
+        indexes = [
+            models.Index(fields=['gallery', 'email']),
+            models.Index(fields=['session_token']),
+        ]
+
+    def __str__(self):
+        return f"{self.email} ({self.gallery.title})"
+
+
+class ViewerLikedMedia(models.Model):
+    """
+    Stores individual photograph / video likes performed by a GalleryViewer.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    viewer = models.ForeignKey(
+        GalleryViewer,
+        on_delete=models.CASCADE,
+        related_name='liked_media'
+    )
+    gallery = models.ForeignKey(
+        Gallery,
+        on_delete=models.CASCADE,
+        related_name='viewer_likes'
+    )
+    media = models.ForeignKey(
+        Media,
+        on_delete=models.CASCADE,
+        related_name='viewer_likes'
+    )
+    liked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'viewer_liked_media'
+        unique_together = ('viewer', 'media')
+        indexes = [
+            models.Index(fields=['viewer', 'gallery']),
+            models.Index(fields=['media', 'gallery']),
+        ]
+
+    def __str__(self):
+        return f"{self.viewer.email} liked Media {self.media_id}"
+
+
+class ViewerOtpVerification(models.Model):
+    """
+    Stores 6-digit one-time passcodes sent to viewing users with rate limiting & expiry.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    gallery = models.ForeignKey(Gallery, on_delete=models.CASCADE)
+    email = models.EmailField(db_index=True)
+    otp_code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    is_verified = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'viewer_otp_verifications'
+        indexes = [
+            models.Index(fields=['email', 'otp_code']),
+            models.Index(fields=['expires_at']),
+        ]
+
+    def is_valid(self):
+        return not self.is_verified and timezone.now() < self.expires_at and self.attempts < 5
 

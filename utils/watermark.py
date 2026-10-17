@@ -281,7 +281,7 @@ def stamp_watermark_on_image(
     logo_file=None,
     opacity: float = 0.45,
     position: str = 'bottom-right',
-    quality: int = 95,
+    quality: int = 100,
     watermark_image_path=None,
     font_style: str = 'serif',
     font_size: str = 'md',
@@ -336,7 +336,7 @@ def stamp_watermark_on_image(
     stamped = apply_watermark(base, cfg)
 
     out = io.BytesIO()
-    stamped.convert('RGB').save(out, format='JPEG', quality=quality, optimize=True)
+    stamped.convert('RGB').save(out, format='JPEG', quality=max(quality, 95), subsampling=0)
     out.seek(0)
     return out
 
@@ -409,7 +409,7 @@ def apply_watermark_to_image(image_bytes: bytes, watermark_config: dict) -> byte
                 base_image.paste(logo, coords, logo)
                 output = io.BytesIO()
                 rgb_image = base_image.convert("RGB")
-                rgb_image.save(output, format="JPEG", quality=95, optimize=True)
+                rgb_image.save(output, format="JPEG", quality=100, subsampling=0)
                 return output.getvalue()
 
         # 2. Typographic Watermark
@@ -453,7 +453,7 @@ def apply_watermark_to_image(image_bytes: bytes, watermark_config: dict) -> byte
 
         output = io.BytesIO()
         rgb_image = base_image.convert("RGB")
-        rgb_image.save(output, format="JPEG", quality=95, optimize=True)
+        rgb_image.save(output, format="JPEG", quality=100, subsampling=0)
         return output.getvalue()
     except Exception as e:
         # If watermarking encounters an unexpected error, return untouched bytes

@@ -1782,6 +1782,8 @@ class DirectUploadConfirmView(APIView):
             media_type=media_type,
             original_filename=filename,
             storage_key=storage_key,
+            original_storage_key=storage_key,
+            file=storage_key,
             file_size=actual_size,
             mime_type=serializer.validated_data.get("mime_type", "image/jpeg"),
             file_extension=ext,
@@ -1958,11 +1960,23 @@ class StandardMediaUploadView(APIView):
             mime = content_type or default_mime
             key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
 
+            if hasattr(f, 'seek'):
+                try:
+                    f.seek(0)
+                except Exception:
+                    pass
+
             if hasattr(storage, "save_file"):
                 storage.save_file(key, f, content_type=mime)
             else:
                 file_bytes = f.read()
                 storage.upload(key, file_bytes, content_type=mime)
+
+            if hasattr(f, 'seek'):
+                try:
+                    f.seek(0)
+                except Exception:
+                    pass
 
             # Fast metadata probe from file header on disk (instant, no image decoding)
             width = None
@@ -1994,6 +2008,8 @@ class StandardMediaUploadView(APIView):
                 section_title=section_title,
                 original_filename=safe_name,
                 storage_key=key,
+                original_storage_key=key,
+                file=key,
                 file_size=actual_size,
                 mime_type=mime,
                 file_extension=ext or ('.mp4' if media_type == 'video' else '.jpg'),
@@ -3947,10 +3963,10 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                         except Exception:
                             file_bytes = None
 
-            # Write file bytes into the ZIP archive
+            # Write file bytes into the ZIP archive (Exact original uncompressed bytes by default)
             if file_bytes:
-                # Watermark baking if enabled on gallery (or requested) and media item is a photo and not RAW
-                should_watermark = (getattr(gallery, 'watermark_enabled', False) or apply_watermark_param) and not is_raw and getattr(item, 'media_type', 'photo') != 'video'
+                # Watermark baking ONLY if explicitly requested via ?watermark=true and media item is a photo and not RAW
+                should_watermark = apply_watermark_param and not is_raw and getattr(item, 'media_type', 'photo') != 'video'
                 if should_watermark:
                     try:
                         profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)

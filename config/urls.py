@@ -19,8 +19,20 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from rest_framework_simplejwt.views import TokenRefreshView
+from backend.admin_dashboard.views import AdminTokenObtainPairView
+
 urlpatterns = [
     path('admin/', admin.site.urls),
+
+    # 1. Admin JWT Authentication & Login Endpoints
+    path('api/token/', AdminTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/accounts/login/', AdminTokenObtainPairView.as_view(), name='accounts_login'),
+
+    # 2. Master Admin Dashboard API
+    path('api/admin/dashboard/', include('backend.admin_dashboard.urls')),
+
     path('', include('inquiries.urls')),
     path('api/culling/', include('culling.urls')),
     path('api/', include('gallery.urls')),

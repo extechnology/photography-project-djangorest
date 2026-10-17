@@ -32,4 +32,23 @@ __all__ = [
 
 from .media_download import MediaDownloadView
 from .gallery_zip_download import GalleryZipDownloadView
+from .viewer_likes import (
+    resolve_gallery,
+    ViewerSendOtpView,
+    ViewerVerifyOtpView,
+    ViewerLikedMediaListView,
+    ViewerToggleFavoriteView,
+    ViewerBulkToggleFavoriteView,
+    GalleryClientFavoritesReviewView,
+)
+
+__all__ += [
+    'resolve_gallery',
+    'ViewerSendOtpView',
+    'ViewerVerifyOtpView',
+    'ViewerLikedMediaListView',
+    'ViewerToggleFavoriteView',
+    'ViewerBulkToggleFavoriteView',
+    'GalleryClientFavoritesReviewView',
+]
 

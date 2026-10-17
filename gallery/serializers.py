@@ -82,10 +82,23 @@ class CreateStoryVideoPayloadSerializer(serializers.Serializer):
 # Alias for compatibility
 GalleryDetailSerializer = GalleryDetailResponseSerializer
 
+from galleries.serializers import (
+    ViewerSendOtpSerializer,
+    ViewerVerifyOtpSerializer,
+    ViewerProfileSerializer,
+    ViewerToggleFavoriteSerializer,
+    ViewerBulkToggleFavoriteSerializer,
+)
+
 __all__ = [
     'ReorderGalleryMediaSerializer',
     'GalleryDetailSerializer',
     'GalleryGuestSessionSerializer',
     'GalleryStoryVideoSerializer',
     'CreateStoryVideoPayloadSerializer',
+    'ViewerSendOtpSerializer',
+    'ViewerVerifyOtpSerializer',
+    'ViewerProfileSerializer',
+    'ViewerToggleFavoriteSerializer',
+    'ViewerBulkToggleFavoriteSerializer',
 ]

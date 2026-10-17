@@ -227,3 +227,14 @@ class TrackStoryVideoActionView(APIView):
             story_video.save(update_fields=['share_count'])
 
         return Response({"status": "success", "action": action}, status=status.HTTP_200_OK)
+
+
+from galleries.views.viewer_likes import (
+    resolve_gallery,
+    ViewerSendOtpView,
+    ViewerVerifyOtpView,
+    ViewerLikedMediaListView,
+    ViewerToggleFavoriteView,
+    ViewerBulkToggleFavoriteView,
+    GalleryClientFavoritesReviewView,
+)

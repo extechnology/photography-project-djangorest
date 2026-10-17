@@ -346,6 +346,8 @@ def transfer_media_to_gallery(
         section_title=section.title if section else 'HIGHLIGHTS',
         original_filename=safe_name,
         storage_key=storage_key,
+        original_storage_key=storage_key,
+        file=storage_key,
         thumbnail_storage_key=thumb_key,
         preview_storage_key=prev_key,
         media_type=media_type,

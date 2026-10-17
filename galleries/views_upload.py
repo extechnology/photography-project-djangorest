@@ -90,6 +90,11 @@ class BulkMediaUploadService:
         Returns: (thumbnail_url, preview_url, width, height)
         """
         try:
+            if hasattr(original_file, 'seek'):
+                try:
+                    original_file.seek(0)
+                except Exception:
+                    pass
             with Image.open(original_file) as img:
                 img = ImageOps.exif_transpose(img)
                 width, height = img.size
@@ -215,11 +220,24 @@ class BulkUploadGalleryMediaView(APIView):
                 clean_name = f"{slugify(name_root)}_{uuid.uuid4().hex[:8]}{ext.lower()}"
                 storage_path = f"galleries/{gallery.id}/{section_title.lower()}/{clean_name}"
 
-                # Save original asset
+                # Ensure pointer at start to save complete uncompressed original file
+                if hasattr(uploaded_file, 'seek'):
+                    try:
+                        uploaded_file.seek(0)
+                    except Exception:
+                        pass
+
+                # Save original asset (UNTOUCHED, EXACT BYTES)
                 saved_path = default_storage.save(storage_path, uploaded_file)
                 asset_url = default_storage.url(saved_path)
 
-                # Generate lightweight thumbnail & web preview
+                if hasattr(uploaded_file, 'seek'):
+                    try:
+                        uploaded_file.seek(0)
+                    except Exception:
+                        pass
+
+                # Generate lightweight thumbnail & web preview for fast UI browsing
                 thumb_url, preview_url, width, height = (
                     BulkMediaUploadService.generate_thumbnails(uploaded_file)
                     if media_type == 'photo' else ("", "", 0, 0)
@@ -227,6 +245,7 @@ class BulkUploadGalleryMediaView(APIView):
 
                 media_obj = GalleryMedia(
                     gallery=gallery,
+                    file=saved_path,
                     section=section,
                     section_title=section_title,
                     media_type=media_type,
@@ -417,8 +436,20 @@ class BulkUploadEventMediaView(APIView):
                 clean_name = f"{slugify(name_root)}_{uuid.uuid4().hex[:8]}{ext.lower()}"
                 storage_path = f"events/{event.id}/{section_title.lower()}/{clean_name}"
 
+                if hasattr(uploaded_file, 'seek'):
+                    try:
+                        uploaded_file.seek(0)
+                    except Exception:
+                        pass
+
                 saved_path = default_storage.save(storage_path, uploaded_file)
                 asset_url = default_storage.url(saved_path)
+
+                if hasattr(uploaded_file, 'seek'):
+                    try:
+                        uploaded_file.seek(0)
+                    except Exception:
+                        pass
 
                 thumb_url, preview_url, width, height = (
                     BulkMediaUploadService.generate_thumbnails(uploaded_file)

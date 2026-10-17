@@ -11,6 +11,9 @@ from App.Storage.storage_models import (
     GalleryGuestSession,
     GalleryStoryVideo,
     story_video_upload_path,
+    GalleryViewer,
+    ViewerLikedMedia,
+    ViewerOtpVerification,
 )
 
 __all__ = [
@@ -23,4 +26,7 @@ __all__ = [
     'GalleryGuestSession',
     'GalleryStoryVideo',
     'story_video_upload_path',
+    'GalleryViewer',
+    'ViewerLikedMedia',
+    'ViewerOtpVerification',
 ]

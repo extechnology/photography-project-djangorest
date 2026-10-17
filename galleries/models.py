@@ -9,6 +9,9 @@ from App.Storage.storage_models import (
     GallerySection,
     GalleryClientSelection,
     BulkDownloadJob,
+    GalleryViewer,
+    ViewerLikedMedia,
+    ViewerOtpVerification,
 )
 
 __all__ = [
@@ -19,5 +22,8 @@ __all__ = [
     'GallerySection',
     'GalleryClientSelection',
     'BulkDownloadJob',
+    'GalleryViewer',
+    'ViewerLikedMedia',
+    'ViewerOtpVerification',
 ]
 

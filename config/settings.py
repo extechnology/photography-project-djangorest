@@ -28,12 +28,14 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-w^01^8=!drxc9o$y08d@4
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = config(
-    'ALLOWED_HOSTS',
-    default='.exshare.ai,localhost,127.0.0.1,testserver,example.com,.example.com',
-    cast=lambda v: [s.strip() for s in v.split(',') if s.strip()]
-)
+# ALLOWED_HOSTS = config(
+#     'ALLOWED_HOSTS',
+#     default='.exshare.ai,localhost,127.0.0.1,testserver,example.com,.example.com',
+#     cast=lambda v: [s.strip() for s in v.split(',') if s.strip()]
+# )
 
+
+ALLOWED_HOSTS = ['*']
 # Host-only cookies: app.exshare.ai session & CSRF cookies never leak to tenant subdomains
 SESSION_COOKIE_DOMAIN = None
 CSRF_COOKIE_DOMAIN = None
@@ -70,10 +72,12 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework_simplejwt',
     'corsheaders',
     'culling',
     'App',
     'portfolio',
+    'backend.admin_dashboard',
 ]
 
 MIDDLEWARE = [
@@ -126,6 +130,19 @@ DATABASES = {
         },
     }
 }
+
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': config('DB_NAME'),
+#         'USER': config('DB_USER'),
+#         'PASSWORD': config('DB_PASSWORD'),
+#         'HOST': config('DB_HOST'),
+#         'PORT': config('DB_PORT'),
+#     }
+# }
+
 
 
 # Password validation
@@ -193,6 +210,7 @@ AUTHENTICATION_BACKENDS = [
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'App.Auth.auth_utils.CookieJWTAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
@@ -253,8 +271,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://exshare.ai",
     "http://server.exshare.ai",
     "https://server.exshare.ai",
-
-    
+    "https://*.devtunnels.ms",
+    "https://pv0smzkc-8000.inc1.devtunnels.ms",
 ]
 
 

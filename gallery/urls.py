@@ -16,6 +16,14 @@ from galleries.views_upload import (
 )
 from galleries.views.media_download import MediaDownloadView
 from galleries.views.gallery_zip_download import GalleryZipDownloadView
+from galleries.views.viewer_likes import (
+    ViewerSendOtpView,
+    ViewerVerifyOtpView,
+    ViewerLikedMediaListView,
+    ViewerToggleFavoriteView,
+    ViewerBulkToggleFavoriteView,
+    GalleryClientFavoritesReviewView,
+)
 
 
 
@@ -56,6 +64,17 @@ urlpatterns = [
     path('public/galleries/<str:id_or_slug>/download-zip/', GalleryZipDownloadView.as_view(), name='public-gallery-download-zip-galleryapp'),
     path('galleries/<uuid:gallery_id>/download-zip/', GalleryZipDownloadView.as_view(), name='gallery-download-zip-galleryapp'),
     path('galleries/<str:gallery_id>/download-zip/', GalleryZipDownloadView.as_view(), name='gallery-download-zip-galleryapp-str'),
+
+    # Viewing user public liking & OTP endpoints
+    path('public/galleries/<str:slug_or_id>/auth/send-otp/', ViewerSendOtpView.as_view(), name='gallery-viewer-send-otp'),
+    path('public/galleries/<str:slug_or_id>/auth/verify-otp/', ViewerVerifyOtpView.as_view(), name='gallery-viewer-verify-otp'),
+    path('public/galleries/<str:slug_or_id>/likes/', ViewerLikedMediaListView.as_view(), name='gallery-viewer-likes-list'),
+    path('public/galleries/<str:slug_or_id>/favorite/', ViewerToggleFavoriteView.as_view(), name='gallery-viewer-toggle-favorite'),
+    path('public/galleries/<str:slug_or_id>/bulk-like/', ViewerBulkToggleFavoriteView.as_view(), name='gallery-viewer-bulk-like'),
+
+    # Studio Photographer Client Favorites Review
+    path('galleries/<uuid:gallery_id>/client-favorites/', GalleryClientFavoritesReviewView.as_view(), name='gallery-client-favorites-uuid'),
+    path('galleries/<str:gallery_id>/client-favorites/', GalleryClientFavoritesReviewView.as_view(), name='gallery-client-favorites'),
 ]
 
 

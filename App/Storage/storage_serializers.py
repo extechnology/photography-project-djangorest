@@ -287,7 +287,12 @@ class MediaSerializer(serializers.ModelSerializer):
         return data
 
     def get_size_mb(self, obj):
-        size = getattr(obj, 'file_size', 0) or (obj.file.size if getattr(obj, 'file', None) else 0)
+        size = getattr(obj, 'file_size', 0)
+        if not size and getattr(obj, 'file', None):
+            try:
+                size = obj.file.size
+            except Exception:
+                size = 0
         return round((size or 0) / (1024 * 1024), 2)
 
     def get_url(self, obj):

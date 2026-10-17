@@ -73,7 +73,24 @@ def _read_media_raw_bytes(media, target_file=None):
     except Exception:
         pass
 
-    # Strategy 4: Preview or thumbnail key fallback
+    # Strategy 4: Local filesystem / MEDIA_ROOT direct lookup for original file
+    from django.conf import settings
+    for key_candidate in (storage_key, getattr(media, 'original_storage_key', None)):
+        if key_candidate and hasattr(settings, 'MEDIA_ROOT'):
+            try:
+                clean_k = str(key_candidate).replace('\\', '/').lstrip('/')
+                local_obj_path = os.path.join(settings.MEDIA_ROOT, 'storage_objects', clean_k)
+                if os.path.exists(local_obj_path) and os.path.isfile(local_obj_path):
+                    with open(local_obj_path, 'rb') as f:
+                        return f.read()
+                local_path = os.path.join(settings.MEDIA_ROOT, clean_k)
+                if os.path.exists(local_path) and os.path.isfile(local_path):
+                    with open(local_path, 'rb') as f:
+                        return f.read()
+            except Exception:
+                pass
+
+    # Strategy 5: Preview or thumbnail key fallback ONLY if original is completely unavailable
     for alt_key_attr in ('preview_storage_key', 'thumbnail_storage_key'):
         alt_key = getattr(media, alt_key_attr, None)
         if alt_key:
@@ -145,14 +162,22 @@ class MediaDownloadView(APIView):
         target_file = None
         is_raw = False
 
-        # 2. Format Resolution: RAW vs JPEG / Master
-        if format_choice == 'raw' and getattr(media, 'raw_file', None) and bool(media.raw_file):
-            target_file = media.raw_file
-            is_raw = True
-        elif getattr(media, 'file', None) and bool(media.file):
-            target_file = media.file
-        elif getattr(media, 'preview', None) and bool(media.preview):
-            target_file = media.preview
+        # 2. Format Resolution: RAW vs Master / Original
+        if format_choice == 'raw':
+            if getattr(media, 'raw_file', None) and bool(media.raw_file):
+                target_file = media.raw_file
+                is_raw = True
+            elif getattr(media, 'file', None) and bool(media.file):
+                target_file = media.file
+        elif format_choice == 'preview':
+            if getattr(media, 'preview', None) and bool(media.preview):
+                target_file = media.preview
+        else:
+            # Default or 'original' / 'master': Strictly use original master file (never fall back to preview)
+            if getattr(media, 'file', None) and bool(media.file):
+                target_file = media.file
+            elif getattr(media, 'raw_file', None) and bool(media.raw_file):
+                target_file = media.raw_file
 
         # Increment download telemetry
         try:
@@ -161,17 +186,20 @@ class MediaDownloadView(APIView):
         except Exception:
             pass
 
-        filename = media.original_filename or (os.path.basename(target_file.name) if target_file and hasattr(target_file, 'name') else f"photo_{media.id}.jpg")
-        if not filename:
-            filename = f"photo_{media.id}.jpg"
+        filename = (
+            media.original_filename
+            or (os.path.basename(target_file.name) if target_file and hasattr(target_file, 'name') and target_file.name else None)
+            or getattr(media, 'storage_key', None)
+            or f"photo_{media.id}.jpg"
+        )
 
-        clean_filename = os.path.basename(filename.replace('\\', '/'))
+        clean_filename = os.path.basename(str(filename).replace('\\', '/'))
         base_name, ext = os.path.splitext(clean_filename)
         if not ext:
             ext = getattr(media, 'file_extension', '.jpg') or '.jpg'
         clean_filename = f"{base_name}{ext}"
 
-        # 3. Read File Bytes
+        # 3. Read Full Original Uncompressed File Bytes
         file_bytes = _read_media_raw_bytes(media, target_file)
 
         if not file_bytes:
@@ -183,9 +211,10 @@ class MediaDownloadView(APIView):
         if not file_bytes:
             raise Http404("Media file could not be located in storage.")
 
-        # 4. If RAW file requested and no watermark requested, stream raw file directly
-        watermark_active = (apply_watermark_param or getattr(gallery, 'watermark_enabled', False)) and not is_raw
-        if is_raw or not watermark_active:
+        # 4. Stream original uncompressed bytes directly without watermarking or PIL re-encoding
+        # Watermark is ONLY applied if explicitly requested via ?watermark=true and format is not RAW
+        should_watermark = apply_watermark_param and not is_raw
+        if not should_watermark:
             content_type, _ = mimetypes.guess_type(clean_filename)
             content_type = content_type or (media.mime_type if hasattr(media, 'mime_type') and media.mime_type else 'application/octet-stream')
 
