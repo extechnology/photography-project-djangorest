@@ -79,14 +79,25 @@ def read_media_bytes(file_source, filename=None, storage_key=None):
     except (FileNotFoundError, OSError, Exception):
         pass
 
-    # Strategy 3: Direct file path on file_source
+    # Strategy 3: Direct file path on file_source (local storage only)
     try:
         raw_path = getattr(file_source, "path", None)
         if raw_path and os.path.exists(raw_path) and os.path.isfile(raw_path):
             with open(raw_path, "rb") as f:
                 return f.read()
-    except (FileNotFoundError, OSError, Exception):
+    except (NotImplementedError, FileNotFoundError, OSError, ValueError, Exception):
         pass
+
+    # Strategy 3b: Early R2/remote storage provider download via storage_key
+    if storage_key:
+        try:
+            sp = get_storage_provider()
+            if hasattr(sp, 'download') and sp.exists(str(storage_key).replace('\\', '/').lstrip('/')):
+                data = sp.download(str(storage_key).replace('\\', '/').lstrip('/'))
+                if data:
+                    return data
+        except Exception:
+            pass
 
     # Strategy 4: Name attribute on file_source
     candidate_names = []
@@ -236,14 +247,21 @@ def transfer_media_to_gallery(
     local_src_path = None
 
     # Check for direct local disk path (e.g. from culling_staging or events)
-    if hasattr(file_source, 'path') and os.path.exists(file_source.path):
-        local_src_path = file_source.path
-    elif hasattr(file_source, 'name') and file_source.name:
-        cand = os.path.join(settings.MEDIA_ROOT, str(file_source.name))
-        if os.path.exists(cand) and os.path.isfile(cand):
-            local_src_path = cand
-    elif isinstance(file_source, (str, Path)) and os.path.exists(str(file_source)):
-        local_src_path = str(file_source)
+    try:
+        if hasattr(file_source, 'path'):
+            src_path = file_source.path
+            if os.path.exists(src_path):
+                local_src_path = src_path
+    except (NotImplementedError, ValueError):
+        pass
+
+    if not local_src_path:
+        if hasattr(file_source, 'name') and file_source.name:
+            cand = os.path.join(settings.MEDIA_ROOT, str(file_source.name))
+            if os.path.exists(cand) and os.path.isfile(cand):
+                local_src_path = cand
+        elif isinstance(file_source, (str, Path)) and os.path.exists(str(file_source)):
+            local_src_path = str(file_source)
 
     file_size_bytes = 0
     file_bytes = None
@@ -270,7 +288,30 @@ def transfer_media_to_gallery(
             local_src_path = None
 
     if not file_size_bytes:
+        # For R2/remote: stream the file directly if possible
+        if local_src_path and not isinstance(storage, LocalStorageProvider):
+            try:
+                storage.move_file(local_src_path, storage_key)
+                file_size_bytes = os.path.getsize(local_src_path) if os.path.exists(local_src_path) else 0
+                # move_file already uploaded; read bytes only if needed for thumbnails
+                if media_type == 'photo':
+                    file_bytes = read_media_bytes(file_source, filename=safe_name, storage_key=storage_key)
+            except Exception as e:
+                logger.warning(f"R2 move_file failed for {safe_name}, falling back to bytes upload: {e}")
+                local_src_path = None
+
+    if not file_size_bytes:
         file_bytes = read_media_bytes(file_source, filename=safe_name)
+        if not file_bytes and hasattr(file_source, 'read'):
+            # Direct read from UploadedFile / file-like for R2 streaming
+            try:
+                if hasattr(file_source, 'seek'):
+                    file_source.seek(0)
+                file_bytes = file_source.read()
+                if hasattr(file_source, 'seek'):
+                    file_source.seek(0)
+            except Exception:
+                pass
         if file_bytes:
             file_size_bytes = len(file_bytes)
             try:
@@ -291,11 +332,19 @@ def transfer_media_to_gallery(
     if media_type == 'photo' and (local_src_path or file_bytes):
         try:
             from PIL import Image, ImageOps
-            if local_src_path:
+            if local_src_path and isinstance(storage, LocalStorageProvider):
                 target_dst = storage.get_absolute_path(storage_key)
                 img = Image.open(str(target_dst))
-            else:
+            elif file_bytes:
                 img = Image.open(io.BytesIO(file_bytes))
+            else:
+                # Download from R2 for thumbnail generation
+                try:
+                    dl_bytes = storage.download(storage_key)
+                    img = Image.open(io.BytesIO(dl_bytes))
+                    file_bytes = dl_bytes
+                except Exception:
+                    raise FileNotFoundError(f"Cannot read {storage_key} for thumbnail generation")
 
             img = ImageOps.exif_transpose(img)
             img_w, img_h = img.size
@@ -366,8 +415,12 @@ def transfer_media_to_gallery(
     if file_bytes:
         try:
             gm.file.save(f"{media_id}_{safe_name}", ContentFile(file_bytes), save=False)
-            if hasattr(gm.file, 'path') and os.path.exists(gm.file.path):
-                fix_local_permissions(gm.file.path)
+            if isinstance(storage, LocalStorageProvider) and hasattr(gm.file, 'path'):
+                try:
+                    if os.path.exists(gm.file.path):
+                        fix_local_permissions(gm.file.path)
+                except (NotImplementedError, ValueError):
+                    pass
         except Exception:
             pass
 

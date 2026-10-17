@@ -11,7 +11,6 @@ from .photo_models import (
     Inquiry,
 )
 
-
 @admin.register(PhotographerProfile)
 class PhotographerProfileAdmin(ModelAdmin):
     list_display = ('name', 'studio_name', 'user', 'plan', 'default_template', 'enable_watermark', 'is_onboarded', 'storage_used_bytes')

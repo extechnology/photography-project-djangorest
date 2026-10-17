@@ -1,10 +1,8 @@
 import sys
 import io
-import math
 import uuid
 from datetime import timedelta
-import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 from celery import shared_task
 from django.utils import timezone
 from django.core.files.base import ContentFile

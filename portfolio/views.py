@@ -1,10 +1,12 @@
 import os
 import uuid
 import hashlib
+import logging
+
 from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction, IntegrityError
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Case, When
 from django.shortcuts import get_object_or_404
 from django.core.files.storage import default_storage
 from django.contrib.auth import get_user_model
@@ -14,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.exceptions import ValidationError
+from App.Storage.throttling import InquirySubmitRateThrottle, ViewTrackRateThrottle
 
 from .models import (
     PortfolioConfig,
@@ -21,16 +24,12 @@ from .models import (
     PortfolioWorkPhoto,
     PortfolioInquiry,
     PortfolioView,
-    PortfolioVisit,
-    ReservedSubdomain,
 )
 from .serializers import (
     PortfolioConfigSerializer,
     PortfolioWorkSerializer,
     PortfolioWorkPhotoSerializer,
     PortfolioInquirySerializer,
-    SubdomainAvailabilityQuerySerializer,
-    SubdomainClaimSerializer,
 )
 from .utils import (
     get_or_create_starter_portfolio,
@@ -43,6 +42,7 @@ from .subdomain_service import (
     resolve_portfolio_from_request,
 )
 
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -483,13 +483,13 @@ class PortfolioWorkPhotosView(APIView):
         if new_photos:
             PortfolioWorkPhoto.objects.bulk_create(new_photos)
 
-        all_photos = work.photos.all()
+        all_photos = list(work.photos.all())
         serializer = PortfolioWorkPhotoSerializer(all_photos, many=True)
         return Response(
             {
                 "success": True,
                 "work_id": work.id,
-                "media_count": all_photos.count(),
+                "media_count": len(all_photos),
                 "photos": serializer.data
             },
             status=status.HTTP_200_OK
@@ -529,6 +529,7 @@ class PublicInquiryCreateView(APIView):
     Stores inquiry in CRM, triggers email notification to photographer.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [InquirySubmitRateThrottle]
 
     def post(self, request):
         data = request.data
@@ -947,11 +948,18 @@ class PortfolioInquiryAnalyticsView(APIView):
         else:
             qs = PortfolioInquiry.objects.filter(photographer=user)
 
-        total_p = qs.count()
-        new_p = qs.filter(status='new').count()
-        contacted_p = qs.filter(status='contacted').count()
-        booked_p = qs.filter(status='booked').count()
-        archived_p = qs.filter(status='archived').count()
+        p_agg = qs.aggregate(
+            total=Count('id'),
+            new=Count(Case(When(status__iexact='new', then=1))),
+            contacted=Count(Case(When(status__iexact='contacted', then=1))),
+            booked=Count(Case(When(status__iexact='booked', then=1))),
+            archived=Count(Case(When(status__iexact='archived', then=1))),
+        )
+        total_p = p_agg['total'] or 0
+        new_p = p_agg['new'] or 0
+        contacted_p = p_agg['contacted'] or 0
+        booked_p = p_agg['booked'] or 0
+        archived_p = p_agg['archived'] or 0
 
         # Check legacy counts as well
         try:
@@ -961,11 +969,19 @@ class PortfolioInquiryAnalyticsView(APIView):
                 l_qs = Inquiry.objects.all()
             else:
                 l_qs = Inquiry.objects.filter(Q(photographer=profile) | Q(photographer__isnull=True))
-            total_l = l_qs.count()
-            new_l = l_qs.filter(status='new').count()
-            contacted_l = l_qs.filter(status='contacted').count()
-            booked_l = l_qs.filter(status='booked').count()
-            archived_l = l_qs.filter(status='archived').count()
+
+            l_agg = l_qs.aggregate(
+                total=Count('id'),
+                new=Count(Case(When(status__iexact='new', then=1))),
+                contacted=Count(Case(When(status__iexact='contacted', then=1))),
+                booked=Count(Case(When(status__iexact='booked', then=1))),
+                archived=Count(Case(When(status__iexact='archived', then=1))),
+            )
+            total_l = l_agg['total'] or 0
+            new_l = l_agg['new'] or 0
+            contacted_l = l_agg['contacted'] or 0
+            booked_l = l_agg['booked'] or 0
+            archived_l = l_agg['archived'] or 0
 
             # Merge if legacy has items and portfolio doesn't
             if total_p == 0 and total_l > 0:
@@ -1202,6 +1218,7 @@ class PublicPortfolioTrackView(APIView):
     Logs page views, sections, project view interactions, device types, and referrer info.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [ViewTrackRateThrottle]
 
     def post(self, request, slug_or_id=None, slug=None):
         target_slug = slug or slug_or_id or request.data.get('photographer_slug') or request.data.get('photographerSlug')

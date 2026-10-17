@@ -85,7 +85,6 @@ urlpatterns = [
     path('onboarding/setup/', PhotographerOnboardingView.as_view(), name='photographer-onboarding-setup'),
     path('onboarding/complete/', OnboardingCompleteView.as_view(), name='onboarding-complete'),
 
-
     # -------------------------------------------------------------------------
     # Photographer Posts
     # -------------------------------------------------------------------------

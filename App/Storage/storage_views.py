@@ -13,6 +13,7 @@ import functools
 
 from django.conf import settings
 from django.shortcuts import get_object_or_404
+from django.core.files.storage import default_storage
 from django.http import HttpResponse, FileResponse, Http404
 from utils.watermark import stamp_watermark_on_image
 from django.core.files.base import ContentFile
@@ -42,7 +43,6 @@ from App.Storage.storage_models import (
     GallerySection,
     GalleryAnalyticsEvent,
     Media,
-    GalleryClientAccess,
     GalleryClientSelection,
     FaceEmbedding,
     UploadReservation,
@@ -52,7 +52,6 @@ from App.Storage.storage_models import (
 from backend.atelier_plans.subscription_enforcement import (
     enforce_active_subscription,
     is_studio_active,
-    IsActiveStudioSubscriber,
 )
 from App.Storage.storage_serializers import (
     SharedEventListSerializer,
@@ -61,13 +60,10 @@ from App.Storage.storage_serializers import (
     EventPhotoSerializer,
     GallerySerializer,
     GalleryDetailResponseSerializer,
-    GallerySettingsUpdateSerializer,
     GallerySectionSerializer,
-    MoveMediaSectionSerializer,
     SectionCreateSerializer,
     SectionRenameSerializer,
     SectionReorderSerializer,
-    MediaReorderSerializer,
     TemplateUpdateSerializer,
     TemplateBannerUpdateSerializer,
     MasonrySlotSerializer,
@@ -76,11 +72,7 @@ from App.Storage.storage_serializers import (
     PublicGallerySerializer,
     MediaSerializer,
     GalleryClientSelectionSerializer,
-    DirectUploadInitItemSerializer,
     DirectUploadConfirmSerializer,
-    GalleryTemplateUpdateSerializer,
-    GallerySetCoverSerializer,
-    GalleryReorderMediaSerializer,
     StorageUsageSerializer,
     BulkDownloadJobSerializer,
 )
@@ -94,22 +86,21 @@ from App.Storage.tasks import (
     generate_bulk_download_archive_task,
     run_or_queue_task,
 )
-from App.Storage.permissions import (
-    IsPhotographer,
-    IsGalleryOwner,
-    CanAccessGallery,
-    CanDownloadMedia,
-)
+
 from App.Storage.throttling import (
     FaceSearchRateThrottle,
     UploadRateThrottle,
-    DownloadRateThrottle,
     BulkDownloadRateThrottle,
     ShareAccessRateThrottle,
     PinVerifyRateThrottle,
+    PasswordVerifyRateThrottle,
 )
 
 logger = logging.getLogger(__name__)
+
+VALID_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.heic', '.raw', '.dng'}
+VALID_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'}
+ALLOWED_MEDIA_EXTENSIONS = VALID_IMAGE_EXTENSIONS | VALID_VIDEO_EXTENSIONS
 
 
 def is_gallery_template_allowed(active_plan, template_id):
@@ -159,12 +150,6 @@ def trigger_studio_notification(photographer, event_type, title, message, galler
             )
     except Exception:
         pass
-
-
-VALID_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.heic', '.raw', '.dng'}
-VALID_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'}
-ALLOWED_MEDIA_EXTENSIONS = VALID_IMAGE_EXTENSIONS | VALID_VIDEO_EXTENSIONS
-
 
 
 def get_current_user(request):
@@ -236,7 +221,7 @@ class SharedEventListCreateView(APIView):
         if user.is_superuser or user.is_staff:
             events = SharedEvent.objects.all().select_related('photographer')
         else:
-            events = SharedEvent.objects.filter(photographer=profile)
+            events = SharedEvent.objects.filter(photographer=profile).select_related('photographer')
 
         serializer = SharedEventListSerializer(events, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -336,15 +321,15 @@ class SharedEventDetailView(APIView):
             return Response({"message": "You do not have permission to delete this event."}, status=status.HTTP_403_FORBIDDEN)
 
         for photo in event.photos.all():
-            if photo.image and hasattr(photo.image, 'path') and os.path.exists(photo.image.path):
+            if photo.image and getattr(photo.image, 'name', None):
                 try:
-                    os.remove(photo.image.path)
-                except OSError:
+                    default_storage.delete(photo.image.name)
+                except Exception:
                     pass
-        if event.cover_image and hasattr(event.cover_image, 'path') and os.path.exists(event.cover_image.path):
+        if event.cover_image and getattr(event.cover_image, 'name', None):
             try:
-                os.remove(event.cover_image.path)
-            except OSError:
+                default_storage.delete(event.cover_image.name)
+            except Exception:
                 pass
 
         event.delete()
@@ -500,10 +485,10 @@ class EventPhotoDeleteView(APIView):
         if photo.event.photographer.user != user and not (user.is_staff or user.is_superuser):
             return Response({"message": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
 
-        if photo.image and hasattr(photo.image, 'path') and os.path.exists(photo.image.path):
+        if photo.image and getattr(photo.image, 'name', None):
             try:
-                os.remove(photo.image.path)
-            except OSError:
+                default_storage.delete(photo.image.name)
+            except Exception:
                 pass
 
         photo.delete()
@@ -528,10 +513,10 @@ class EventPhotoBulkDeleteView(APIView):
         count = photos_to_delete.count()
 
         for p in photos_to_delete:
-            if p.image and hasattr(p.image, 'path') and os.path.exists(p.image.path):
+            if p.image and getattr(p.image, 'name', None):
                 try:
-                    os.remove(p.image.path)
-                except OSError:
+                    default_storage.delete(p.image.name)
+                except Exception:
                     pass
 
         photos_to_delete.delete()
@@ -1267,10 +1252,10 @@ class GalleryDetailView(APIView):
                         storage.delete(media.thumbnail_storage_key)
                     if media.preview_storage_key:
                         storage.delete(media.preview_storage_key)
-                    if media.file and hasattr(media.file, 'path') and os.path.exists(media.file.path):
+                    if media.file and getattr(media.file, 'name', None):
                         try:
-                            os.remove(media.file.path)
-                        except OSError:
+                            default_storage.delete(media.file.name)
+                        except Exception:
                             pass
                     FaceEmbedding.objects.filter(media=media).delete()
                     if media.deleted_at is None and media.file_size:
@@ -1505,10 +1490,10 @@ class GalleryViewSet(viewsets.ModelViewSet):
                         storage.delete(media.thumbnail_storage_key)
                     if media.preview_storage_key:
                         storage.delete(media.preview_storage_key)
-                    if media.file and hasattr(media.file, 'path') and os.path.exists(media.file.path):
+                    if media.file and getattr(media.file, 'name', None):
                         try:
-                            os.remove(media.file.path)
-                        except OSError:
+                            default_storage.delete(media.file.name)
+                        except Exception:
                             pass
                     FaceEmbedding.objects.filter(media=media).delete()
                     if media.deleted_at is None and media.file_size:
@@ -2575,6 +2560,7 @@ class SharedGalleryView(APIView):
 
 class VerifyGalleryPasswordView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [PasswordVerifyRateThrottle]
 
     def post(self, request, share_token):
         gallery = get_object_or_404(Gallery, share_token=share_token)
@@ -4092,6 +4078,7 @@ class PublicGalleryDownloadZipView(APIView):
     GET /api/public/galleries/{slug_or_id}/download-zip/
     """
     permission_classes = [AllowAny]
+    throttle_classes = [BulkDownloadRateThrottle]
 
     def perform_content_negotiation(self, request, force=False):
         renderers = self.get_renderers()

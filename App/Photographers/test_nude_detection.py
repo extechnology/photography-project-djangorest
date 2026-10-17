@@ -16,7 +16,6 @@ from App.Photographers.photo_utils import (
     validate_non_nude_image,
 )
 
-
 def create_test_image(name="test.jpg", color="green", size=(120, 120)):
     buf = io.BytesIO()
     img = Image.new("RGB", size, color=color)
@@ -24,7 +23,7 @@ def create_test_image(name="test.jpg", color="green", size=(120, 120)):
     buf.seek(0)
     return SimpleUploadedFile(name, buf.read(), content_type="image/jpeg")
 
-
+@override_settings(ENABLE_NUDE_DETECTION=True, NUDE_DETECTION_ENABLED=True)
 class NudeDetectionUnitTests(TestCase):
     def test_clean_image_not_flagged(self):
         """Clean solid-color image should not trigger any nudity violation."""
@@ -106,7 +105,7 @@ class NudeDetectionUnitTests(TestCase):
 
         self.assertIn("Female Genitalia Exposed", str(ctx.exception))
 
-
+@override_settings(ENABLE_NUDE_DETECTION=True, NUDE_DETECTION_ENABLED=True)
 class NudeDetectionSerializerTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -148,7 +147,7 @@ class NudeDetectionSerializerTests(TestCase):
         self.assertIn("image", serializer.errors)
         self.assertIn("Female Breast Exposed", str(serializer.errors["image"]))
 
-
+@override_settings(ENABLE_NUDE_DETECTION=True, NUDE_DETECTION_ENABLED=True)
 class NudeDetectionAPIViewTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -241,7 +240,6 @@ class NudeDetectionAPIViewTests(TestCase):
         new_post = PhotographerPost.objects.get(caption="Sunset Landscape")
         self.assertEqual(new_post.images.count(), 2)
 
-
 class NudeDetectionSettingsToggleTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -307,4 +305,3 @@ class NudeDetectionSettingsToggleTests(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("rejected_files", resp.data)
-

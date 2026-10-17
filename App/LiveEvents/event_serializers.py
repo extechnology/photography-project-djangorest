@@ -1,9 +1,7 @@
 from datetime import timedelta, datetime, time
 from django.utils import timezone
 from rest_framework import serializers
-from .event_models import LiveEvent, EventMedia, EventFaceEmbedding
-from App.utils import format_bytes_human
-
+from .event_models import LiveEvent, EventMedia
 
 from django.db import models
 

@@ -80,6 +80,55 @@ class PinVerifyRateThrottle(BaseStorageThrottle):
     scope = 'pin_verify'
 
 
+class PasswordVerifyRateThrottle(BaseStorageThrottle):
+    """
+    Limits password verification attempts on password-protected galleries.
+    Default: 10 requests per minute.
+    """
+    scope = 'password_verify'
+
+
+class InquirySubmitRateThrottle(BaseStorageThrottle):
+    """
+    Limits client booking and contact inquiry submissions to prevent spam.
+    Default: 10 requests per minute.
+    """
+    scope = 'inquiry_submit'
+
+
+class ViewTrackRateThrottle(BaseStorageThrottle):
+    """
+    Limits visitor view tracking requests to prevent view counter manipulation.
+    Default: 60 requests per minute.
+    """
+    scope = 'view_track'
+
+
+class SubdomainClaimRateThrottle(BaseStorageThrottle):
+    """
+    Limits subdomain claims and updates.
+    Default: 10 requests per minute.
+    """
+    scope = 'subdomain_claim'
+
+
+class CheckoutRateThrottle(BaseStorageThrottle):
+    """
+    Limits payment order creation and verification attempts.
+    Default: 15 requests per minute.
+    """
+    scope = 'checkout'
+
+
+class AIAnalysisRateThrottle(BaseStorageThrottle):
+    """
+    Limits heavy AI photo culling analysis triggers.
+    Default: 10 requests per minute.
+    """
+    scope = 'ai_analysis'
+
+
+
 def drf_ratelimit(key='ip', rate='30/m', block=False, method=None):
     """
     Decorator integrating django_ratelimit with DRF class-based API views.

@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.db.models import Count, Case, When
 
 from .photo_models import (
     PhotoCategory,
@@ -11,19 +12,20 @@ from .photo_models import (
     Inquiry,
 )
 from .photo_utils import validate_non_nude_image
-
+from App.Auth.auth_models import User
 
 
 class PhotoCategorySerializer(serializers.ModelSerializer):
-    posts_count = serializers.IntegerField(source='posts.count', read_only=True)
+    posts_count = serializers.SerializerMethodField()
 
     class Meta:
         model = PhotoCategory
         fields = ['id', 'name', 'posts_count']
 
-
-from App.Auth.auth_models import User
-
+    def get_posts_count(self, obj):
+        if hasattr(obj, 'posts_count_annotated'):
+            return obj.posts_count_annotated
+        return obj.posts.count()
 
 class PhotographerProfileSerializer(serializers.ModelSerializer):
     user_username = serializers.ReadOnlyField(source='user.username')
@@ -37,7 +39,6 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
     fullname = serializers.CharField(write_only=True, required=False, allow_blank=True)
     avatar = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
     profile_image = serializers.ImageField(required=False, allow_null=True, validators=[validate_non_nude_image])
-
 
     class Meta:
         model = PhotographerProfile
@@ -207,10 +208,14 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
 
         # Total Photos & Videos
         try:
-            media_photos = Media.objects.filter(photographer=obj, media_type='photo').count()
+            m_agg = Media.objects.filter(photographer=obj).aggregate(
+                photos=Count(Case(When(media_type='photo', then=1))),
+                videos=Count(Case(When(media_type='video', then=1))),
+            )
+            media_photos = m_agg['photos'] or 0
+            total_videos = m_agg['videos'] or 0
             post_photos = PostImage.objects.filter(post__photographer=obj).count()
             total_photos = media_photos + post_photos
-            total_videos = Media.objects.filter(photographer=obj, media_type='video').count()
         except Exception:
             total_photos = 0
             total_videos = 0
@@ -272,7 +277,6 @@ class PhotographerProfileSerializer(serializers.ModelSerializer):
             if request:
                 data['watermark_image'] = request.build_absolute_uri(instance.watermark_image.url)
         return data
-
 
 class WatermarkSettingsSerializer(serializers.ModelSerializer):
     remove_watermark_image = serializers.BooleanField(write_only=True, required=False, default=False)
@@ -362,7 +366,6 @@ class WatermarkSettingsSerializer(serializers.ModelSerializer):
 
         return super().update(instance, validated_data)
 
-
 # Backward compatibility alias
 WatermarkConfigSerializer = WatermarkSettingsSerializer
 
@@ -424,8 +427,13 @@ class PostFeedbackSerializer(serializers.ModelSerializer):
 class PhotographerPostSerializer(serializers.ModelSerializer):
     images = PostImageSerializer(many=True, read_only=True)
     feedbacks = PostFeedbackSerializer(many=True, read_only=True)
-    feedback_count = serializers.IntegerField(source='feedbacks.count', read_only=True)
+    feedback_count = serializers.SerializerMethodField()
     photographer_name = serializers.ReadOnlyField(source='photographer.name')
+
+    def get_feedback_count(self, obj):
+        if hasattr(obj, '_prefetched_objects_cache') and 'feedbacks' in obj._prefetched_objects_cache:
+            return len(obj.feedbacks.all())
+        return obj.feedbacks.count()
     photo_category_name = serializers.ReadOnlyField(source='photo_category.name')
     uploaded_images = serializers.ListField(
         child=serializers.ImageField(allow_empty_file=False, use_url=False, validators=[validate_non_nude_image]),
@@ -551,4 +559,3 @@ class InquirySerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
-

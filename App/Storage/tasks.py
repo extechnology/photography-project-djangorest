@@ -2,6 +2,7 @@ import io
 import os
 import logging
 import zipfile
+
 from datetime import timedelta
 from PIL import Image, ImageOps
 from django.conf import settings
@@ -183,7 +184,7 @@ def generate_bulk_download_archive_task(job_id_str: str, photo_ids: list = None)
                         raw_p = getattr(media.file, 'path', None)
                         if raw_p and os.path.isfile(raw_p):
                             disk_path = str(raw_p)
-                    except Exception:
+                    except (NotImplementedError, Exception):
                         disk_path = None
 
                 if disk_path and not needs_watermark:
@@ -297,6 +298,16 @@ def generate_bulk_download_archive_task(job_id_str: str, photo_ids: list = None)
 
         archive_size = os.path.getsize(archive_final_path)
         archive_key = f"archives/{gallery.id}/{job.id}.zip"
+
+        if not isinstance(storage, LocalStorageProvider):
+            try:
+                with open(archive_final_path, "rb") as zf:
+                    if hasattr(storage, "save_file"):
+                        storage.save_file(archive_key, zf, content_type="application/zip")
+                    else:
+                        storage.upload(archive_key, zf.read(), content_type="application/zip")
+            except Exception as up_err:
+                logger.warning(f"Failed to upload archive {archive_key} to remote storage: {up_err}")
 
         job.status = "ready"
         job.progress_percent = 100

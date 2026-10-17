@@ -1,6 +1,5 @@
-import requests
-import random
 import logging
+
 from django.core.mail import EmailMultiAlternatives
 from django.conf import settings
 from celery import shared_task
@@ -12,10 +11,6 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 def _render_email_wrapper(header_title, headline, body_html, footer_note=None):
-    """
-    Renders a unified, high-contrast, luxury Black & Off-White email template.
-    Uses pure inline styles for maximum compatibility across Gmail, Apple Mail, Outlook.
-    """
     footer_text = footer_note if footer_note else "This is an automated notification from EX SHARE."
     return f"""<!DOCTYPE html>
 <html>

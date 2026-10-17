@@ -1,11 +1,15 @@
 import os
 import io
+import logging
 import mimetypes
 from pathlib import Path
 from django.conf import settings
+from django.core.files.storage import Storage
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+from django.utils.deconstruct import deconstructible
 from decouple import config
 
+logger = logging.getLogger(__name__)
 signer = TimestampSigner()
 
 
@@ -241,22 +245,81 @@ class LocalStorageProvider(BaseStorageProvider):
         return f"{self.cdn_base}/{clean_key}"
 
 
-class S3CompatibleStorageProvider(BaseStorageProvider):
+class CloudflareR2StorageProvider(BaseStorageProvider):
     """
-    Production-grade object storage adapter for AWS S3, Cloudflare R2, and Alibaba Cloud OSS.
-    Uses boto3 with S3 Signature Version 4.
+    Production-grade object storage adapter for Cloudflare R2 (and S3-compatible backends).
+    Uses boto3 with S3 Signature Version 4, auto-resolving R2 endpoint URLs and path addressing.
+    Supports streaming uploads, zero-RAM buffer writes, presigned upload/download URLs,
+    idempotent deletions, and configurable CDN domains.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        account_id: str = None,
+        access_key: str = None,
+        secret_key: str = None,
+        bucket: str = None,
+        endpoint_url: str = None,
+        public_domain: str = None,
+        region: str = None,
+    ):
         import boto3
         from botocore.config import Config
 
-        self.endpoint_url = config("STORAGE_ENDPOINT", default=None)
-        self.access_key = config("STORAGE_ACCESS_KEY", default="")
-        self.secret_key = config("STORAGE_SECRET_KEY", default="")
-        self.bucket = config("STORAGE_BUCKET", default="photography-media")
-        self.region = config("STORAGE_REGION", default="us-east-1")
-        self.cdn_base = config("CDN_BASE_URL", default="").rstrip("/")
+        self.account_id = (
+            account_id
+            or getattr(settings, "R2_ACCOUNT_ID", None)
+            or config("R2_ACCOUNT_ID", default="")
+        ).strip()
+
+        self.access_key = (
+            access_key
+            or getattr(settings, "R2_ACCESS_KEY_ID", None)
+            or config("R2_ACCESS_KEY_ID", default=config("STORAGE_ACCESS_KEY", default=""))
+        ).strip()
+
+        self.secret_key = (
+            secret_key
+            or getattr(settings, "R2_SECRET_ACCESS_KEY", None)
+            or config("R2_SECRET_ACCESS_KEY", default=config("STORAGE_SECRET_KEY", default=""))
+        ).strip()
+
+        self.bucket = (
+            bucket
+            or getattr(settings, "R2_BUCKET_NAME", None)
+            or config("R2_BUCKET_NAME", default=config("STORAGE_BUCKET", default="exshareai"))
+        ).strip()
+
+        # Compute endpoint URL
+        if endpoint_url:
+            self.endpoint_url = str(endpoint_url).strip().rstrip("/")
+        elif account_id:
+            self.endpoint_url = f"https://{str(account_id).strip()}.r2.cloudflarestorage.com"
+        else:
+            explicit_endpoint = (
+                getattr(settings, "R2_ENDPOINT_URL", None)
+                or config("R2_ENDPOINT_URL", default="")
+            ).strip()
+            if explicit_endpoint:
+                self.endpoint_url = explicit_endpoint.rstrip("/")
+            elif self.account_id:
+                self.endpoint_url = f"https://{self.account_id}.r2.cloudflarestorage.com"
+            else:
+                legacy_endpoint = config("STORAGE_ENDPOINT", default="").strip().rstrip("/")
+                self.endpoint_url = legacy_endpoint or None
+
+        self.region = (
+            region
+            or getattr(settings, "R2_REGION", None)
+            or config("R2_REGION", default=config("STORAGE_REGION", default="auto"))
+        ).strip() or "auto"
+
+        self.cdn_base = (
+            public_domain
+            or getattr(settings, "R2_PUBLIC_DOMAIN", None)
+            or getattr(settings, "CDN_BASE_URL", None)
+            or config("R2_PUBLIC_DOMAIN", default=config("CDN_BASE_URL", default=""))
+        ).strip().rstrip("/")
 
         self.s3_client = boto3.client(
             "s3",
@@ -264,51 +327,146 @@ class S3CompatibleStorageProvider(BaseStorageProvider):
             aws_access_key_id=self.access_key,
             aws_secret_access_key=self.secret_key,
             region_name=self.region,
-            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual" if not self.endpoint_url else "path"}),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
         )
 
+    def _clean_key(self, key: str) -> str:
+        """Sanitizes object keys to avoid path traversal, leading slashes, and Windows separators."""
+        if not key:
+            return ""
+        return str(key).strip().replace("\\", "/").lstrip("/")
+
     def upload(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        clean_key = self._clean_key(key)
         self.s3_client.put_object(
             Bucket=self.bucket,
-            Key=key,
+            Key=clean_key,
             Body=data,
             ContentType=content_type,
         )
-        return key
+        return clean_key
+
+    def save_file(self, key: str, file_or_stream, content_type: str = "application/octet-stream") -> str:
+        """Stream a file or stream directly to R2 destination without RAM buffering."""
+        clean_key = self._clean_key(key)
+        extra_args = {"ContentType": content_type}
+
+        if hasattr(file_or_stream, "read"):
+            if hasattr(file_or_stream, "seek"):
+                try:
+                    file_or_stream.seek(0)
+                except Exception:
+                    pass
+            self.s3_client.upload_fileobj(
+                Fileobj=file_or_stream,
+                Bucket=self.bucket,
+                Key=clean_key,
+                ExtraArgs=extra_args,
+            )
+        elif isinstance(file_or_stream, (bytes, bytearray)):
+            self.s3_client.put_object(
+                Bucket=self.bucket,
+                Key=clean_key,
+                Body=file_or_stream,
+                ContentType=content_type,
+            )
+        else:
+            buf = io.BytesIO(file_or_stream)
+            self.s3_client.upload_fileobj(
+                Fileobj=buf,
+                Bucket=self.bucket,
+                Key=clean_key,
+                ExtraArgs=extra_args,
+            )
+        return clean_key
+
+    def open_stream(self, key: str, mode: str = "rb"):
+        """Return a readable streaming body directly from R2."""
+        clean_key = self._clean_key(key)
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket, Key=clean_key)
+            return response["Body"]
+        except Exception as e:
+            raise FileNotFoundError(f"Storage key '{clean_key}' not found in R2 bucket '{self.bucket}': {e}")
+
+    def move_file(self, source_path, target_key: str) -> str:
+        """Uploads a local temporary file directly to R2 and safely removes the local copy."""
+        clean_key = self._clean_key(target_key)
+        src = Path(source_path)
+        if not src.exists():
+            raise FileNotFoundError(f"Source file '{src}' does not exist.")
+        mime, _ = mimetypes.guess_type(str(src))
+        extra_args = {"ContentType": mime or "application/octet-stream"}
+        self.s3_client.upload_file(
+            Filename=str(src),
+            Bucket=self.bucket,
+            Key=clean_key,
+            ExtraArgs=extra_args,
+        )
+        try:
+            src.unlink()
+        except OSError:
+            pass
+        return clean_key
 
     def download(self, key: str) -> bytes:
-        response = self.s3_client.get_object(Bucket=self.bucket, Key=key)
+        clean_key = self._clean_key(key)
+        response = self.s3_client.get_object(Bucket=self.bucket, Key=clean_key)
         return response["Body"].read()
 
+    def download_bytes(self, key: str) -> bytes:
+        return self.download(key)
+
     def delete(self, key: str) -> bool:
-        try:
-            self.s3_client.delete_object(Bucket=self.bucket, Key=key)
+        """Safely and idempotently delete an object from R2."""
+        clean_key = self._clean_key(key)
+        if not clean_key:
             return True
-        except Exception:
+        try:
+            self.s3_client.delete_object(Bucket=self.bucket, Key=clean_key)
+            return True
+        except Exception as e:
+            logger.warning(f"R2 deletion warning for key '{clean_key}': {e}")
             return False
 
     def exists(self, key: str) -> bool:
+        clean_key = self._clean_key(key)
+        if not clean_key:
+            return False
         try:
-            self.s3_client.head_object(Bucket=self.bucket, Key=key)
+            self.s3_client.head_object(Bucket=self.bucket, Key=clean_key)
             return True
         except Exception:
             return False
 
     def get_metadata(self, key: str) -> dict:
+        clean_key = self._clean_key(key)
         try:
-            res = self.s3_client.head_object(Bucket=self.bucket, Key=key)
+            res = self.s3_client.head_object(Bucket=self.bucket, Key=clean_key)
             return {
                 "size": res.get("ContentLength", 0),
                 "content_type": res.get("ContentType", "application/octet-stream"),
                 "last_modified": res.get("LastModified"),
+                "etag": res.get("ETag", "").strip('"'),
             }
         except Exception:
             return {}
 
-    def generate_signed_upload_url(self, key: str, expires_in: int = 3600, content_type: str = None) -> dict:
-        params = {"Bucket": self.bucket, "Key": key}
+    def generate_signed_upload_url(self, key: str, expires_in: int = 1800, content_type: str = None) -> dict:
+        """
+        Generates a short-lived presigned PUT URL allowing clients to upload directly to R2.
+        Preserves exact dictionary structure required by DirectUploadInitView.
+        """
+        clean_key = self._clean_key(key)
+        params = {"Bucket": self.bucket, "Key": clean_key}
+        headers = {}
         if content_type:
             params["ContentType"] = content_type
+            headers["Content-Type"] = content_type
 
         signed_url = self.s3_client.generate_presigned_url(
             ClientMethod="put_object",
@@ -318,13 +476,15 @@ class S3CompatibleStorageProvider(BaseStorageProvider):
         return {
             "upload_url": signed_url,
             "method": "PUT",
-            "headers": {"Content-Type": content_type} if content_type else {},
-            "storage_key": key,
+            "headers": headers,
+            "storage_key": clean_key,
             "expires_in": expires_in,
         }
 
     def generate_signed_download_url(self, key: str, expires_in: int = 3600, filename: str = None) -> str:
-        params = {"Bucket": self.bucket, "Key": key}
+        """Generates a secure presigned GET URL for authenticated / authorized private media downloads."""
+        clean_key = self._clean_key(key)
+        params = {"Bucket": self.bucket, "Key": clean_key}
         if filename:
             params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
 
@@ -335,28 +495,71 @@ class S3CompatibleStorageProvider(BaseStorageProvider):
         )
 
     def generate_cdn_url(self, key: str) -> str:
-        clean_key = key.lstrip("/")
+        """
+        Generates delivery URL. If a public CDN / custom domain is configured, returns public URL.
+        If no public domain is configured, generates a signed download URL so private media remains protected.
+        """
+        clean_key = self._clean_key(key)
         if self.cdn_base:
             return f"{self.cdn_base}/{clean_key}"
-        if self.endpoint_url:
-            return f"{self.endpoint_url.rstrip('/')}/{self.bucket}/{clean_key}"
-        return f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{clean_key}"
+        # Cloudflare R2 buckets are private by default. Without a CDN domain, issue a signed GET URL:
+        return self.generate_signed_download_url(clean_key, expires_in=86400)
+
+
+# Backward compatibility alias
+S3CompatibleStorageProvider = CloudflareR2StorageProvider
+
+
+@deconstructible
+class CloudflareR2Storage(Storage):
+    """
+    Django Storage backend integrating Cloudflare R2 with standard Django models,
+    FileField, ImageField, and default_storage.
+    """
+
+    def __init__(self, **kwargs):
+        self.provider = CloudflareR2StorageProvider(**kwargs)
+
+    def _open(self, name, mode="rb"):
+        return self.provider.open_stream(name, mode)
+
+    def _save(self, name, content):
+        content_type = getattr(content, "content_type", None) or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return self.provider.save_file(name, content, content_type=content_type)
+
+    def delete(self, name):
+        return self.provider.delete(name)
+
+    def exists(self, name):
+        return self.provider.exists(name)
+
+    def url(self, name):
+        return self.provider.generate_cdn_url(name)
+
+    def size(self, name):
+        meta = self.provider.get_metadata(name)
+        return meta.get("size", 0)
 
 
 _storage_provider_instance = None
 
 
-def get_storage_provider() -> BaseStorageProvider:
+def get_storage_provider(force_reload: bool = False) -> BaseStorageProvider:
     """Returns the singleton storage provider instance according to environment/settings."""
     global _storage_provider_instance
-    if _storage_provider_instance is None:
-        provider_name = config("STORAGE_PROVIDER", default="local").lower()
-        if provider_name in ("s3", "r2", "oss", "alibaba"):
+    if _storage_provider_instance is None or force_reload:
+        provider_name = (
+            getattr(settings, "STORAGE_PROVIDER", None)
+            or config("STORAGE_PROVIDER", default="local")
+        ).lower()
+
+        if provider_name in ("r2", "cloudflare", "cloudflare_r2", "s3", "oss", "alibaba"):
             try:
-                _storage_provider_instance = S3CompatibleStorageProvider()
-            except Exception:
-                # Fallback to local if credentials missing or misconfigured
+                _storage_provider_instance = CloudflareR2StorageProvider()
+            except Exception as e:
+                logger.warning(f"Failed to initialize Cloudflare R2 storage provider ({e}), falling back to LocalStorageProvider.")
                 _storage_provider_instance = LocalStorageProvider()
         else:
             _storage_provider_instance = LocalStorageProvider()
     return _storage_provider_instance
+

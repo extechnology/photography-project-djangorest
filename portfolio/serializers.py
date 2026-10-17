@@ -31,7 +31,11 @@ class PortfolioWorkSerializer(serializers.ModelSerializer):
         return photos if photos else ([obj.cover_url] if obj.cover_url else [])
 
     def get_mediaCount(self, obj):
-        count = obj.photos.count()
+        if hasattr(obj, '_prefetched_objects_cache') and 'photos' in obj._prefetched_objects_cache:
+            count = len(obj.photos.all())
+        else:
+            photos = list(obj.photos.all())
+            count = len(photos)
         return count if count > 0 else (1 if obj.cover_url else 0)
 
 

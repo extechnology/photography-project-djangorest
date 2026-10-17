@@ -8,6 +8,7 @@ from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
 from celery import shared_task
+from django.conf import settings
 
 from .models import PortfolioConfig
 from .bigrock_service import (
@@ -74,7 +75,39 @@ def provision_subdomain_dns_task(self, portfolio_config_id: int, subdomain: str,
         locked.subdomain_dns_checked_at = timezone.now()
         locked.save(update_fields=['subdomain_status', 'subdomain_dns_checked_at', 'updated_at'])
 
-    # Step 2: External BigRock API Calls (OUTSIDE of DB transaction)
+    # Step 2: Provisioning strategy check
+    dns_provider = getattr(settings, 'PORTFOLIO_DNS_PROVIDER', 'wildcard').strip().lower()
+    if dns_provider == 'wildcard':
+        now = timezone.now()
+        effective_ip = (target_ip or getattr(settings, 'PORTFOLIO_SERVER_IP', '31.97.232.245')).strip()
+        portfolio.subdomain_status = PortfolioConfig.SubdomainStatus.ACTIVE
+        portfolio.subdomain_provisioned_at = now
+        portfolio.subdomain_dns_checked_at = now
+        portfolio.subdomain_dns_record_type = 'A'
+        portfolio.subdomain_dns_record_data = effective_ip
+        portfolio.subdomain_dns_provider = 'wildcard'
+        portfolio.subdomain_dns_managed = True
+        portfolio.subdomain_error = ''
+        portfolio.save(update_fields=[
+            'subdomain_status',
+            'subdomain_provisioned_at',
+            'subdomain_dns_checked_at',
+            'subdomain_dns_record_type',
+            'subdomain_dns_record_data',
+            'subdomain_dns_provider',
+            'subdomain_dns_managed',
+            'subdomain_error',
+            'updated_at'
+        ])
+        logger.info(f"[Task provision_subdomain_dns] Subdomain '{subdomain}' successfully activated via Wildcard DNS.")
+        return {
+            "status": "active",
+            "subdomain": subdomain,
+            "ip": effective_ip,
+            "provider": "wildcard"
+        }
+
+    # Step 2b: External BigRock API Calls (OUTSIDE of DB transaction)
     client = get_bigrock_client()
     effective_ip = (target_ip or client.server_ip).strip()
 
@@ -185,6 +218,35 @@ def reconcile_pending_subdomains_task():
 
     logger.info(f"[Task reconcile_pending_subdomains] Found {count} stale subdomains to reconcile.")
     recovered = 0
+
+    dns_provider = getattr(settings, 'PORTFOLIO_DNS_PROVIDER', 'wildcard').strip().lower()
+    if dns_provider == 'wildcard':
+        now = timezone.now()
+        effective_ip = getattr(settings, 'PORTFOLIO_SERVER_IP', '31.97.232.245')
+        for profile in stale_pending:
+            profile.subdomain_status = PortfolioConfig.SubdomainStatus.ACTIVE
+            profile.subdomain_provisioned_at = profile.subdomain_provisioned_at or now
+            profile.subdomain_dns_checked_at = now
+            profile.subdomain_dns_record_type = 'A'
+            profile.subdomain_dns_record_data = effective_ip
+            profile.subdomain_dns_provider = 'wildcard'
+            profile.subdomain_dns_managed = True
+            profile.subdomain_error = ''
+            profile.save(update_fields=[
+                'subdomain_status',
+                'subdomain_provisioned_at',
+                'subdomain_dns_checked_at',
+                'subdomain_dns_record_type',
+                'subdomain_dns_record_data',
+                'subdomain_dns_provider',
+                'subdomain_dns_managed',
+                'subdomain_error',
+                'updated_at'
+            ])
+            recovered += 1
+            logger.info(f"[Task reconcile_pending_subdomains] Reconciled '{profile.subdomain}' to ACTIVE via Wildcard DNS.")
+        return {"reconciled": recovered}
+
     for profile in stale_pending:
         # Check if already active on BigRock before dispatching
         try:

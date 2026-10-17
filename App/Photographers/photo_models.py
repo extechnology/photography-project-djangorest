@@ -1,9 +1,9 @@
 import uuid
+
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 from App.Auth.auth_models import User
 from App.Subscriptions.sub_models import SubscriptionPlans, Plan
-
 
 class PhotoCategory(models.Model):
     name = models.CharField(max_length=100, unique=True)

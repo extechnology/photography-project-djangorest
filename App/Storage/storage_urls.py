@@ -17,9 +17,7 @@ from App.Storage.storage_views import (
     GalleryListCreateView,
     GalleryDetailView,
     GalleryRestoreView,
-    GallerySettingsDetailView,
     GalleryShareView,
-    GalleryTemplateSwitchView,
     GalleryTemplateUpdateView,
     GalleryBannerUpdateView,
     GalleryMasonrySlotBannerView,
@@ -28,7 +26,6 @@ from App.Storage.storage_views import (
     GalleryReorderMediaView,
     GalleryMediaReorderView,
     GalleryMoveMediaSectionView,
-    MoveMediaSectionView,
     GallerySectionListCreateView,
     GallerySectionDetailDeleteView,
     GallerySectionRenameView,
@@ -60,13 +57,10 @@ from App.Storage.resumable_views import (
 from App.Storage.storage_views import (
     # Enterprise Public & Client Access
     PublicGallerySlugOrIdView,
-    PublicGalleryDetailView,
     PublicGalleryDownloadZipView,
     download_gallery_zip,
     PublicGalleryVerifyPinView,
-    VerifyGalleryPinView,
     PublicGalleryTrackView,
-    TrackGalleryView,
     SharedGalleryView,
     VerifyGalleryPasswordView,
 

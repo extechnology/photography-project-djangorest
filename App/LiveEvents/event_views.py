@@ -1,7 +1,9 @@
 import io
-import os
-from datetime import datetime, timedelta
 import uuid
+import base64
+import threading
+
+from datetime import datetime, timedelta
 from PIL import Image
 from django.db import models, transaction
 from django.shortcuts import get_object_or_404
@@ -21,17 +23,14 @@ from .event_serializers import (
     PublicEventPortalSerializer,
     MoveEventToGallerySerializer,
 )
-import base64
-import threading
+
 from .event_tasks import process_face_embeddings_task, compare_selfie_faces_task, run_indexing_safely
-from django.core.files.base import ContentFile
-from App.Storage.storage_models import Gallery, Media as GalleryMedia, GallerySection
-from App.Storage.services.storage_service import get_storage_provider
+from App.Storage.storage_models import Gallery, Media, GallerySection
 from App.Storage.services.media_transfer import transfer_media_to_gallery
-from App.Photographers.photo_models import PhotographerProfile
-
 from backend.atelier_plans.subscription_enforcement import enforce_active_subscription, is_studio_active
+from App.Storage.throttling import ShareAccessRateThrottle, FaceSearchRateThrottle
 
+from App.Photographers.photo_models import PhotographerProfile
 
 def _trigger_face_indexing(media_id_str: str):
     """Triggers face indexing via Celery and background thread fallback"""
@@ -40,7 +39,6 @@ def _trigger_face_indexing(media_id_str: str):
     except Exception:
         pass
     threading.Thread(target=run_indexing_safely, args=(media_id_str,), daemon=True).start()
-
 
 class LiveEventViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -106,8 +104,10 @@ class LiveEventViewSet(viewsets.ModelViewSet):
         """
         lookup_val = self.kwargs.get(self.lookup_url_kwarg or self.lookup_field)
 
-        # For restore or destroy actions, include archived events
-        if self.action in ['restore', 'restore_event', 'destroy', 'retrieve']:
+        # For restore or destroy actions, include archived events; prefetch media on retrieve
+        if self.action == 'retrieve':
+            queryset = LiveEvent.objects.filter(photographer=self.request.user).prefetch_related('media')
+        elif self.action in ['restore', 'restore_event', 'destroy']:
             queryset = LiveEvent.objects.filter(photographer=self.request.user)
         else:
             queryset = self.filter_queryset(self.get_queryset())
@@ -748,6 +748,7 @@ class PublicEventDetailView(APIView):
     - Zero event photos leaked (only exposes metadata & QR settings for biometric face search).
     """
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ShareAccessRateThrottle]
 
     def get(self, request, id_or_slug):
         is_uuid = False
@@ -795,6 +796,7 @@ class EventFaceSearchView(APIView):
     Supports multipart file upload or base64 JSON payload.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [FaceSearchRateThrottle]
 
     def post(self, request, event_id):
         is_uuid = False

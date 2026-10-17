@@ -9,6 +9,7 @@ from django.db.models import Q, Count
 from galleries.models import Gallery
 from .models import Inquiry
 from .serializers import PublicInquirySubmissionSerializer, InquiryDetailSerializer
+from App.Storage.throttling import InquirySubmitRateThrottle
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -20,6 +21,7 @@ class PublicInquirySubmitView(APIView):
     Receives inquiries from portfolio templates and client gallery templates.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [InquirySubmitRateThrottle]
 
     def post(self, request, *args, **kwargs):
         serializer = PublicInquirySubmissionSerializer(data=request.data)

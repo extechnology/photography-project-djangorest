@@ -216,8 +216,9 @@ class GoDaddyServiceTests(TestCase):
         self.assertEqual(result['data'], '31.97.232.245')
 
 
+@override_settings(PORTFOLIO_DNS_PROVIDER='bigrock')
 class SubdomainAuthenticatedAPITests(APITestCase):
-    """Integration tests for availability, claim, status, and retry endpoints."""
+    """Integration tests for availability, claim, status, and retry endpoints (BigRock API mode)."""
 
     def setUp(self):
         User.objects.all().delete()
@@ -356,8 +357,9 @@ class SubdomainAuthenticatedAPITests(APITestCase):
         self.assertEqual(res2.data['code'], 'RETRY_THROTTLED')
 
 
+@override_settings(PORTFOLIO_DNS_PROVIDER='bigrock')
 class CeleryTaskProvisioningTests(TestCase):
-    """Tests for asynchronous Celery task execution."""
+    """Tests for asynchronous Celery task execution (BigRock API mode)."""
 
     def setUp(self):
         self.user = User.objects.create_user(
@@ -593,3 +595,66 @@ class HostnameRoutingAndIsolationTests(TestCase):
         self.assertIn('Published Wedding', titles)
         # Verify draft / private work is completely excluded!
         self.assertNotIn('Draft Private Project', titles)
+
+
+@override_settings(PORTFOLIO_DNS_PROVIDER='wildcard')
+class WildcardSubdomainTests(APITestCase):
+    """Integration and task tests for Wildcard DNS strategy (*.exshare.ai)."""
+
+    def setUp(self):
+        User.objects.all().delete()
+        PortfolioConfig.objects.all().delete()
+
+        self.user = User.objects.create_user(
+            username='wildcarduser',
+            email='wildcard@exshare.ai',
+            password='Password123!'
+        )
+        self.portfolio = PortfolioConfig.objects.create(
+            user=self.user,
+            studio_name='Wildcard Studio',
+            is_published=True
+        )
+
+    def test_wildcard_claim_instantly_marks_active_returns_200(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.put('/api/portfolio/subdomain/', {'subdomain': 'wildcard-studio'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'active')
+        self.assertEqual(res.data['subdomain'], 'wildcard-studio')
+        self.assertIn('active immediately via Wildcard DNS', res.data['message'])
+
+        self.portfolio.refresh_from_db()
+        self.assertEqual(self.portfolio.subdomain_status, PortfolioConfig.SubdomainStatus.ACTIVE)
+        self.assertEqual(self.portfolio.subdomain_dns_provider, 'wildcard')
+        self.assertEqual(self.portfolio.subdomain_dns_record_data, '31.97.232.245')
+
+    def test_wildcard_task_instantly_marks_active_without_api_calls(self):
+        self.portfolio.subdomain = 'taskstudio'
+        self.portfolio.subdomain_status = PortfolioConfig.SubdomainStatus.PENDING
+        self.portfolio.save()
+
+        res = provision_subdomain_dns_task(self.portfolio.id, 'taskstudio')
+        self.assertEqual(res['status'], 'active')
+        self.assertEqual(res['provider'], 'wildcard')
+
+        self.portfolio.refresh_from_db()
+        self.assertEqual(self.portfolio.subdomain_status, PortfolioConfig.SubdomainStatus.ACTIVE)
+        self.assertEqual(self.portfolio.subdomain_dns_provider, 'wildcard')
+
+    def test_wildcard_retry_endpoint_marks_active_200(self):
+        self.portfolio.subdomain = 'retry-studio'
+        self.portfolio.subdomain_status = PortfolioConfig.SubdomainStatus.FAILED
+        self.portfolio.subdomain_error = 'Old API failure'
+        self.portfolio.save()
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post('/api/portfolio/subdomain/retry/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'active')
+        self.assertIn('active via Wildcard DNS', res.data['message'])
+
+        self.portfolio.refresh_from_db()
+        self.assertEqual(self.portfolio.subdomain_status, PortfolioConfig.SubdomainStatus.ACTIVE)
+        self.assertEqual(self.portfolio.subdomain_error, '')
+

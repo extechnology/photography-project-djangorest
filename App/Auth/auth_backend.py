@@ -7,9 +7,6 @@ User = get_user_model()
 
 class UsernameEmailPhoneBackend(ModelBackend):
     def authenticate(self, request, username=None, password=None, **kwargs):
-        """
-        Allow login with username OR email OR phone.
-        """
         user = None
         if username:
             try:

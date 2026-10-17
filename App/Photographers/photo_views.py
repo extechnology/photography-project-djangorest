@@ -2,7 +2,7 @@ import uuid
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.shortcuts import get_object_or_404, render
 from django.db.models import Q, Count
@@ -79,7 +79,7 @@ class PhotoCategoryListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        categories = PhotoCategory.objects.all()
+        categories = PhotoCategory.objects.annotate(posts_count_annotated=Count('posts'))
         serializer = PhotoCategorySerializer(categories, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

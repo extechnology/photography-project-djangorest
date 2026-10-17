@@ -108,7 +108,6 @@ def is_studio_active(user) -> bool:
     else:
         q |= models.Q(photographer__user=user)
 
-    # Prioritize any active subscription
     active_sub = PhotographerSubscription.objects.filter(q, status='active').order_by('-expires_at', '-created_at').first()
     if active_sub:
         update_subscription_expiration_state(active_sub)
@@ -117,22 +116,9 @@ def is_studio_active(user) -> bool:
             if not expiry or now < expiry:
                 return True
 
-    sub = PhotographerSubscription.objects.filter(q).order_by('-created_at').first()
-    if not sub:
-        if photographer and (getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)):
-            return True
-        return False
-
-    update_subscription_expiration_state(sub)
-
-    # Check status and past date
-    if sub.status != 'active':
-        return False
-    expiry = getattr(sub, 'expiry_date', None) or getattr(sub, 'expires_at', None)
-    if expiry and now >= expiry:
-        return False
-
-    return True
+    if photographer and (getattr(photographer, 'studio_plan', None) or getattr(photographer, 'plan', None)):
+        return True
+    return False
 
 
 class IsActiveStudioSubscriber(permissions.BasePermission):

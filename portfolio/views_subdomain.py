@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from django.core.exceptions import ValidationError
+from django.conf import settings
 
 from .models import (
     PortfolioConfig,
@@ -19,6 +20,8 @@ from .subdomain_service import (
     build_direct_portfolio_url,
 )
 from .tasks import provision_subdomain_dns_task
+from App.Auth.auth_throttling import AvailabilityCheckRateThrottle
+from App.Storage.throttling import SubdomainClaimRateThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ class SubdomainAvailabilityView(APIView):
     Note: An availability check does not reserve the name.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AvailabilityCheckRateThrottle]
 
     def get(self, request):
         name = request.query_params.get('name', '').strip().lower()
@@ -141,6 +145,7 @@ class ClaimSubdomainView(APIView):
     - Returns HTTP 202 Accepted while provisioning is pending.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [SubdomainClaimRateThrottle]
 
     def put(self, request):
         return self._handle_claim(request)
@@ -243,22 +248,52 @@ class ClaimSubdomainView(APIView):
                         status=status.HTTP_409_CONFLICT
                     )
 
-                # Reserve state in DB
-                current_profile.subdomain = subdomain
-                current_profile.subdomain_status = PortfolioConfig.SubdomainStatus.PENDING
-                current_profile.subdomain_error = ''
-                current_profile.subdomain_retry_count = 0
-                current_profile.save(update_fields=[
-                    'subdomain',
-                    'subdomain_status',
-                    'subdomain_error',
-                    'subdomain_retry_count',
-                    'updated_at'
-                ])
+                dns_provider = getattr(settings, 'PORTFOLIO_DNS_PROVIDER', 'wildcard').strip().lower()
+                now = timezone.now()
+                effective_ip = getattr(settings, 'PORTFOLIO_SERVER_IP', '31.97.232.245')
 
-                # Enqueue Celery task after commit
-                profile_id = current_profile.id
-                transaction.on_commit(lambda: provision_subdomain_dns_task.delay(profile_id, subdomain))
+                if dns_provider == 'wildcard':
+                    # Instant activation via Wildcard DNS record (*.exshare.ai)
+                    current_profile.subdomain = subdomain
+                    current_profile.subdomain_status = PortfolioConfig.SubdomainStatus.ACTIVE
+                    current_profile.subdomain_provisioned_at = now
+                    current_profile.subdomain_dns_checked_at = now
+                    current_profile.subdomain_dns_record_type = 'A'
+                    current_profile.subdomain_dns_record_data = effective_ip
+                    current_profile.subdomain_dns_provider = 'wildcard'
+                    current_profile.subdomain_dns_managed = True
+                    current_profile.subdomain_error = ''
+                    current_profile.subdomain_retry_count = 0
+                    current_profile.save(update_fields=[
+                        'subdomain',
+                        'subdomain_status',
+                        'subdomain_provisioned_at',
+                        'subdomain_dns_checked_at',
+                        'subdomain_dns_record_type',
+                        'subdomain_dns_record_data',
+                        'subdomain_dns_provider',
+                        'subdomain_dns_managed',
+                        'subdomain_error',
+                        'subdomain_retry_count',
+                        'updated_at'
+                    ])
+                else:
+                    # Reserve state in DB
+                    current_profile.subdomain = subdomain
+                    current_profile.subdomain_status = PortfolioConfig.SubdomainStatus.PENDING
+                    current_profile.subdomain_error = ''
+                    current_profile.subdomain_retry_count = 0
+                    current_profile.save(update_fields=[
+                        'subdomain',
+                        'subdomain_status',
+                        'subdomain_error',
+                        'subdomain_retry_count',
+                        'updated_at'
+                    ])
+
+                    # Enqueue Celery task after commit
+                    profile_id = current_profile.id
+                    transaction.on_commit(lambda: provision_subdomain_dns_task.delay(profile_id, subdomain))
 
         except IntegrityError:
             return Response(
@@ -272,6 +307,20 @@ class ClaimSubdomainView(APIView):
         full_domain = current_profile.get_full_domain(request=request)
         full_url = current_profile.get_public_url(request=request)
         direct_url = build_direct_portfolio_url(subdomain, request=request)
+
+        if dns_provider == 'wildcard':
+            return Response(
+                {
+                    "status": "active",
+                    "subdomain": subdomain,
+                    "domain": full_domain,
+                    "url": full_url,
+                    "live_url": full_url,
+                    "direct_url": direct_url,
+                    "message": f"Subdomain '{subdomain}' claimed and active immediately via Wildcard DNS."
+                },
+                status=status.HTTP_200_OK
+            )
 
         return Response(
             {
@@ -338,6 +387,7 @@ class SubdomainRetryProvisioningView(APIView):
     - Returns HTTP 202 Accepted.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [SubdomainClaimRateThrottle]
 
     def post(self, request):
         profile = get_user_portfolio_config(request.user)
@@ -381,6 +431,38 @@ class SubdomainRetryProvisioningView(APIView):
                     },
                     status=status.HTTP_429_TOO_MANY_REQUESTS
                 )
+
+        dns_provider = getattr(settings, 'PORTFOLIO_DNS_PROVIDER', 'wildcard').strip().lower()
+        if dns_provider == 'wildcard':
+            now = timezone.now()
+            with transaction.atomic():
+                profile.subdomain_status = PortfolioConfig.SubdomainStatus.ACTIVE
+                profile.subdomain_provisioned_at = profile.subdomain_provisioned_at or now
+                profile.subdomain_dns_checked_at = now
+                profile.subdomain_dns_record_type = 'A'
+                profile.subdomain_dns_record_data = getattr(settings, 'PORTFOLIO_SERVER_IP', '31.97.232.245')
+                profile.subdomain_dns_provider = 'wildcard'
+                profile.subdomain_dns_managed = True
+                profile.subdomain_error = ''
+                profile.save(update_fields=[
+                    'subdomain_status',
+                    'subdomain_provisioned_at',
+                    'subdomain_dns_checked_at',
+                    'subdomain_dns_record_type',
+                    'subdomain_dns_record_data',
+                    'subdomain_dns_provider',
+                    'subdomain_dns_managed',
+                    'subdomain_error',
+                    'updated_at'
+                ])
+            return Response(
+                {
+                    "status": "active",
+                    "subdomain": profile.subdomain,
+                    "message": "Subdomain is verified and active via Wildcard DNS."
+                },
+                status=status.HTTP_200_OK
+            )
 
         # Trigger retry
         with transaction.atomic():

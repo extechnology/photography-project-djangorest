@@ -1,6 +1,7 @@
 import os
 import uuid
 import secrets
+
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
 from django.utils import timezone
@@ -8,6 +9,7 @@ from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import EmailValidator
 from django.conf import settings
+
 from App.Auth.auth_models import User
 from App.Photographers.photo_models import PhotographerProfile
 from App.utils import format_bytes_human

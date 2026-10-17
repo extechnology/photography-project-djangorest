@@ -52,8 +52,13 @@ RESERVED_SUBDOMAINS = config(
     cast=lambda v: [s.strip().lower() for s in v.split(',') if s.strip()]
 )
 
-# BigRock DNS Automated Provisioning Credentials
-# Obtain auth-userid & api-key from BigRock Control Panel -> Settings -> API
+# Subdomain DNS Provisioning Strategy: 'wildcard' (default/recommended), 'bigrock', or 'none'
+# In 'wildcard' mode, a single '*.exshare.ai' A-record routes all photographer subdomains to PORTFOLIO_SERVER_IP.
+# Subdomains activate immediately without requiring BigRock Reseller API credentials.
+PORTFOLIO_DNS_PROVIDER = config('PORTFOLIO_DNS_PROVIDER', default='wildcard').strip().lower()
+
+# BigRock DNS Automated Provisioning Credentials (Used only if PORTFOLIO_DNS_PROVIDER='bigrock')
+# Note: Requires a BigRock Reseller Account (httpapi.com). Standard retail accounts do not support API.
 BIGROCK_AUTH_USER_ID = config('BIGROCK_AUTH_USER_ID', default=config('BIGROCK_USER_ID', default='')).strip()
 BIGROCK_API_KEY = config('BIGROCK_API_KEY', default='').strip()
 BIGROCK_API_ENV = config('BIGROCK_API_ENV', default='production').strip().lower()
@@ -89,137 +94,468 @@ INSTALLED_APPS = [
 # ------------------------------------------------------------------------------
 # DJANGO UNFOLD MODERN ADMIN CONFIGURATION
 # ------------------------------------------------------------------------------
+# UNFOLD = {
+#     "SITE_TITLE": "EX SHARE Atelier Admin",
+#     "SITE_HEADER": "EX SHARE Atelier",
+#     "SITE_SUBHEADER": "Master Admin Intelligence & Studio Operations",
+#     "SITE_URL": "/",
+#     "SITE_SYMBOL": "diamond",
+#     "SHOW_HISTORY": True,
+#     "SHOW_VIEW_ON_SITE": True,
+#     # Omitted "THEME" to enable dynamic dark/light/system theme toggling
+#     "SIDEBAR": {
+#         "show_search": True,
+#         "show_all_applications": True,
+#         "navigation": [
+#             {
+#                 "title": "Master Intelligence",
+#                 "separator": True,
+#                 "items": [
+#                     {
+#                         "title": "Live Master Dashboard",
+#                         "icon": "dashboard",
+#                         "link": "http://localhost:5173",
+#                     },
+#                 ],
+#             },
+#             {
+#                 "title": "Access & Identity",
+#                 "separator": True,
+#                 "items": [
+#                     {
+#                         "title": "Platform Users",
+#                         "icon": "person",
+#                         "link": lambda request: reverse_lazy("admin:App_user_changelist"),
+#                     },
+#                     {
+#                         "title": "Login OTP Sessions",
+#                         "icon": "key",
+#                         "link": lambda request: reverse_lazy("admin:App_passwordlessloginotp_changelist"),
+#                     },
+#                 ],
+#             },
+#             {
+#                 "title": "Studios & Portfolios",
+#                 "separator": True,
+#                 "items": [
+#                     {
+#                         "title": "Studio Profiles",
+#                         "icon": "photo_camera",
+#                         "link": lambda request: reverse_lazy("admin:App_photographerprofile_changelist"),
+#                     },
+#                     {
+#                         "title": "Portfolio Configurations",
+#                         "icon": "palette",
+#                         "link": lambda request: reverse_lazy("admin:portfolio_portfolioconfig_changelist"),
+#                     },
+#                     {
+#                         "title": "Portfolio Showcase Works",
+#                         "icon": "collections",
+#                         "link": lambda request: reverse_lazy("admin:portfolio_portfoliowork_changelist"),
+#                     },
+#                     {
+#                         "title": "Client Inquiries",
+#                         "icon": "mail",
+#                         "link": lambda request: reverse_lazy("admin:App_inquiry_changelist"),
+#                     },
+#                 ],
+#             },
+#             {
+#                 "title": "Galleries & Media Storage",
+#                 "separator": True,
+#                 "items": [
+#                     {
+#                         "title": "Galleries",
+#                         "icon": "photo_library",
+#                         "link": lambda request: reverse_lazy("admin:App_gallery_changelist"),
+#                     },
+#                     {
+#                         "title": "Media Assets",
+#                         "icon": "image",
+#                         "link": lambda request: reverse_lazy("admin:App_media_changelist"),
+#                     },
+#                     {
+#                         "title": "Live Events",
+#                         "icon": "event",
+#                         "link": lambda request: reverse_lazy("admin:App_liveevent_changelist"),
+#                     },
+#                     {
+#                         "title": "Client Selections",
+#                         "icon": "checklist",
+#                         "link": lambda request: reverse_lazy("admin:App_galleryclientselection_changelist"),
+#                     },
+#                 ],
+#             },
+#             {
+#                 "title": "Subscriptions & Billing",
+#                 "separator": True,
+#                 "items": [
+#                     {
+#                         "title": "Subscription Plans",
+#                         "icon": "payments",
+#                         "link": lambda request: reverse_lazy("admin:App_plan_changelist"),
+#                     },
+#                     {
+#                         "title": "Active Subscriptions",
+#                         "icon": "card_membership",
+#                         "link": lambda request: reverse_lazy("admin:App_photographersubscription_changelist"),
+#                     },
+#                     {
+#                         "title": "Billing Transactions",
+#                         "icon": "receipt_long",
+#                         "link": lambda request: reverse_lazy("admin:App_subscriptionpayment_changelist"),
+#                     },
+#                 ],
+#             },
+#             {
+#                 "title": "AI Operations",
+#                 "separator": True,
+#                 "items": [
+#                     {
+#                         "title": "Culling Sessions",
+#                         "icon": "auto_awesome",
+#                         "link": lambda request: reverse_lazy("admin:culling_cullingsession_changelist"),
+#                     },
+#                     {
+#                         "title": "Culling Pricing Tiers",
+#                         "icon": "sell",
+#                         "link": lambda request: reverse_lazy("admin:culling_cullingpricingtier_changelist"),
+#                     },
+#                 ],
+#             },
+#         ],
+#     },
+# }
+
+
+from django.templatetags.static import static
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
+
+
+# --------------------------------------------------
+# UNFOLD CALLBACKS
+# Keep these functions in this settings.py module.
+# --------------------------------------------------
+
+def dashboard_callback(request, context):
+    """Add custom variables to the admin dashboard."""
+    context.update({
+        "atelier_name": "EX SHARE Atelier",
+    })
+    return context
+
+
+def environment_callback(request):
+    """Environment label shown in the admin header."""
+    # Change to Production only when appropriate.
+    return ["Development", "info"]
+
+
+def environment_title_prefix_callback(request):
+    """Prefix for the HTML title."""
+    return "EX SHARE Atelier | "
+
+
+def atelier_permission_callback(request):
+    """Allow this navigation item only for superusers."""
+    return request.user.is_superuser
+
+
+# --------------------------------------------------
+# UNFOLD CONFIGURATION
+# --------------------------------------------------
+
 UNFOLD = {
+    # Site branding
     "SITE_TITLE": "EX SHARE Atelier Admin",
     "SITE_HEADER": "EX SHARE Atelier",
     "SITE_SUBHEADER": "Master Admin Intelligence & Studio Operations",
+    "SITE_VERSION": "1.0.0",
     "SITE_URL": "/",
     "SITE_SYMBOL": "diamond",
+
+    # Optional site dropdown
+    "SITE_DROPDOWN": [
+        {
+            "icon": "home",
+            "title": _("EX SHARE Website"),
+            "link": "/",
+        },
+        {
+            "icon": "dashboard",
+            "title": _("Live Master Dashboard"),
+            "link": "http://localhost:5173",
+        },
+    ],
+
+    # Optional custom views
+    "SITE_VIEWS": [],
+
+    # Optional icons and logos.
+    # Uncomment after creating the corresponding static files.
+    #
+    # "SITE_ICON": {
+    #     "light": lambda request: static("images/icon-light.svg"),
+    #     "dark": lambda request: static("images/icon-dark.svg"),
+    # },
+    #
+    # "SITE_LOGO": {
+    #     "light": lambda request: static("images/logo-light.svg"),
+    #     "dark": lambda request: static("images/logo-dark.svg"),
+    # },
+    #
+    # "SITE_FAVICONS": [
+    #     {
+    #         "rel": "icon",
+    #         "sizes": "32x32",
+    #         "type": "image/svg+xml",
+    #         "href": lambda request: static("images/favicon.svg"),
+    #     },
+    # ],
+
+    # Admin interface controls
     "SHOW_HISTORY": True,
     "SHOW_VIEW_ON_SITE": True,
-    # Omitted "THEME" to enable dynamic dark/light/system theme toggling
+    "SHOW_BACK_BUTTON": False,
+    "SHOW_UI_WARNINGS": False,
+
+    # Keep THEME omitted to support theme switching.
+    # Do not set "THEME": "dark" or "THEME": "light".
+
+    # Environment indicator
+    "ENVIRONMENT": f"{__name__}.environment_callback",
+    "ENVIRONMENT_TITLE_PREFIX": (
+        f"{__name__}.environment_title_prefix_callback"
+    ),
+
+    # Custom dashboard
+    "DASHBOARD_CALLBACK": f"{__name__}.dashboard_callback",
+
+    # Optional login customization.
+    # The default Unfold login remains active when omitted.
+    #
+    # "LOGIN": {
+    #     "image": lambda request: static("images/login-bg.jpg"),
+    #     "redirect_after": lambda request: reverse_lazy("admin:index"),
+    #     "form": "App.forms.CustomLoginForm",
+    # },
+
+    # Custom CSS and JavaScript
+    # Uncomment after creating these files.
+    #
+    # "STYLES": [
+    #     lambda request: static("css/unfold-custom.css"),
+    # ],
+    #
+    # "SCRIPTS": [
+    #     lambda request: static("js/unfold-custom.js"),
+    # ],
+
+    # Appearance
+    "BORDER_RADIUS": "8px",
+
+    # Color palette from the Unfold documentation
+    "COLORS": {
+        "base": {
+            "50": "oklch(98.5% .002 247.839)",
+            "100": "oklch(96.7% .003 264.542)",
+            "200": "oklch(92.8% .006 264.531)",
+            "300": "oklch(87.2% .01 258.338)",
+            "400": "oklch(70.7% .022 261.325)",
+            "500": "oklch(55.1% .027 264.364)",
+            "600": "oklch(44.6% .03 256.802)",
+            "700": "oklch(37.3% .034 259.733)",
+            "800": "oklch(27.8% .033 256.848)",
+            "900": "oklch(21% .034 264.665)",
+            "950": "oklch(13% .028 261.692)",
+        },
+        "primary": {
+            "50": "oklch(97.7% .014 308.299)",
+            "100": "oklch(94.6% .033 307.174)",
+            "200": "oklch(90.2% .063 306.703)",
+            "300": "oklch(82.7% .119 306.383)",
+            "400": "oklch(71.4% .203 305.504)",
+            "500": "oklch(62.7% .265 303.9)",
+            "600": "oklch(55.8% .288 302.321)",
+            "700": "oklch(49.6% .265 301.924)",
+            "800": "oklch(43.8% .218 303.724)",
+            "900": "oklch(38.1% .176 304.987)",
+            "950": "oklch(29.1% .149 302.717)",
+        },
+        "font": {
+            "subtle-light": "var(--color-base-500)",
+            "subtle-dark": "var(--color-base-400)",
+            "default-light": "var(--color-base-600)",
+            "default-dark": "var(--color-base-300)",
+            "important-light": "var(--color-base-900)",
+            "important-dark": "var(--color-base-100)",
+        },
+    },
+
+    # Sidebar configuration
     "SIDEBAR": {
         "show_search": True,
         "show_all_applications": True,
         "navigation": [
             {
-                "title": "Master Intelligence",
+                "title": _("Master Intelligence"),
                 "separator": True,
+                "collapsible": True,
                 "items": [
                     {
-                        "title": "Live Master Dashboard",
+                        "title": _("Live Master Dashboard"),
                         "icon": "dashboard",
                         "link": "http://localhost:5173",
                     },
                 ],
             },
             {
-                "title": "Access & Identity",
+                "title": _("Access & Identity"),
                 "separator": True,
+                "collapsible": True,
                 "items": [
                     {
-                        "title": "Platform Users",
+                        "title": _("Platform Users"),
                         "icon": "person",
-                        "link": lambda request: reverse_lazy("admin:App_user_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_user_changelist"
+                        ),
                     },
                     {
-                        "title": "Login OTP Sessions",
+                        "title": _("Login OTP Sessions"),
                         "icon": "key",
-                        "link": lambda request: reverse_lazy("admin:App_passwordlessloginotp_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_passwordlessloginotp_changelist"
+                        ),
                     },
                 ],
             },
             {
-                "title": "Studios & Portfolios",
+                "title": _("Studios & Portfolios"),
                 "separator": True,
+                "collapsible": True,
                 "items": [
                     {
-                        "title": "Studio Profiles",
+                        "title": _("Studio Profiles"),
                         "icon": "photo_camera",
-                        "link": lambda request: reverse_lazy("admin:App_photographerprofile_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_photographerprofile_changelist"
+                        ),
                     },
                     {
-                        "title": "Portfolio Configurations",
+                        "title": _("Portfolio Configurations"),
                         "icon": "palette",
-                        "link": lambda request: reverse_lazy("admin:portfolio_portfolioconfig_changelist"),
+                        "link": reverse_lazy(
+                            "admin:portfolio_portfolioconfig_changelist"
+                        ),
                     },
                     {
-                        "title": "Portfolio Showcase Works",
+                        "title": _("Portfolio Showcase Works"),
                         "icon": "collections",
-                        "link": lambda request: reverse_lazy("admin:portfolio_portfoliowork_changelist"),
+                        "link": reverse_lazy(
+                            "admin:portfolio_portfoliowork_changelist"
+                        ),
                     },
                     {
-                        "title": "Client Inquiries",
+                        "title": _("Client Inquiries"),
                         "icon": "mail",
-                        "link": lambda request: reverse_lazy("admin:App_inquiry_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_inquiry_changelist"
+                        ),
                     },
                 ],
             },
             {
-                "title": "Galleries & Media Storage",
+                "title": _("Galleries & Media Storage"),
                 "separator": True,
+                "collapsible": True,
                 "items": [
                     {
-                        "title": "Galleries",
+                        "title": _("Galleries"),
                         "icon": "photo_library",
-                        "link": lambda request: reverse_lazy("admin:App_gallery_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_gallery_changelist"
+                        ),
                     },
                     {
-                        "title": "Media Assets",
+                        "title": _("Media Assets"),
                         "icon": "image",
-                        "link": lambda request: reverse_lazy("admin:App_media_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_media_changelist"
+                        ),
                     },
                     {
-                        "title": "Live Events",
+                        "title": _("Live Events"),
                         "icon": "event",
-                        "link": lambda request: reverse_lazy("admin:App_liveevent_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_liveevent_changelist"
+                        ),
                     },
                     {
-                        "title": "Client Selections",
+                        "title": _("Client Selections"),
                         "icon": "checklist",
-                        "link": lambda request: reverse_lazy("admin:App_galleryclientselection_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_galleryclientselection_changelist"
+                        ),
                     },
                 ],
             },
             {
-                "title": "Subscriptions & Billing",
+                "title": _("Subscriptions & Billing"),
                 "separator": True,
+                "collapsible": True,
                 "items": [
                     {
-                        "title": "Subscription Plans",
+                        "title": _("Subscription Plans"),
                         "icon": "payments",
-                        "link": lambda request: reverse_lazy("admin:App_plan_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_plan_changelist"
+                        ),
                     },
                     {
-                        "title": "Active Subscriptions",
+                        "title": _("Active Subscriptions"),
                         "icon": "card_membership",
-                        "link": lambda request: reverse_lazy("admin:App_photographersubscription_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_photographersubscription_changelist"
+                        ),
                     },
                     {
-                        "title": "Billing Transactions",
+                        "title": _("Billing Transactions"),
                         "icon": "receipt_long",
-                        "link": lambda request: reverse_lazy("admin:App_subscriptionpayment_changelist"),
+                        "link": reverse_lazy(
+                            "admin:App_subscriptionpayment_changelist"
+                        ),
                     },
                 ],
             },
             {
-                "title": "AI Operations",
+                "title": _("AI Operations"),
                 "separator": True,
+                "collapsible": True,
                 "items": [
                     {
-                        "title": "Culling Sessions",
+                        "title": _("Culling Sessions"),
                         "icon": "auto_awesome",
-                        "link": lambda request: reverse_lazy("admin:culling_cullingsession_changelist"),
+                        "link": reverse_lazy(
+                            "admin:culling_cullingsession_changelist"
+                        ),
                     },
                     {
-                        "title": "Culling Pricing Tiers",
+                        "title": _("Culling Pricing Tiers"),
                         "icon": "sell",
-                        "link": lambda request: reverse_lazy("admin:culling_cullingpricingtier_changelist"),
+                        "link": reverse_lazy(
+                            "admin:culling_cullingpricingtier_changelist"
+                        ),
                     },
                 ],
             },
         ],
     },
+
+    # Optional model-specific tabs.
+    # Add actual model labels and valid admin URLs when needed.
+    "TABS": [],
 }
 
 MIDDLEWARE = [
@@ -328,6 +664,34 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # ------------------------------------------------------------------------------
+# CLOUDFLARE R2 OBJECT STORAGE & CDN CONFIGURATION
+# ------------------------------------------------------------------------------
+STORAGE_PROVIDER = config('STORAGE_PROVIDER', default='local').lower()
+
+R2_ACCOUNT_ID = config('R2_ACCOUNT_ID', default='')
+R2_ACCESS_KEY_ID = config('R2_ACCESS_KEY_ID', default=config('STORAGE_ACCESS_KEY', default=''))
+R2_SECRET_ACCESS_KEY = config('R2_SECRET_ACCESS_KEY', default=config('STORAGE_SECRET_KEY', default=''))
+R2_BUCKET_NAME = config('R2_BUCKET_NAME', default=config('STORAGE_BUCKET', default='exshareai'))
+
+_default_r2_endpoint = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else config('STORAGE_ENDPOINT', default='')
+R2_ENDPOINT_URL = config('R2_ENDPOINT_URL', default=_default_r2_endpoint)
+
+R2_REGION = config('R2_REGION', default=config('STORAGE_REGION', default='auto'))
+R2_PUBLIC_DOMAIN = config('R2_PUBLIC_DOMAIN', default=config('CDN_BASE_URL', default='')).rstrip('/')
+CDN_BASE_URL = R2_PUBLIC_DOMAIN
+
+if STORAGE_PROVIDER in ('r2', 'cloudflare', 'cloudflare_r2', 's3') and R2_ACCESS_KEY_ID:
+    STORAGES = {
+        "default": {
+            "BACKEND": "App.Storage.services.storage_service.CloudflareR2Storage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
+
+# ------------------------------------------------------------------------------
 # FILE & DATA UPLOAD SIZE LIMITS
 # ------------------------------------------------------------------------------
 DATA_UPLOAD_MAX_MEMORY_SIZE = 500 * 1024 * 1024   # 500 MB
@@ -363,12 +727,30 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '200/minute',
         'user': '1000/minute',
+        # Auth & Security Throttles
+        'login': '10/minute',
+        'register': '10/minute',
+        'otp_send': '5/minute',
+        'otp_verify': '10/minute',
+        'password_reset': '5/minute',
+        'oauth': '20/minute',
+        'token_refresh': '60/minute',
+        'availability_check': '45/minute',
+        # Storage, Galleries & ML Face Search
         'face_search': '15/minute',
         'upload': '60/minute',
         'download': '120/minute',
         'bulk_download': '5/minute',
         'share_access': '150/minute',
         'pin_verify': '10/minute',
+        'password_verify': '10/minute',
+        # Inquiries, Tracking & Subdomain
+        'inquiry_submit': '10/minute',
+        'view_track': '60/minute',
+        'subdomain_claim': '10/minute',
+        # Billing, Checkout & AI Operations
+        'checkout': '15/minute',
+        'ai_analysis': '10/minute',
     },
 }
 

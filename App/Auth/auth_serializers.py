@@ -1,6 +1,8 @@
+
+import re
+import random
+
 from rest_framework import serializers
-from django.core.mail import send_mail
-from django.utils import timezone
 from django.conf import settings
 from rest_framework.response import Response
 from rest_framework import status
@@ -8,11 +10,6 @@ from rest_framework import status
 from .auth_models import *
 from .auth_emails import *
 
-import platform
-import datetime
-import urllib.parse
-import re
-import random
 from django.db.models import Q
 
 
@@ -194,8 +191,6 @@ class ResendResetPasswordOTPSerializer(serializers.Serializer):
         if not identifier:
             raise serializers.ValidationError("Either email or phone must be provided")
         
-        
-        
         if re.match(r"[^@]+@[^@]+\.[^@]+", identifier):
             otp = str(random.randint(100000, 999999))
             ResetPasswordOTP.objects.create(identifier=identifier, otp=otp)
@@ -248,7 +243,6 @@ class VerifyResetPasswordSerializer(serializers.Serializer):
         
         return {'message': 'OTP verified successfully'}
 
-
 class PasswordlessSendOTPSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
 
@@ -271,4 +265,3 @@ class PasswordlessVerifyOTPSerializer(serializers.Serializer):
 
     def validate_otp(self, value):
         return value.strip()
-
