@@ -14,6 +14,7 @@ from pathlib import Path
 from decouple import config
 import os
 from datetime import timedelta
+from django.urls import reverse_lazy
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,7 +27,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-w^01^8=!drxc9o$y08d@4atllv82xqr5ow%)b_z&fyzgt&ehwo')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=True, cast=bool)
+# DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = True
 
 # ALLOWED_HOSTS = config(
 #     'ALLOWED_HOSTS',
@@ -65,6 +67,10 @@ GODADDY_API_ENV = config('GODADDY_API_ENV', default='production').strip().lower(
 # Application definition
 
 INSTALLED_APPS = [
+    'unfold',
+    'unfold.contrib.filters',
+    'unfold.contrib.forms',
+    'unfold.contrib.inlines',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -79,6 +85,142 @@ INSTALLED_APPS = [
     'portfolio',
     'backend.admin_dashboard',
 ]
+
+# ------------------------------------------------------------------------------
+# DJANGO UNFOLD MODERN ADMIN CONFIGURATION
+# ------------------------------------------------------------------------------
+UNFOLD = {
+    "SITE_TITLE": "EX SHARE Atelier Admin",
+    "SITE_HEADER": "EX SHARE Atelier",
+    "SITE_SUBHEADER": "Master Admin Intelligence & Studio Operations",
+    "SITE_URL": "/",
+    "SITE_SYMBOL": "diamond",
+    "SHOW_HISTORY": True,
+    "SHOW_VIEW_ON_SITE": True,
+    # Omitted "THEME" to enable dynamic dark/light/system theme toggling
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": True,
+        "navigation": [
+            {
+                "title": "Master Intelligence",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Live Master Dashboard",
+                        "icon": "dashboard",
+                        "link": "http://localhost:5173",
+                    },
+                ],
+            },
+            {
+                "title": "Access & Identity",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Platform Users",
+                        "icon": "person",
+                        "link": lambda request: reverse_lazy("admin:App_user_changelist"),
+                    },
+                    {
+                        "title": "Login OTP Sessions",
+                        "icon": "key",
+                        "link": lambda request: reverse_lazy("admin:App_passwordlessloginotp_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "Studios & Portfolios",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Studio Profiles",
+                        "icon": "photo_camera",
+                        "link": lambda request: reverse_lazy("admin:App_photographerprofile_changelist"),
+                    },
+                    {
+                        "title": "Portfolio Configurations",
+                        "icon": "palette",
+                        "link": lambda request: reverse_lazy("admin:portfolio_portfolioconfig_changelist"),
+                    },
+                    {
+                        "title": "Portfolio Showcase Works",
+                        "icon": "collections",
+                        "link": lambda request: reverse_lazy("admin:portfolio_portfoliowork_changelist"),
+                    },
+                    {
+                        "title": "Client Inquiries",
+                        "icon": "mail",
+                        "link": lambda request: reverse_lazy("admin:App_inquiry_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "Galleries & Media Storage",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Galleries",
+                        "icon": "photo_library",
+                        "link": lambda request: reverse_lazy("admin:App_gallery_changelist"),
+                    },
+                    {
+                        "title": "Media Assets",
+                        "icon": "image",
+                        "link": lambda request: reverse_lazy("admin:App_media_changelist"),
+                    },
+                    {
+                        "title": "Live Events",
+                        "icon": "event",
+                        "link": lambda request: reverse_lazy("admin:App_liveevent_changelist"),
+                    },
+                    {
+                        "title": "Client Selections",
+                        "icon": "checklist",
+                        "link": lambda request: reverse_lazy("admin:App_galleryclientselection_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "Subscriptions & Billing",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Subscription Plans",
+                        "icon": "payments",
+                        "link": lambda request: reverse_lazy("admin:App_plan_changelist"),
+                    },
+                    {
+                        "title": "Active Subscriptions",
+                        "icon": "card_membership",
+                        "link": lambda request: reverse_lazy("admin:App_photographersubscription_changelist"),
+                    },
+                    {
+                        "title": "Billing Transactions",
+                        "icon": "receipt_long",
+                        "link": lambda request: reverse_lazy("admin:App_subscriptionpayment_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "AI Operations",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Culling Sessions",
+                        "icon": "auto_awesome",
+                        "link": lambda request: reverse_lazy("admin:culling_cullingsession_changelist"),
+                    },
+                    {
+                        "title": "Culling Pricing Tiers",
+                        "icon": "sell",
+                        "link": lambda request: reverse_lazy("admin:culling_cullingpricingtier_changelist"),
+                    },
+                ],
+            },
+        ],
+    },
+}
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',

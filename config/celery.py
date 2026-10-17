@@ -41,4 +41,3 @@ app.conf.worker_prefetch_multiplier = 1
 app.conf.task_acks_late = True
 
 app.autodiscover_tasks()
-

@@ -1,9 +1,10 @@
 from django.contrib import admin
+from unfold.admin import ModelAdmin
 from .sub_models import Plan, SubscriptionPlans, PhotographerSubscription, SubscriptionPayment
 
 
 @admin.register(Plan)
-class PlanAdmin(admin.ModelAdmin):
+class PlanAdmin(ModelAdmin):
     list_display = (
         'id',
         'name',
@@ -20,6 +21,9 @@ class PlanAdmin(admin.ModelAdmin):
     search_fields = ('id', 'name', 'subtitle')
     list_editable = ('ai_culling_enabled', 'is_active')
     ordering = ('sort_order', 'total_price')
+    list_filter_submit = True
+    compressed_fields = True
+    warn_unsaved_form = True
     fieldsets = (
         ('Plan Details', {
             'fields': ('id', 'name', 'subtitle', 'tier', 'billing_cycle', 'duration_months', 'monthly_price', 'original_monthly_price', 'total_price', 'currency', 'tag', 'tag_type', 'cta_text', 'is_active', 'is_popular', 'sort_order')
@@ -34,21 +38,28 @@ class PlanAdmin(admin.ModelAdmin):
 
 
 @admin.register(SubscriptionPlans)
-class SubscriptionPlansAdmin(admin.ModelAdmin):
+class SubscriptionPlansAdmin(ModelAdmin):
     list_display = ('name', 'tier', 'billing_cycle', 'price_monthly', 'ai_culling_enabled', 'storage_limit_bytes', 'video_delivery_enabled', 'face_search_enabled')
     list_filter = ('ai_culling_enabled', 'tier', 'billing_cycle', 'video_delivery_enabled', 'face_search_enabled')
     search_fields = ('name', 'tier')
+    list_filter_submit = True
+    compressed_fields = True
 
 
 @admin.register(PhotographerSubscription)
-class PhotographerSubscriptionAdmin(admin.ModelAdmin):
+class PhotographerSubscriptionAdmin(ModelAdmin):
     list_display = ('id', 'photographer', 'plan', 'status', 'start_date', 'expiry_date', 'auto_renew')
     list_filter = ('status', 'auto_renew', 'plan')
     search_fields = ('photographer__name', 'photographer__studio_name', 'payment_gateway_ref')
+    list_filter_submit = True
+    compressed_fields = True
+    warn_unsaved_form = True
 
 
 @admin.register(SubscriptionPayment)
-class SubscriptionPaymentAdmin(admin.ModelAdmin):
+class SubscriptionPaymentAdmin(ModelAdmin):
     list_display = ('id', 'subscription', 'plan', 'amount', 'currency', 'gateway', 'gateway_order_id', 'status', 'paid_at', 'created_at')
     list_filter = ('status', 'gateway', 'currency')
     search_fields = ('gateway_order_id', 'gateway_payment_id', 'subscription__photographer__name')
+    list_filter_submit = True
+    compressed_fields = True

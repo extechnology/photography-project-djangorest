@@ -3963,57 +3963,65 @@ def download_gallery_zip(request, id_or_slug=None, slug_or_id=None, *args, **kwa
                         except Exception:
                             file_bytes = None
 
-            # Write file bytes into the ZIP archive (Exact original uncompressed bytes by default)
+            # Write file bytes into the ZIP archive
             if file_bytes:
-                # Watermark baking ONLY if explicitly requested via ?watermark=true and media item is a photo and not RAW
-                should_watermark = apply_watermark_param and not is_raw and getattr(item, 'media_type', 'photo') != 'video'
-                if should_watermark:
-                    try:
-                        profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
-                        legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
-                        wm_text = None
-                        if gallery.watermark_text and gallery.watermark_text.strip():
-                            raw = gallery.watermark_text.strip()
-                            if raw.lower() not in legacy_placeholders:
-                                wm_text = raw if raw.startswith('©') else f"© {raw}"
+                if format_choice == 'jpeg' and not is_raw and getattr(item, 'media_type', 'photo') != 'video':
+                    # ONLY compress when explicitly converted to JPEG
+                    should_watermark = apply_watermark_param
+                    if should_watermark:
+                        try:
+                            profile = getattr(gallery.photographer, 'photographer_profile', None) or getattr(gallery, 'photographer', None)
+                            legacy_placeholders = {'ex studio', '© ex studio', 'atelier studio', '© atelier studio', 'studio', '© studio'}
+                            wm_text = None
+                            if gallery.watermark_text and gallery.watermark_text.strip():
+                                raw = gallery.watermark_text.strip()
+                                if raw.lower() not in legacy_placeholders:
+                                    wm_text = raw if raw.startswith('©') else f"© {raw}"
 
-                        if not wm_text:
-                            if profile and hasattr(profile, 'get_effective_watermark_text'):
-                                wm_text = profile.get_effective_watermark_text()
-                            else:
-                                user = getattr(gallery.photographer, 'user', None) or getattr(gallery, 'user', None) or gallery.photographer
-                                name = user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else ''
-                                name = name or (getattr(profile, 'name', '') if profile else '') or getattr(user, 'username', 'Photographer')
-                                wm_text = f"© {name}"
+                            if not wm_text:
+                                if profile and hasattr(profile, 'get_effective_watermark_text'):
+                                    wm_text = profile.get_effective_watermark_text()
+                                else:
+                                    user = getattr(gallery.photographer, 'user', None) or getattr(gallery, 'user', None) or gallery.photographer
+                                    name = user.get_full_name().strip() if (user and hasattr(user, 'get_full_name')) else ''
+                                    name = name or (getattr(profile, 'name', '') if profile else '') or getattr(user, 'username', 'Photographer')
+                                    wm_text = f"© {name}"
 
-                        wm_type = getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text'
-                        wm_type = str(wm_type).lower().strip()
-                        if wm_type != 'image':
-                            wm_type = 'text'
+                            wm_type = getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text'
+                            wm_type = str(wm_type).lower().strip()
+                            if wm_type != 'image':
+                                wm_type = 'text'
 
-                        # Strict one-at-a-time rule: Logo is ONLY resolved if watermark_type is 'image'
-                        logo_file = None
-                        if wm_type == 'image' and profile and getattr(profile, 'watermark_image', None):
-                            logo_file = profile.watermark_image
+                            logo_file = profile.watermark_image if (wm_type == 'image' and profile and getattr(profile, 'watermark_image', None)) else None
+                            font_size = getattr(gallery, 'watermark_font_size', None) or (getattr(profile, 'watermark_font_size', None) if profile else None) or 'md'
+                            font_color = getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', None) if profile else None) or '#FFFFFF'
+                            font_style = getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', None) if profile else None) or 'serif'
 
-                        font_size = getattr(gallery, 'watermark_font_size', None) or (getattr(profile, 'watermark_font_size', None) if profile else None) or 'md'
-                        font_color = getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', None) if profile else None) or '#FFFFFF'
-                        font_style = getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', None) if profile else None) or 'serif'
-
-                        watermarked_stream = stamp_watermark_on_image(
-                            io.BytesIO(file_bytes),
-                            watermark_text=wm_text,
-                            logo_file=logo_file,
-                            opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
-                            position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
-                            font_style=font_style,
-                            font_size=font_size,
-                            font_color=font_color,
-                            watermark_type=wm_type,
-                        )
-                        file_bytes = watermarked_stream.getvalue()
-                    except Exception as wm_err:
-                        logger.warning(f"Watermark baking failed for item {item.id} in ZIP download: {wm_err}. Using original image bytes.")
+                            watermarked_stream = stamp_watermark_on_image(
+                                io.BytesIO(file_bytes),
+                                watermark_text=wm_text,
+                                logo_file=logo_file,
+                                opacity=gallery.watermark_opacity or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
+                                position=gallery.watermark_position or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                                font_style=font_style,
+                                font_size=font_size,
+                                font_color=font_color,
+                                watermark_type=wm_type,
+                            )
+                            file_bytes = watermarked_stream.getvalue()
+                        except Exception as wm_err:
+                            logger.warning(f"Watermark baking failed for item {item.id} in ZIP download: {wm_err}.")
+                    else:
+                        # Convert to compressed web JPEG without watermark
+                        try:
+                            from PIL import Image, ImageOps
+                            img = Image.open(io.BytesIO(file_bytes))
+                            img = ImageOps.exif_transpose(img)
+                            out = io.BytesIO()
+                            img.convert('RGB').save(out, format='JPEG', quality=85, optimize=True)
+                            file_bytes = out.getvalue()
+                        except Exception as comp_err:
+                            logger.warning(f"JPEG conversion/compression failed for item {item.id}: {comp_err}")
 
                 zip_file.writestr(filename, file_bytes)
                 files_written += 1

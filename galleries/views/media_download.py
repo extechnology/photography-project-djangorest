@@ -159,25 +159,25 @@ class MediaDownloadView(APIView):
         format_choice = request.GET.get('format', 'original').lower()
         apply_watermark_param = request.GET.get('watermark', 'false').lower() == 'true'
 
+        raw_extensions = {'.raw', '.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.raf'}
+        file_ext = (getattr(media, 'file_extension', '') or '').lower()
+        if not file_ext and getattr(media, 'original_filename', ''):
+            _, file_ext = os.path.splitext(media.original_filename.lower())
+
+        is_raw_companion = bool(getattr(media, 'raw_file', None) and bool(media.raw_file))
+        is_raw = format_choice == 'raw' or is_raw_companion or (file_ext in raw_extensions)
+
         target_file = None
-        is_raw = False
 
         # 2. Format Resolution: RAW vs Master / Original
-        if format_choice == 'raw':
-            if getattr(media, 'raw_file', None) and bool(media.raw_file):
-                target_file = media.raw_file
-                is_raw = True
-            elif getattr(media, 'file', None) and bool(media.file):
-                target_file = media.file
-        elif format_choice == 'preview':
-            if getattr(media, 'preview', None) and bool(media.preview):
-                target_file = media.preview
-        else:
-            # Default or 'original' / 'master': Strictly use original master file (never fall back to preview)
-            if getattr(media, 'file', None) and bool(media.file):
-                target_file = media.file
-            elif getattr(media, 'raw_file', None) and bool(media.raw_file):
-                target_file = media.raw_file
+        if format_choice == 'raw' and is_raw_companion:
+            target_file = media.raw_file
+        elif format_choice == 'preview' and getattr(media, 'preview', None) and bool(media.preview):
+            target_file = media.preview
+        elif getattr(media, 'file', None) and bool(media.file):
+            target_file = media.file
+        elif is_raw_companion:
+            target_file = media.raw_file
 
         # Increment download telemetry
         try:
@@ -211,58 +211,66 @@ class MediaDownloadView(APIView):
         if not file_bytes:
             raise Http404("Media file could not be located in storage.")
 
-        # 4. Stream original uncompressed bytes directly without watermarking or PIL re-encoding
-        # Watermark is ONLY applied if explicitly requested via ?watermark=true and format is not RAW
-        should_watermark = apply_watermark_param and not is_raw
-        if not should_watermark:
-            content_type, _ = mimetypes.guess_type(clean_filename)
-            content_type = content_type or (media.mime_type if hasattr(media, 'mime_type') and media.mime_type else 'application/octet-stream')
+        # 4. Converted / Compressed Web JPEG Delivery (ONLY when format=jpeg or format=jpg)
+        is_converted_jpeg = format_choice in ('jpeg', 'jpg') and not is_raw
+        if is_converted_jpeg:
+            should_watermark = apply_watermark_param
 
-            response = HttpResponse(file_bytes, content_type=content_type)
-            response['Content-Disposition'] = f'attachment; filename="{clean_filename}"'
-            response['Content-Length'] = len(file_bytes)
+            if should_watermark:
+                profile = getattr(gallery, 'photographer', None)
+                if profile and hasattr(profile, 'photographer_profile'):
+                    profile = profile.photographer_profile
+
+                wm_text = (
+                    getattr(gallery, 'watermark_text', None) or 
+                    (profile.get_effective_watermark_text() if profile and hasattr(profile, 'get_effective_watermark_text') else None) or 
+                    getattr(gallery, 'photographer_name', 'PHOTOGRAPHER') or 
+                    'PHOTOGRAPHER'
+                )
+
+                wm_image_path = None
+                wm_image = getattr(gallery, 'watermark_image', None)
+                if wm_image and hasattr(wm_image, 'path') and os.path.exists(wm_image.path):
+                    wm_image_path = wm_image.path
+
+                watermark_config = {
+                    'enabled': True,
+                    'type': getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text',
+                    'text': wm_text,
+                    'opacity': getattr(gallery, 'watermark_opacity', None) or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
+                    'position': getattr(gallery, 'watermark_position', None) or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
+                    'font_color': getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', '#FFFFFF') if profile else '#FFFFFF'),
+                    'font_style': getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', 'serif') if profile else 'serif'),
+                    'image_path': wm_image_path,
+                    'watermark_image': wm_image,
+                }
+                processed_bytes = apply_watermark_to_image(file_bytes, watermark_config)
+            else:
+                try:
+                    from PIL import Image, ImageOps
+                    img = Image.open(io.BytesIO(file_bytes))
+                    img = ImageOps.exif_transpose(img)
+                    out = io.BytesIO()
+                    img.convert('RGB').save(out, format='JPEG', quality=85, optimize=True)
+                    processed_bytes = out.getvalue()
+                except Exception:
+                    processed_bytes = file_bytes
+
+            output_filename = f"{base_name}.jpg"
+            response = HttpResponse(processed_bytes, content_type='image/jpeg')
+            response['Content-Disposition'] = f'attachment; filename="{output_filename}"'
+            response['Content-Length'] = len(processed_bytes)
             response['Access-Control-Allow-Origin'] = '*'
             response['Access-Control-Expose-Headers'] = 'Content-Disposition, Content-Length'
             return response
 
-        # 5. Watermarked JPEG Delivery
-        profile = getattr(gallery, 'photographer', None)
-        if profile and hasattr(profile, 'photographer_profile'):
-            profile = profile.photographer_profile
+        # 5. Default / Original / RAW: Strictly ZERO compression, ZERO PIL re-encoding, exact master bytes
+        content_type, _ = mimetypes.guess_type(clean_filename)
+        content_type = content_type or (media.mime_type if hasattr(media, 'mime_type') and media.mime_type else 'application/octet-stream')
 
-        wm_text = (
-            getattr(gallery, 'watermark_text', None) or 
-            (profile.get_effective_watermark_text() if profile and hasattr(profile, 'get_effective_watermark_text') else None) or 
-            getattr(gallery, 'photographer_name', 'PHOTOGRAPHER') or 
-            'PHOTOGRAPHER'
-        )
-
-        wm_image_path = None
-        wm_image = getattr(gallery, 'watermark_image', None)
-        if wm_image:
-            if hasattr(wm_image, 'path') and os.path.exists(wm_image.path):
-                wm_image_path = wm_image.path
-
-        watermark_config = {
-            'enabled': True,
-            'type': getattr(gallery, 'watermark_type', None) or (getattr(profile, 'watermark_type', None) if profile else None) or 'text',
-            'text': wm_text,
-            'opacity': getattr(gallery, 'watermark_opacity', None) or (getattr(profile, 'watermark_opacity', 0.45) if profile else 0.45),
-            'position': getattr(gallery, 'watermark_position', None) or (getattr(profile, 'watermark_position', 'bottom-right') if profile else 'bottom-right'),
-            'font_color': getattr(gallery, 'watermark_font_color', None) or (getattr(profile, 'watermark_font_color', '#FFFFFF') if profile else '#FFFFFF'),
-            'font_style': getattr(gallery, 'watermark_font_style', None) or (getattr(profile, 'watermark_font_style', 'serif') if profile else 'serif'),
-            'image_path': wm_image_path,
-            'watermark_image': wm_image,
-        }
-
-        processed_bytes = apply_watermark_to_image(file_bytes, watermark_config)
-
-        # Ensure output filename ends with .jpg for watermarked JPEG
-        output_filename = f"{base_name}.jpg"
-
-        response = HttpResponse(processed_bytes, content_type='image/jpeg')
-        response['Content-Disposition'] = f'attachment; filename="{output_filename}"'
-        response['Content-Length'] = len(processed_bytes)
+        response = HttpResponse(file_bytes, content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{clean_filename}"'
+        response['Content-Length'] = len(file_bytes)
         response['Access-Control-Allow-Origin'] = '*'
         response['Access-Control-Expose-Headers'] = 'Content-Disposition, Content-Length'
         return response

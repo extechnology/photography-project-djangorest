@@ -1,0 +1,2 @@
+celery -A config worker --loglevel=INFO
+celery -A config  beat --loglevel=INFO
