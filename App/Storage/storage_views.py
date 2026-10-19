@@ -1782,14 +1782,481 @@ class DirectUploadConfirmView(APIView):
         )
 
 
+# class StandardMediaUploadView(APIView):
+#     """
+#     Direct multi-file batch upload supporting photos and videos:
+#     handles pre-upload quota validation (403 if exceeded), section persistence,
+#     automatic photo/video detection, high-volume batch optimization,
+#     and returns created media array with updated storage metrics.
+#     """
+#     parser_classes = [MultiPartParser, FormParser]
+
+#     def post(self, request, gallery_id=None):
+#         user = get_current_user(request)
+#         if not user:
+#             return Response({"code": "AUTHENTICATION_REQUIRED", "error": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+#         enforce_active_subscription(user, "media uploads")
+
+#         gid = gallery_id or request.data.get('gallery_id') or request.data.get('gallery')
+#         if not gid:
+#             profile = get_photographer_profile(user)
+#             if profile:
+#                 first_gal = Gallery.objects.filter(photographer=profile).first()
+#                 if first_gal:
+#                     gid = str(first_gal.id)
+#                 else:
+#                     new_gal = Gallery.objects.create(
+#                         photographer=profile,
+#                         title=f"{profile.name or 'Studio'} Gallery",
+#                     )
+#                     gid = str(new_gal.id)
+#             else:
+#                 return Response({"code": "GALLERY_REQUIRED", "error": "gallery_id required."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         gallery = get_object_or_404(Gallery.objects.select_related('photographer'), id=gid)
+#         if gallery.photographer.user_id != user.id and not (user.is_staff or user.is_superuser):
+#             return Response({"code": "GALLERY_ACCESS_DENIED", "error": "You do not own this gallery."}, status=status.HTTP_403_FORBIDDEN)
+
+#         # 1. Multi-File Extraction
+#         files = (
+#             request.FILES.getlist('photos')
+#             + request.FILES.getlist('videos')
+#             + request.FILES.getlist('files')
+#             + request.FILES.getlist('images')
+#         )
+#         if not files:
+#             for single_key in ['photo', 'video', 'file', 'image']:
+#                 single = request.FILES.get(single_key)
+#                 if single:
+#                     files.append(single)
+
+#         if not files:
+#             return Response(
+#                 {
+#                     "error": "No files provided. Send files under 'photos', 'videos', or 'files'.",
+#                     "code": "NO_FILES_PROVIDED",
+#                     "detail": "No files provided. Send files under 'photos', 'videos', or 'files'."
+#                 },
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+
+#         # 2. Section Organizing (section_title)
+#         raw_section = request.data.get('section_title')
+#         if not raw_section or not str(raw_section).strip():
+#             raw_section = 'Highlights'
+#         section_title = str(raw_section).strip().upper()
+
+#         gallery_sections = gallery.sections or []
+#         if not isinstance(gallery_sections, list):
+#             gallery_sections = list(gallery_sections)
+#         if not any(str(s).upper() == section_title for s in gallery_sections):
+#             gallery_sections.append(section_title)
+#             gallery.sections = gallery_sections
+#             gallery.save(update_fields=['sections'])
+
+#         section_obj = None
+#         try:
+#             section_obj, _ = GallerySection.objects.get_or_create(
+#                 gallery=gallery,
+#                 title=section_title,
+#                 defaults={'order': gallery.section_items.count()}
+#             )
+#         except Exception:
+#             section_obj = None
+
+#         # 3. Pre-Upload Storage Quota Enforcement
+#         batch_bytes = sum(getattr(f, 'size', 0) for f in files)
+#         profile = gallery.photographer
+#         used_bytes = profile.storage_used_bytes or 0
+#         limit_bytes = profile.get_storage_limit() or 0
+
+#         if limit_bytes > 0 and (used_bytes + batch_bytes) > limit_bytes:
+#             available_bytes = max(0, limit_bytes - used_bytes)
+#             available_mb = round(available_bytes / (1024 * 1024), 2)
+#             batch_mb = round(batch_bytes / (1024 * 1024), 2)
+#             resp_data = {
+#                 "upgrade_required": True,
+#                 "code": "STORAGE_LIMIT_EXCEEDED",
+#                 "error_code": "STORAGE_LIMIT_EXCEEDED",
+#                 "error": f"Storage quota exceeded. Available space: {available_bytes // (1024 * 1024)} MB.",
+#                 "message": f"Storage limit reached. You have {available_mb} MB available, but requested upload is {batch_mb} MB.",
+#                 "available_bytes": available_bytes,
+#                 "requested_bytes": batch_bytes,
+#             }
+#             is_direct_upload = bool(request.path and request.path.rstrip('/').endswith('/galleries/upload'))
+#             status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE if (is_direct_upload or request.headers.get('X-Expect-413')) else status.HTTP_403_FORBIDDEN
+#             return Response(resp_data, status=status_code)
+
+#         # 4. Multi-Media Processing (Photo vs. Video)
+#         storage = get_storage_provider()
+#         created_media = []
+#         committed_bytes = 0
+#         is_large_batch = len(files) > 20
+
+#         explicit_type = request.data.get('type')
+#         if explicit_type and str(explicit_type).lower() in ['photo', 'video']:
+#             explicit_type = str(explicit_type).lower()
+#         else:
+#             explicit_type = None
+
+#         for f in files:
+#             ext = os.path.splitext(f.name)[1].lower()
+#             content_type = getattr(f, 'content_type', '') or ''
+
+#             # Automatic photo vs video detection
+#             if explicit_type:
+#                 media_type = explicit_type
+#             elif content_type.startswith('video/') or ext in VALID_VIDEO_EXTENSIONS:
+#                 media_type = 'video'
+#             else:
+#                 media_type = 'photo'
+
+#             # Allow supported photo/video extensions or mime types
+#             if ext and ext not in ALLOWED_MEDIA_EXTENSIONS and not content_type.startswith(('image/', 'video/')):
+#                 continue
+
+#             # Nudity check on small photo batches
+#             if media_type == 'photo' and not is_large_batch:
+#                 try:
+#                     is_nude, violations = check_image_for_nudity(f)
+#                     if is_nude:
+#                         continue
+#                 except Exception:
+#                     pass
+
+#             # Stream file directly to storage provider on disk (Zero RAM buffering)
+#             actual_size = getattr(f, 'size', 0)
+#             media_id = uuid.uuid4()
+#             safe_name = os.path.basename(f.name)
+#             base_title = os.path.splitext(safe_name)[0]
+#             default_mime = 'video/mp4' if media_type == 'video' else 'image/jpeg'
+#             mime = content_type or default_mime
+#             key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
+
+#             if hasattr(f, 'seek'):
+#                 try:
+#                     f.seek(0)
+#                 except Exception:
+#                     pass
+
+#             if hasattr(storage, "save_file"):
+#                 storage.save_file(key, f, content_type=mime)
+#             else:
+#                 file_bytes = f.read()
+#                 storage.upload(key, file_bytes, content_type=mime)
+
+#             if hasattr(f, 'seek'):
+#                 try:
+#                     f.seek(0)
+#                 except Exception:
+#                     pass
+
+#             # Fast metadata probe from file header on disk (instant, no image decoding)
+#             width = None
+#             height = None
+#             aspect_ratio = None
+#             if media_type == 'photo':
+#                 try:
+#                     from PIL import Image
+#                     abs_p = storage.get_absolute_path(key) if hasattr(storage, 'get_absolute_path') else None
+#                     if abs_p and abs_p.exists():
+#                         with Image.open(abs_p) as img:
+#                             width, height = img.size
+#                             if height > 0:
+#                                 aspect_ratio = round(width / height, 2)
+#                 except Exception:
+#                     pass
+
+#             if not actual_size:
+#                 meta = storage.get_metadata(key)
+#                 actual_size = meta.get("size", 0)
+
+#             media = Media(
+#                 id=media_id,
+#                 photographer=profile,
+#                 gallery=gallery,
+#                 media_type=media_type,
+#                 title=base_title,
+#                 section=section_obj,
+#                 section_title=section_title,
+#                 original_filename=safe_name,
+#                 storage_key=key,
+#                 original_storage_key=key,
+#                 file=key,
+#                 file_size=actual_size,
+#                 mime_type=mime,
+#                 file_extension=ext or ('.mp4' if media_type == 'video' else '.jpg'),
+#                 width=width,
+#                 height=height,
+#                 aspect_ratio=aspect_ratio,
+#                 processing_status="ready" if media_type == 'video' else "pending",
+#                 upload_status="completed",
+#             )
+#             created_media.append(media)
+#             committed_bytes += actual_size
+
+#         # 5. Atomic Saving & Storage Update
+#         with transaction.atomic():
+#             if created_media:
+#                 Media.objects.bulk_create(created_media, batch_size=500)
+#                 PhotographerProfile.objects.filter(id=profile.id).update(
+#                     storage_used_bytes=F("storage_used_bytes") + committed_bytes
+#                 )
+#                 profile.refresh_from_db()
+
+#                 # If gallery has no cover, automatically set the first media item
+#                 if not gallery.cover_media and not gallery.cover_image_url:
+#                     gallery.cover_media = created_media[0]
+#                     gallery.save(update_fields=['cover_media'])
+
+#                 StorageAuditLog.objects.create(
+#                     photographer=profile,
+#                     gallery=gallery,
+#                     user=user,
+#                     action="MEDIA_BATCH_UPLOADED",
+#                     details={"count": len(created_media), "bytes": committed_bytes, "section": section_title},
+#                 )
+
+#         # 6. Background Derivatives & Face Search for Photos (Decoupled, never blocks response)
+#         for media_item in created_media:
+#             if media_item.media_type == 'photo':
+#                 run_or_queue_task(process_media_derivatives_and_faces_task, str(media_item.id), skip_sync_fallback=True)
+
+#         # 7. Storage Usage Metrics
+#         final_used_bytes = profile.storage_used_bytes or 0
+#         final_limit_bytes = profile.get_storage_limit() or 0
+#         used_gb = round(final_used_bytes / (1024 ** 3), 2)
+#         limit_gb = round(final_limit_bytes / (1024 ** 3), 2) if final_limit_bytes > 0 else 0.0
+#         used_pct = round((final_used_bytes / final_limit_bytes) * 100, 1) if final_limit_bytes > 0 else 0.0
+
+#         storage_usage = {
+#             "used_bytes": final_used_bytes,
+#             "limit_bytes": final_limit_bytes,
+#             "used_gb": used_gb,
+#             "limit_gb": limit_gb,
+#             "used_percentage": used_pct,
+#         }
+
+#         return Response(
+#             {
+#                 "message": f"Successfully uploaded {len(created_media)} files.",
+#                 "total_uploaded": len(created_media),
+#                 "media": MediaSerializer(created_media, many=True, context={'request': request}).data,
+#                 "storage_usage": storage_usage,
+#             },
+#             status=status.HTTP_201_CREATED
+#         )
+
+# ============================================================================
+
+# Replace StandardMediaUploadView in your EXISTING storage_views.py with this
+# class and helpers. Keep that module's project-specific imports (models,
+# serializers, authentication/subscription helpers, constants, storage factory,
+# moderation helper, task helper and task). This is not a standalone application.
+#
+# Existing JSON response keys, file aliases, explicit type handling, quota status
+# codes, and moderation policy are retained. The existing policy skips moderation
+# for >20 files and fails open on moderation exceptions; review that separately.
+#
+# Optional settings.py settings:
+# MEDIA_UPLOAD_WORKERS = 4                  # capped to 8, PER request
+# MEDIA_UPLOAD_PARALLEL_STORAGE = False     # opt in after checking provider safety
+#
+# To enable parallelism, set MEDIA_UPLOAD_PARALLEL_STORAGE = True only when:
+# - get_storage_provider() and its save_file/get_metadata methods do no ORM work;
+# - factory instances are independent, or the returned adapter is thread safe;
+# - save_file streams the input without an unbounded read();
+# - SDK inner transfer concurrency is bounded (e.g. use_threads=False when the
+#   outer file pool already supplies concurrency). Total load also depends on
+#   the number of simultaneous Django requests, not just this per-request cap.
+# Otherwise leave parallelism disabled. Provider construction stays on the main
+# thread; workers perform only file/storage operations and return plain results.
+#
+# Recommended: provider.delete_file(key) or provider.delete(key), idempotent for
+# missing keys. Cleanup is best effort, not a distributed transaction. A periodic
+# orphan reconciler is still needed for process termination/connection loss.
+# Legacy adapters that expose only upload(key, bytes) remain supported but still
+# buffer one complete file and always use ONE transfer worker. Implement
+# save_file(key, fileobj, content_type=...) to remove that RAM bottleneck.
+#
+# Use PostgreSQL for the row locks in the final quota check. All OTHER upload
+# endpoints must use the same profile locking/quota protocol. SQLite does not
+# provide select_for_update row locking. No quota reservation model is assumed:
+# a simultaneous upload may be rejected after its storage transfer finishes.
+#
+# Keep this upload URL out of ATOMIC_REQUESTS/other outer transaction wrappers.
+# It uses its own short DB transaction after all storage transfers. Example URL:
+# transaction.non_atomic_requests(StandardMediaUploadView.as_view())
+#
+# on_commit defers processing until commit; publishing to Celery still has broker
+# latency. Ensure run_or_queue_task honors skip_sync_fallback=True. Configure
+# finite broker timeouts and an existing pending-media retry/reconciliation job
+# to recover publishing failures (this snippet cannot add an outbox model).
+#
+# Only a view snippet was supplied. Integrate and run real project tests before
+# production; no actual R2/network speed or full Django integration was tested.
+
+import logging
+import os
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from queue import Empty, Queue
+from threading import Event
+
+from django.conf import settings
+from django.db import transaction
+
+_upload_logger = logging.getLogger(__name__)
+
+
+def _upload_photo_dimensions(fileobj):
+    """Read dimensions from the local upload header, before R2 can close it."""
+    try:
+        from PIL import Image
+        fileobj.seek(0)
+        with Image.open(fileobj) as image:
+            width, height = image.size
+        return width, height, round(width / height, 2) if height > 0 else None
+    except Exception:
+        return None, None, None
+    finally:
+        try:
+            fileobj.seek(0)
+        except Exception:
+            pass
+
+
+def _upload_cleanup(attempted):
+    """Only delete this request's fresh UUID keys; never touch existing media."""
+    for provider, key in attempted:
+        delete = getattr(provider, 'delete_file', None)
+        if not callable(delete):
+            delete = getattr(provider, 'delete', None)
+        if not callable(delete):
+            _upload_logger.error('Storage cleanup unavailable; reconcile key=%s', key)
+            continue
+        try:
+            delete(key)
+        except Exception:
+            _upload_logger.exception('Storage cleanup failed; reconcile key=%s', key)
+
+
+def _upload_transfer_batch(jobs, attempted):
+    """Bounded file/storage IO. No model construction, ORM, or AI in threads."""
+    if not jobs:
+        return []
+
+    primary = get_storage_provider()
+    stream_supported = callable(getattr(primary, 'save_file', None))
+    parallel = bool(getattr(settings, 'MEDIA_UPLOAD_PARALLEL_STORAGE', False))
+    workers = max(1, min(8, int(getattr(settings, 'MEDIA_UPLOAD_WORKERS', 4)), len(jobs)))
+    if not parallel or not stream_supported:
+        workers = 1
+    if not stream_supported:
+        _upload_logger.warning('Legacy bytes-only storage adapter: one file is buffered in RAM')
+
+    # Build adapters on the request thread: some factories lazily construct SDK
+    # sessions or access configuration. Each worker owns one adapter throughout.
+    providers = [primary] + [get_storage_provider() for _ in range(workers - 1)]
+    pending = Queue()
+    for index, job in enumerate(jobs):
+        pending.put((index, job))
+    stopped = Event()
+
+    def worker(provider):
+        completed = []
+        owned = []
+        error = None
+        while not stopped.is_set():
+            try:
+                index, job = pending.get_nowait()
+            except Empty:
+                break
+            # Record before writing: even a failed write may leave an object.
+            owned.append((provider, job['key']))
+            try:
+                fileobj = job['fileobj']
+                fileobj.seek(0)
+                if callable(getattr(provider, 'save_file', None)):
+                    provider.save_file(job['key'], fileobj, content_type=job['mime'])
+                else:
+                    provider.upload(job['key'], fileobj.read(), content_type=job['mime'])
+                actual_size = job['size']
+                if not actual_size:
+                    actual_size = provider.get_metadata(job['key']).get('size', 0)
+                completed.append((index, actual_size))
+            except Exception as exc:
+                error = exc
+                stopped.set()
+                break
+        return completed, owned, error
+
+    if workers == 1:
+        outcomes = [worker(primary)]
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='media-upload') as pool:
+            # Exhaust every worker before cleanup; no worker may still be writing
+            # a key after the request thread decides to delete it.
+            outcomes = list(pool.map(worker, providers))
+
+    results = []
+    first_error = None
+    for completed, owned, error in outcomes:
+        results.extend(completed)
+        attempted.extend(owned)
+        if error is not None and first_error is None:
+            first_error = error
+    if first_error is not None:
+        raise first_error
+    return sorted(results)
+
+
+def _upload_enqueue_photo(media_id):
+    try:
+        run_or_queue_task(
+            process_media_derivatives_and_faces_task,
+            media_id,
+            skip_sync_fallback=True,
+        )
+    except Exception:
+        # Original is already committed. Do not report the upload as failed and
+        # cause the browser to upload it again. Recover pending media separately.
+        _upload_logger.exception('Photo processing enqueue failed; media_id=%s', media_id)
+
+
+class _UploadQuotaChanged(Exception):
+    def __init__(self, used_bytes, limit_bytes):
+        self.used_bytes = used_bytes
+        self.limit_bytes = limit_bytes
+
+
 class StandardMediaUploadView(APIView):
     """
-    Direct multi-file batch upload supporting photos and videos:
-    handles pre-upload quota validation (403 if exceeded), section persistence,
-    automatic photo/video detection, high-volume batch optimization,
-    and returns created media array with updated storage metrics.
+    Multipart batch endpoint with optional bounded parallel storage writes.
+    Preserves response keys and accepted fields. Uploads still pass via Django;
+    direct browser-to-R2 requires a separate signed-upload frontend flow.
     """
     parser_classes = [MultiPartParser, FormParser]
+
+    @staticmethod
+    def _quota_response(request, used_bytes, limit_bytes, batch_bytes):
+        available_bytes = max(0, limit_bytes - used_bytes)
+        available_mb = round(available_bytes / (1024 * 1024), 2)
+        batch_mb = round(batch_bytes / (1024 * 1024), 2)
+        resp_data = {
+            "upgrade_required": True,
+            "code": "STORAGE_LIMIT_EXCEEDED",
+            "error_code": "STORAGE_LIMIT_EXCEEDED",
+            "error": f"Storage quota exceeded. Available space: {available_bytes // (1024 * 1024)} MB.",
+            "message": f"Storage limit reached. You have {available_mb} MB available, but requested upload is {batch_mb} MB.",
+            "available_bytes": available_bytes,
+            "requested_bytes": batch_bytes,
+        }
+        is_direct_upload = bool(request.path and request.path.rstrip('/').endswith('/galleries/upload'))
+        status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE if (is_direct_upload or request.headers.get('X-Expect-413')) else status.HTTP_403_FORBIDDEN
+        return Response(resp_data, status=status_code)
 
     def post(self, request, gallery_id=None):
         user = get_current_user(request)
@@ -1847,23 +2314,6 @@ class StandardMediaUploadView(APIView):
             raw_section = 'Highlights'
         section_title = str(raw_section).strip().upper()
 
-        gallery_sections = gallery.sections or []
-        if not isinstance(gallery_sections, list):
-            gallery_sections = list(gallery_sections)
-        if not any(str(s).upper() == section_title for s in gallery_sections):
-            gallery_sections.append(section_title)
-            gallery.sections = gallery_sections
-            gallery.save(update_fields=['sections'])
-
-        section_obj = None
-        try:
-            section_obj, _ = GallerySection.objects.get_or_create(
-                gallery=gallery,
-                title=section_title,
-                defaults={'order': gallery.section_items.count()}
-            )
-        except Exception:
-            section_obj = None
 
         # 3. Pre-Upload Storage Quota Enforcement
         batch_bytes = sum(getattr(f, 'size', 0) for f in files)
@@ -1872,24 +2322,10 @@ class StandardMediaUploadView(APIView):
         limit_bytes = profile.get_storage_limit() or 0
 
         if limit_bytes > 0 and (used_bytes + batch_bytes) > limit_bytes:
-            available_bytes = max(0, limit_bytes - used_bytes)
-            available_mb = round(available_bytes / (1024 * 1024), 2)
-            batch_mb = round(batch_bytes / (1024 * 1024), 2)
-            resp_data = {
-                "upgrade_required": True,
-                "code": "STORAGE_LIMIT_EXCEEDED",
-                "error_code": "STORAGE_LIMIT_EXCEEDED",
-                "error": f"Storage quota exceeded. Available space: {available_bytes // (1024 * 1024)} MB.",
-                "message": f"Storage limit reached. You have {available_mb} MB available, but requested upload is {batch_mb} MB.",
-                "available_bytes": available_bytes,
-                "requested_bytes": batch_bytes,
-            }
-            is_direct_upload = bool(request.path and request.path.rstrip('/').endswith('/galleries/upload'))
-            status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE if (is_direct_upload or request.headers.get('X-Expect-413')) else status.HTTP_403_FORBIDDEN
-            return Response(resp_data, status=status_code)
+            return self._quota_response(request, used_bytes, limit_bytes, batch_bytes)
 
         # 4. Multi-Media Processing (Photo vs. Video)
-        storage = get_storage_provider()
+        jobs = []
         created_media = []
         committed_bytes = 0
         is_large_batch = len(files) > 20
@@ -1925,7 +2361,7 @@ class StandardMediaUploadView(APIView):
                 except Exception:
                     pass
 
-            # Stream file directly to storage provider on disk (Zero RAM buffering)
+            # Prepare metadata on the request thread; transfer bytes below.
             actual_size = getattr(f, 'size', 0)
             media_id = uuid.uuid4()
             safe_name = os.path.basename(f.name)
@@ -1934,43 +2370,14 @@ class StandardMediaUploadView(APIView):
             mime = content_type or default_mime
             key = f"galleries/{gallery.id}/originals/{media_id}_{safe_name}"
 
-            if hasattr(f, 'seek'):
-                try:
-                    f.seek(0)
-                except Exception:
-                    pass
-
-            if hasattr(storage, "save_file"):
-                storage.save_file(key, f, content_type=mime)
-            else:
-                file_bytes = f.read()
-                storage.upload(key, file_bytes, content_type=mime)
-
-            if hasattr(f, 'seek'):
-                try:
-                    f.seek(0)
-                except Exception:
-                    pass
-
-            # Fast metadata probe from file header on disk (instant, no image decoding)
-            width = None
-            height = None
-            aspect_ratio = None
-            if media_type == 'photo':
-                try:
-                    from PIL import Image
-                    abs_p = storage.get_absolute_path(key) if hasattr(storage, 'get_absolute_path') else None
-                    if abs_p and abs_p.exists():
-                        with Image.open(abs_p) as img:
-                            width, height = img.size
-                            if height > 0:
-                                aspect_ratio = round(width / height, 2)
-                except Exception:
-                    pass
-
-            if not actual_size:
-                meta = storage.get_metadata(key)
-                actual_size = meta.get("size", 0)
+            width, height, aspect_ratio = (
+                _upload_photo_dimensions(f)
+                if media_type == 'photo'
+                else (None, None, None)
+            )
+            jobs.append({
+                'fileobj': f, 'key': key, 'mime': mime, 'size': actual_size,
+            })
 
             media = Media(
                 id=media_id,
@@ -1978,7 +2385,7 @@ class StandardMediaUploadView(APIView):
                 gallery=gallery,
                 media_type=media_type,
                 title=base_title,
-                section=section_obj,
+                section=None,
                 section_title=section_title,
                 original_filename=safe_name,
                 storage_key=key,
@@ -1994,38 +2401,82 @@ class StandardMediaUploadView(APIView):
                 upload_status="completed",
             )
             created_media.append(media)
-            committed_bytes += actual_size
 
-        # 5. Atomic Saving & Storage Update
-        with transaction.atomic():
-            if created_media:
-                Media.objects.bulk_create(created_media, batch_size=500)
-                PhotographerProfile.objects.filter(id=profile.id).update(
-                    storage_used_bytes=F("storage_used_bytes") + committed_bytes
-                )
-                profile.refresh_from_db()
+        # 5. Transfer outside DB locks; preserve input order in the response.
+        attempted = []
+        try:
+            for index, actual_size in _upload_transfer_batch(jobs, attempted):
+                created_media[index].file_size = actual_size
+                committed_bytes += actual_size
 
-                # If gallery has no cover, automatically set the first media item
-                if not gallery.cover_media and not gallery.cover_image_url:
-                    gallery.cover_media = created_media[0]
-                    gallery.save(update_fields=['cover_media'])
+            # Short final transaction. Re-read quota under a profile row lock so
+            # concurrent requests using this protocol cannot both spend the same
+            # capacity. Other upload paths must follow the same protocol.
+            with transaction.atomic():
+                profile = PhotographerProfile.objects.select_for_update().get(id=profile.id)
+                used_bytes = profile.storage_used_bytes or 0
+                final_limit_bytes = profile.get_storage_limit() or 0
+                if final_limit_bytes > 0 and used_bytes + committed_bytes > final_limit_bytes:
+                    raise _UploadQuotaChanged(used_bytes, final_limit_bytes)
 
-                StorageAuditLog.objects.create(
-                    photographer=profile,
-                    gallery=gallery,
-                    user=user,
-                    action="MEDIA_BATCH_UPLOADED",
-                    details={"count": len(created_media), "bytes": committed_bytes, "section": section_title},
-                )
+                # Lock the gallery too, avoiding lost section edits and competing
+                # default-cover assignments by these upload requests.
+                gallery = Gallery.objects.select_for_update().get(id=gallery.id)
+                gallery_sections = gallery.sections or []
+                if not isinstance(gallery_sections, list):
+                    gallery_sections = list(gallery_sections)
+                if not any(str(s).upper() == section_title for s in gallery_sections):
+                    gallery_sections.append(section_title)
+                    gallery.sections = gallery_sections
+                    gallery.save(update_fields=['sections'])
 
-        # 6. Background Derivatives & Face Search for Photos (Decoupled, never blocks response)
-        for media_item in created_media:
-            if media_item.media_type == 'photo':
-                run_or_queue_task(process_media_derivatives_and_faces_task, str(media_item.id), skip_sync_fallback=True)
+                section_obj = None
+                try:
+                    with transaction.atomic():
+                        section_obj, _ = GallerySection.objects.get_or_create(
+                            gallery=gallery,
+                            title=section_title,
+                            defaults={'order': gallery.section_items.count()}
+                        )
+                except Exception:
+                    _upload_logger.exception('GallerySection creation failed; using section_title')
+                    section_obj = None
+                if created_media:
+                    for media in created_media:
+                        media.section = section_obj
+                        media.gallery = gallery
+                        media.photographer = profile
+                    Media.objects.bulk_create(created_media, batch_size=500)
+                    # The locked row value also handles existing NULL counters.
+                    PhotographerProfile.objects.filter(id=profile.id).update(
+                        storage_used_bytes=used_bytes + committed_bytes
+                    )
+                    profile.storage_used_bytes = used_bytes + committed_bytes
+                    if not gallery.cover_media_id and not gallery.cover_image_url:
+                        gallery.cover_media = created_media[0]
+                        gallery.save(update_fields=['cover_media'])
+                    StorageAuditLog.objects.create(
+                        photographer=profile,
+                        gallery=gallery,
+                        user=user,
+                        action='MEDIA_BATCH_UPLOADED',
+                        details={'count': len(created_media), 'bytes': committed_bytes, 'section': section_title},
+                    )
+                    for media in created_media:
+                        if media.media_type == 'photo':
+                            transaction.on_commit(partial(_upload_enqueue_photo, str(media.id)))
+        except _UploadQuotaChanged as exc:
+            _upload_cleanup(attempted)
+            return self._quota_response(
+                request, exc.used_bytes, exc.limit_bytes, committed_bytes,
+            )
+        except Exception:
+            # DB rollback does not remove objects already written to R2/disk.
+            _upload_cleanup(attempted)
+            raise
 
         # 7. Storage Usage Metrics
         final_used_bytes = profile.storage_used_bytes or 0
-        final_limit_bytes = profile.get_storage_limit() or 0
         used_gb = round(final_used_bytes / (1024 ** 3), 2)
         limit_gb = round(final_limit_bytes / (1024 ** 3), 2) if final_limit_bytes > 0 else 0.0
         used_pct = round((final_used_bytes / final_limit_bytes) * 100, 1) if final_limit_bytes > 0 else 0.0
@@ -2048,6 +2499,9 @@ class StandardMediaUploadView(APIView):
             status=status.HTTP_201_CREATED
         )
 
+
+
+# ============================================================================
 
 class GallerySectionListCreateView(APIView):
     """
