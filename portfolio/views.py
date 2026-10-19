@@ -16,7 +16,6 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.exceptions import ValidationError
-from App.Storage.throttling import InquirySubmitRateThrottle, ViewTrackRateThrottle
 
 from .models import (
     PortfolioConfig,
@@ -529,7 +528,6 @@ class PublicInquiryCreateView(APIView):
     Stores inquiry in CRM, triggers email notification to photographer.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [InquirySubmitRateThrottle]
 
     def post(self, request):
         data = request.data
@@ -1218,7 +1216,6 @@ class PublicPortfolioTrackView(APIView):
     Logs page views, sections, project view interactions, device types, and referrer info.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [ViewTrackRateThrottle]
 
     def post(self, request, slug_or_id=None, slug=None):
         target_slug = slug or slug_or_id or request.data.get('photographer_slug') or request.data.get('photographerSlug')

@@ -30,7 +30,6 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import PermissionDenied, NotFound
 
 from App.Auth.auth_utils import get_user_from_request
@@ -87,14 +86,6 @@ from App.Storage.tasks import (
     run_or_queue_task,
 )
 
-from App.Storage.throttling import (
-    FaceSearchRateThrottle,
-    UploadRateThrottle,
-    BulkDownloadRateThrottle,
-    ShareAccessRateThrottle,
-    PinVerifyRateThrottle,
-    PasswordVerifyRateThrottle,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -1638,7 +1629,6 @@ class DirectUploadInitView(APIView):
     Validates photographer storage quota and atomically reserves bytes.
     Supports single file or batch 'files: [...]' payload.
     """
-    throttle_classes = [UploadRateThrottle]
 
     def post(self, request, gallery_id):
         user = get_current_user(request)
@@ -1800,7 +1790,6 @@ class StandardMediaUploadView(APIView):
     and returns created media array with updated storage metrics.
     """
     parser_classes = [MultiPartParser, FormParser]
-    throttle_classes = [UploadRateThrottle]
 
     def post(self, request, gallery_id=None):
         user = get_current_user(request)
@@ -2515,7 +2504,6 @@ class SharedGalleryView(APIView):
     Enforces expiration, visibility rules, and password checks.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [ShareAccessRateThrottle]
 
     def get(self, request, share_token):
         gallery = get_object_or_404(Gallery.objects.select_related('photographer'), share_token=share_token)
@@ -2560,7 +2548,6 @@ class SharedGalleryView(APIView):
 
 class VerifyGalleryPasswordView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [PasswordVerifyRateThrottle]
 
     def post(self, request, share_token):
         gallery = get_object_or_404(Gallery, share_token=share_token)
@@ -2584,7 +2571,6 @@ class GalleryBulkDownloadView(APIView):
     Returns 202 Accepted with a BulkDownloadJob status endpoint.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [BulkDownloadRateThrottle]
 
     def post(self, request, gallery_id):
         gallery = get_object_or_404(Gallery, id=gallery_id)
@@ -2639,7 +2625,6 @@ class GalleryFaceSearchView(APIView):
     """
     permission_classes = [AllowAny]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    throttle_classes = [FaceSearchRateThrottle]
 
     def post(self, request, gallery_id):
         # 1. Resolve gallery by UUID or string slug
@@ -3554,7 +3539,6 @@ class PublicGallerySlugOrIdView(APIView):
     GET /api/public/galleries/{slug_or_id}/
     """
     permission_classes = [AllowAny]
-    throttle_classes = [ShareAccessRateThrottle]
 
     def get(self, request, slug_or_id):
         # 1. Lookup by UUID id or unique slug
@@ -4078,7 +4062,6 @@ class PublicGalleryDownloadZipView(APIView):
     GET /api/public/galleries/{slug_or_id}/download-zip/
     """
     permission_classes = [AllowAny]
-    throttle_classes = [BulkDownloadRateThrottle]
 
     def perform_content_negotiation(self, request, force=False):
         renderers = self.get_renderers()
@@ -4094,7 +4077,6 @@ class PublicGalleryVerifyPinView(APIView):
     POST /api/public/galleries/{slug_or_id}/verify-pin/
     """
     permission_classes = [AllowAny]
-    throttle_classes = [PinVerifyRateThrottle]
 
     def post(self, request, slug_or_id):
         gallery = get_public_gallery(slug_or_id)

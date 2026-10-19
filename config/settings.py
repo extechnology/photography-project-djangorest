@@ -27,8 +27,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-w^01^8=!drxc9o$y08d@4atllv82xqr5ow%)b_z&fyzgt&ehwo')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-# DEBUG = config('DEBUG', default=True, cast=bool)
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
+# DEBUG = True
 
 # ALLOWED_HOSTS = config(
 #     'ALLOWED_HOSTS',
@@ -720,37 +720,9 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
-    'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
-    ],
+    'DEFAULT_THROTTLE_CLASSES': [],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '200/minute',
-        'user': '1000/minute',
-        # Auth & Security Throttles
         'login': '10/minute',
-        'register': '10/minute',
-        'otp_send': '5/minute',
-        'otp_verify': '10/minute',
-        'password_reset': '5/minute',
-        'oauth': '20/minute',
-        'token_refresh': '60/minute',
-        'availability_check': '45/minute',
-        # Storage, Galleries & ML Face Search
-        'face_search': '15/minute',
-        'upload': '60/minute',
-        'download': '120/minute',
-        'bulk_download': '5/minute',
-        'share_access': '150/minute',
-        'pin_verify': '10/minute',
-        'password_verify': '10/minute',
-        # Inquiries, Tracking & Subdomain
-        'inquiry_submit': '10/minute',
-        'view_track': '60/minute',
-        'subdomain_claim': '10/minute',
-        # Billing, Checkout & AI Operations
-        'checkout': '15/minute',
-        'ai_analysis': '10/minute',
     },
 }
 

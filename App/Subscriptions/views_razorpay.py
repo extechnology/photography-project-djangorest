@@ -44,7 +44,6 @@ from decouple import config
 from App.Auth.auth_utils import CookieJWTAuthentication, get_user_from_request
 from App.Subscriptions.sub_models import Plan as StudioPlan, PhotographerSubscription, SubscriptionPayment
 from App.Photographers.photo_models import PhotographerProfile
-from App.Storage.throttling import CheckoutRateThrottle
 
 try:
     from backend.atelier_notifications import notify_plan_activated, notify_plan_cancelled
@@ -686,7 +685,6 @@ class PlanCheckoutView(APIView):
     """
     authentication_classes = [CookieJWTAuthentication]
     permission_classes = [IsAuthenticated]
-    throttle_classes = [CheckoutRateThrottle]
 
     def post(self, request):
         user = resolve_user_from_request(request)
@@ -935,7 +933,6 @@ class PlanVerifyView(APIView):
     """
     authentication_classes = [CookieJWTAuthentication]
     permission_classes = [IsAuthenticated]
-    throttle_classes = [CheckoutRateThrottle]
 
     @transaction.atomic
     def post(self, request):

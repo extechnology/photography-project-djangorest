@@ -17,16 +17,7 @@ from django.conf import settings
 from .auth_models import *
 from .auth_serializers import *
 from .auth_emails import *
-from .auth_throttling import (
-    LoginRateThrottle,
-    RegisterRateThrottle,
-    OTPSendRateThrottle,
-    OTPVerifyRateThrottle,
-    PasswordResetRateThrottle,
-    OAuthRateThrottle,
-    TokenRefreshRateThrottle,
-    AvailabilityCheckRateThrottle,
-)
+from .auth_throttling import LoginRateThrottle
 
 User = get_user_model()
 
@@ -77,7 +68,6 @@ def delete_auth_cookies(response):
 class CheckUsernameView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [AvailabilityCheckRateThrottle]
     def get(self, request):
         new_username = request.query_params.get("username", "").strip()
 
@@ -122,7 +112,6 @@ class CheckUsernameView(APIView):
 class CheckIdentifierView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [AvailabilityCheckRateThrottle]
     def get(self, request):
         identifier = request.query_params.get("identifier", "").strip()
         
@@ -165,7 +154,6 @@ class CheckIdentifierView(APIView):
 class RegisterView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [RegisterRateThrottle]
     def post(self, request):               
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
@@ -179,7 +167,6 @@ class RegisterView(APIView):
 class ResendOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPSendRateThrottle]
     def post(self, request):
        serializer = ResentOTPSerializer(data=request.data, context={'request': request})
        if serializer.is_valid():
@@ -194,7 +181,6 @@ class ResendOTPView(APIView):
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPVerifyRateThrottle]
     def post(self, request,):
         serializer = EmailOTPVerifySerializer(data=request.data)
         if serializer.is_valid():
@@ -287,7 +273,6 @@ class LogoutView(APIView):
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [TokenRefreshRateThrottle]
     def post(self, request):
         refresh_token = request.COOKIES.get("refresh_token")
 
@@ -377,7 +362,6 @@ class CheckLoginView(APIView):
 
 
 class DirectResetPasswordView(APIView):
-    throttle_classes = [PasswordResetRateThrottle]
     def post(self, request):
         user = request.user
         password = request.data.get("password") 
@@ -415,7 +399,6 @@ class DirectResetPasswordView(APIView):
 class ResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPSendRateThrottle]
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -444,7 +427,6 @@ class ResetPasswordOTPView(APIView):
 class ResendResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPSendRateThrottle]
     def post(self, request):
         serializer = ResendResetPasswordOTPSerializer(data=request.data)
         if serializer.is_valid():
@@ -475,7 +457,6 @@ class ResendResetPasswordOTPView(APIView):
 class VerifyResetPasswordOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPVerifyRateThrottle]
     def post(self, request):
         serializer = VerifyResetPasswordSerializer(data=request.data)
         if serializer.is_valid():
@@ -503,7 +484,6 @@ class VerifyResetPasswordOTPView(APIView):
 class ChangePasswordView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [PasswordResetRateThrottle]
     def patch(self, request):
         identifier = request.data.get("identifier")
         new_password = request.data.get("new_password")
@@ -534,7 +514,6 @@ GOOGLE_CLIENT_ID = getattr(settings, 'GOOGLE_CLIENT_ID', None)
 class GoogleAuthView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OAuthRateThrottle]
     def post(self, request):
         if not GOOGLE_CLIENT_ID:
             return Response({"message": "Google Authentication is not configured in settings.py"}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -609,7 +588,6 @@ class GoogleAuthView(APIView):
 class PasswordlessSendOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPSendRateThrottle]
 
     def post(self, request):
         serializer = PasswordlessSendOTPSerializer(data=request.data)
@@ -658,7 +636,6 @@ class PasswordlessSendOTPView(APIView):
 class PasswordlessResendOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPSendRateThrottle]
 
     def post(self, request):
         serializer = PasswordlessSendOTPSerializer(data=request.data)
@@ -693,7 +670,6 @@ class PasswordlessResendOTPView(APIView):
 class PasswordlessVerifyOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPVerifyRateThrottle]
 
     def post(self, request):
         serializer = PasswordlessVerifyOTPSerializer(data=request.data)
@@ -839,7 +815,6 @@ class PasswordlessVerifyOTPView(APIView):
 class PasswordlessLoginSendOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [OTPSendRateThrottle]
 
     def post(self, request):
         serializer = PasswordlessSendOTPSerializer(data=request.data)

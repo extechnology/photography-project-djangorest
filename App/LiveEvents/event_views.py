@@ -28,7 +28,6 @@ from .event_tasks import process_face_embeddings_task, compare_selfie_faces_task
 from App.Storage.storage_models import Gallery, Media, GallerySection
 from App.Storage.services.media_transfer import transfer_media_to_gallery
 from backend.atelier_plans.subscription_enforcement import enforce_active_subscription, is_studio_active
-from App.Storage.throttling import ShareAccessRateThrottle, FaceSearchRateThrottle
 
 from App.Photographers.photo_models import PhotographerProfile
 
@@ -748,7 +747,6 @@ class PublicEventDetailView(APIView):
     - Zero event photos leaked (only exposes metadata & QR settings for biometric face search).
     """
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [ShareAccessRateThrottle]
 
     def get(self, request, id_or_slug):
         is_uuid = False
@@ -796,7 +794,6 @@ class EventFaceSearchView(APIView):
     Supports multipart file upload or base64 JSON payload.
     """
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [FaceSearchRateThrottle]
 
     def post(self, request, event_id):
         is_uuid = False

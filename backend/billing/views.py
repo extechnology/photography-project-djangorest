@@ -39,7 +39,6 @@ from App.LiveEvents.event_models import LiveEvent
 from App.Storage.storage_serializers import PublicGallerySerializer
 from App.LiveEvents.event_serializers import PublicEventSerializer
 from App.LiveEvents.event_tasks import compare_selfie_faces_task
-from App.Storage.throttling import CheckoutRateThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +357,6 @@ class PlanCheckoutView(APIView):
     Payload: {"plan_id": "plan-premium-elite", "gateway": "razorpay"}
     """
     permission_classes = [IsAuthenticated]
-    throttle_classes = [CheckoutRateThrottle]
 
     def post(self, request):
         user = request.user
@@ -493,7 +491,6 @@ class PlanVerifyView(APIView):
     Verifies payment signature and reactivates the studio's membership immediately.
     """
     permission_classes = [IsAuthenticated]
-    throttle_classes = [CheckoutRateThrottle]
 
     @transaction.atomic
     def post(self, request):

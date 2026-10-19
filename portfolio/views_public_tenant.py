@@ -7,7 +7,6 @@ from rest_framework import status, permissions
 from .tenant_resolver import get_tenant_profile
 from .models import PortfolioConfig, PortfolioInquiry, PortfolioView
 from .utils import send_inquiry_notification
-from App.Storage.throttling import InquirySubmitRateThrottle, ViewTrackRateThrottle
 
 
 class PublicTenantPortfolioView(APIView):
@@ -113,7 +112,6 @@ class PublicTenantInquiryView(APIView):
     Never trusts or requires a client-sent photographer_id.
     """
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [InquirySubmitRateThrottle]
 
     def post(self, request):
         profile = get_tenant_profile(request)
@@ -163,7 +161,6 @@ class PublicTenantTrackView(APIView):
     Records view telemetry for the tenant host.
     """
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [ViewTrackRateThrottle]
 
     def post(self, request):
         profile = get_tenant_profile(request)

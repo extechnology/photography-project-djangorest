@@ -35,11 +35,6 @@ from App.Storage.storage_models import Gallery, GallerySection, Media as Gallery
 from App.Storage.services.storage_service import get_storage_provider
 from App.Storage.services.media_transfer import transfer_media_to_gallery, read_media_bytes
 from App.Photographers.photo_models import PhotographerProfile
-from App.Storage.throttling import (
-    UploadRateThrottle,
-    AIAnalysisRateThrottle,
-    CheckoutRateThrottle,
-)
 
 
 
@@ -71,7 +66,6 @@ class UploadCullingPhotosView(APIView):
     Supports multi-chunk batch uploads (e.g. 2,000 photos in 15MB sequential chunks) without HTTP 413.
     """
     permission_classes = [IsAuthenticated, HasAICullingAccess]
-    throttle_classes = [UploadRateThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, session_id=None):
@@ -209,7 +203,6 @@ class AnalyzeCullingSessionView(APIView):
     Executes parallel multithreaded focus sharpness scoring and burst sequence clustering.
     """
     permission_classes = [IsAuthenticated, HasAICullingPlanPermission]
-    throttle_classes = [AIAnalysisRateThrottle]
 
     def post(self, request, session_id=None):
         sid = (
@@ -695,7 +688,6 @@ class CullingPricingTierListView(APIView):
 
 class CreateCullingPaymentOrderView(APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [CheckoutRateThrottle]
 
     def post(self, request):
         session_id = request.data.get("session_id") or f"cull_{uuid.uuid4().hex[:12]}"
@@ -719,7 +711,6 @@ class CreateCullingPaymentOrderView(APIView):
 
 class VerifyCullingPaymentView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [CheckoutRateThrottle]
 
     def post(self, request):
         session_id = request.data.get("session_id") or request.data.get("sessionId")

@@ -20,8 +20,6 @@ from .subdomain_service import (
     build_direct_portfolio_url,
 )
 from .tasks import provision_subdomain_dns_task
-from App.Auth.auth_throttling import AvailabilityCheckRateThrottle
-from App.Storage.throttling import SubdomainClaimRateThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +44,6 @@ class SubdomainAvailabilityView(APIView):
     Note: An availability check does not reserve the name.
     """
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [AvailabilityCheckRateThrottle]
 
     def get(self, request):
         name = request.query_params.get('name', '').strip().lower()
@@ -145,7 +142,6 @@ class ClaimSubdomainView(APIView):
     - Returns HTTP 202 Accepted while provisioning is pending.
     """
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [SubdomainClaimRateThrottle]
 
     def put(self, request):
         return self._handle_claim(request)
@@ -387,7 +383,6 @@ class SubdomainRetryProvisioningView(APIView):
     - Returns HTTP 202 Accepted.
     """
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [SubdomainClaimRateThrottle]
 
     def post(self, request):
         profile = get_user_portfolio_config(request.user)
