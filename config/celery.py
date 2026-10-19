@@ -18,10 +18,22 @@ if sys.platform == "win32" or os.name == "nt":
     app.conf.worker_pool = "solo"
 
 
+from kombu import Queue
+
 # Use ExShare queue
 app.conf.task_default_queue = "exshare"
 app.conf.task_default_exchange = "exshare"
 app.conf.task_default_routing_key = "exshare"
+
+# Ensure all task queues are recognized and consumed by celery worker by default
+app.conf.task_queues = (
+    Queue("exshare"),
+    Queue("media_processing"),
+    Queue("zip_downloads"),
+    Queue("maintenance"),
+    Queue("face_recognition"),
+    Queue("ai_culling"),
+)
 
 # Dedicated Task Routing Queues to prevent head-of-line blocking
 app.conf.task_routes = {

@@ -2218,7 +2218,6 @@ def _upload_enqueue_photo(media_id):
         run_or_queue_task(
             process_media_derivatives_and_faces_task,
             media_id,
-            skip_sync_fallback=True,
         )
     except Exception:
         # Original is already committed. Do not report the upload as failed and
