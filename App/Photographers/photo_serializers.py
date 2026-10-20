@@ -2,30 +2,13 @@ from rest_framework import serializers
 from django.db.models import Count, Case, When
 
 from .photo_models import (
-    PhotoCategory,
     PhotographerProfile,
-    PhotographerPost,
-    PostImage,
-    PostFeedback,
-    Notification,
-    NotificationPreference,
     Inquiry,
+    PostImage
 )
 from .photo_utils import validate_non_nude_image
 from App.Auth.auth_models import User
 
-
-class PhotoCategorySerializer(serializers.ModelSerializer):
-    posts_count = serializers.SerializerMethodField()
-
-    class Meta:
-        model = PhotoCategory
-        fields = ['id', 'name', 'posts_count']
-
-    def get_posts_count(self, obj):
-        if hasattr(obj, 'posts_count_annotated'):
-            return obj.posts_count_annotated
-        return obj.posts.count()
 
 class PhotographerProfileSerializer(serializers.ModelSerializer):
     user_username = serializers.ReadOnlyField(source='user.username')
@@ -370,128 +353,6 @@ class WatermarkSettingsSerializer(serializers.ModelSerializer):
 WatermarkConfigSerializer = WatermarkSettingsSerializer
 
 
-class NotificationPreferenceSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = NotificationPreference
-        fields = [
-            'notify_client_visited',
-            'notify_photos_downloaded',
-            'notify_favorites_selected',
-            'notify_storage_alerts',
-            'notify_marketing_updates',
-        ]
-
-
-class NotificationSerializer(serializers.ModelSerializer):
-    username = serializers.ReadOnlyField(source='user.username')
-
-    class Meta:
-        model = Notification
-        fields = [
-            'id',
-            'user',
-            'username',
-            'photographer',
-            'title',
-            'message',
-            'event_type',
-            'related_gallery_id',
-            'is_read',
-            'created_at',
-        ]
-        read_only_fields = ['id', 'username', 'created_at']
-
-
-class PostImageSerializer(serializers.ModelSerializer):
-    image = serializers.ImageField(validators=[validate_non_nude_image])
-
-    class Meta:
-        model = PostImage
-        fields = ['id', 'post', 'image', 'created_at']
-        read_only_fields = ['id', 'created_at']
-
-    def validate_image(self, value):
-        return validate_non_nude_image(value)
-
-
-
-class PostFeedbackSerializer(serializers.ModelSerializer):
-    username = serializers.ReadOnlyField(source='user.username')
-
-    class Meta:
-        model = PostFeedback
-        fields = ['id', 'post', 'user', 'username', 'feedback', 'created_at']
-        read_only_fields = ['id', 'username', 'created_at']
-
-
-class PhotographerPostSerializer(serializers.ModelSerializer):
-    images = PostImageSerializer(many=True, read_only=True)
-    feedbacks = PostFeedbackSerializer(many=True, read_only=True)
-    feedback_count = serializers.SerializerMethodField()
-    photographer_name = serializers.ReadOnlyField(source='photographer.name')
-
-    def get_feedback_count(self, obj):
-        if hasattr(obj, '_prefetched_objects_cache') and 'feedbacks' in obj._prefetched_objects_cache:
-            return len(obj.feedbacks.all())
-        return obj.feedbacks.count()
-    photo_category_name = serializers.ReadOnlyField(source='photo_category.name')
-    uploaded_images = serializers.ListField(
-        child=serializers.ImageField(allow_empty_file=False, use_url=False, validators=[validate_non_nude_image]),
-        write_only=True,
-        required=False
-    )
-
-    def validate_uploaded_images(self, value):
-        if value:
-            for img in value:
-                validate_non_nude_image(img)
-        return value
-
-
-    class Meta:
-        model = PhotographerPost
-        fields = [
-            'id',
-            'photographer',
-            'photographer_name',
-            'photo_category',
-            'photo_category_name',
-            'caption',
-            'tech_details',
-            'images',
-            'uploaded_images',
-            'feedbacks',
-            'feedback_count',
-            'created_at',
-            'updated_at',
-        ]
-        read_only_fields = [
-            'id',
-            'photographer_name',
-            'photo_category_name',
-            'images',
-            'feedbacks',
-            'feedback_count',
-            'created_at',
-            'updated_at',
-        ]
-
-    def create(self, validated_data):
-        uploaded_images = validated_data.pop('uploaded_images', [])
-        post = PhotographerPost.objects.create(**validated_data)
-        for image in uploaded_images:
-            PostImage.objects.create(post=post, image=image)
-        return post
-
-    def update(self, instance, validated_data):
-        uploaded_images = validated_data.pop('uploaded_images', [])
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        for image in uploaded_images:
-            PostImage.objects.create(post=instance, image=image)
-        return instance
 
 
 class OnboardingSerializer(serializers.ModelSerializer):

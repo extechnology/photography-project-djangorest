@@ -2,29 +2,6 @@ from rest_framework import serializers
 from django.db import models
 from .models import CullingPricingTier, CullingSession, CullingPhoto, CullingCluster
 
- 
-class CullingPricingTierSerializer(serializers.ModelSerializer):
-    photosLimit = serializers.IntegerField(source="photos_limit")
-    isPopular = serializers.BooleanField(source="is_popular", required=False)
-    price = serializers.DecimalField(max_digits=10, decimal_places=2)
-
-    class Meta:
-        model = CullingPricingTier
-        fields = [
-            "id",
-            "name",
-            "price",
-            "photosLimit",
-            "badge",
-            "description",
-            "features",
-            "is_popular",
-            "isPopular",
-            "is_active",
-            "display_order",
-        ]
-
-
 class CullingPhotoSerializer(serializers.ModelSerializer):
     previewUrl = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()

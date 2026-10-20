@@ -27,12 +27,15 @@ class PortfolioWorkSerializer(serializers.ModelSerializer):
         ]
 
     def get_highlightMedia(self, obj):
-        photos = [p.photo_url for p in obj.photos.all()]
+        if hasattr(obj, '_prefetched_objects_cache') and 'photos' in obj._prefetched_objects_cache:
+            photos = [p.photo_url for p in obj._prefetched_objects_cache['photos']]
+        else:
+            photos = [p.photo_url for p in obj.photos.all()]
         return photos if photos else ([obj.cover_url] if obj.cover_url else [])
 
     def get_mediaCount(self, obj):
         if hasattr(obj, '_prefetched_objects_cache') and 'photos' in obj._prefetched_objects_cache:
-            count = len(obj.photos.all())
+            count = len(obj._prefetched_objects_cache['photos'])
         else:
             photos = list(obj.photos.all())
             count = len(photos)
@@ -140,6 +143,56 @@ class PortfolioConfigSerializer(serializers.ModelSerializer):
     def validate_whatsappNumber(self, value):
         return self.validate_whatsapp_number(value)
 
+    def validate_subdomain(self, value):
+        if not value:
+            return None
+        norm = str(value).strip().lower()
+        if not norm:
+            return None
+
+        from .models import validate_subdomain as model_validate_subdomain, ReservedSubdomain
+        from .subdomain_service import get_reserved_subdomains
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        # 1. Format validation
+        try:
+            model_validate_subdomain(norm)
+        except (DjangoValidationError, serializers.ValidationError) as e:
+            err_msg = str(e.messages[0]) if hasattr(e, 'messages') else str(e)
+            raise serializers.ValidationError(err_msg)
+
+        # 2. Check reserved infrastructure names
+        if norm in get_reserved_subdomains() or ReservedSubdomain.objects.filter(name=norm).exists():
+            raise serializers.ValidationError(f"The subdomain '{norm}' is reserved for platform infrastructure.")
+
+        # 3. Check uniqueness across existing portfolios
+        qs = PortfolioConfig.objects.filter(subdomain__iexact=norm)
+        if self.instance and self.instance.pk:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(f"The subdomain '{norm}' is already claimed by another portfolio.")
+
+        return norm
+
+    def update(self, instance, validated_data):
+        new_subdomain = validated_data.get('subdomain')
+        if new_subdomain is not None and new_subdomain != instance.subdomain:
+            from django.conf import settings
+            from django.utils import timezone
+            dns_provider = getattr(settings, 'PORTFOLIO_DNS_PROVIDER', 'wildcard').strip().lower()
+            if dns_provider == 'wildcard':
+                now = timezone.now()
+                instance.subdomain_status = PortfolioConfig.SubdomainStatus.ACTIVE
+                instance.subdomain_provisioned_at = now
+                instance.subdomain_dns_checked_at = now
+                instance.subdomain_dns_record_type = 'A'
+                instance.subdomain_dns_record_data = getattr(settings, 'PORTFOLIO_SERVER_IP', '31.97.232.245')
+                instance.subdomain_dns_provider = 'wildcard'
+                instance.subdomain_dns_managed = True
+                instance.subdomain_error = ''
+                instance.subdomain_retry_count = 0
+        return super().update(instance, validated_data)
+
     def to_representation(self, instance):
         ret = super().to_representation(instance)
         # Ensure default phone number fallback if whatsapp_number is not set
@@ -170,11 +223,21 @@ class PortfolioConfigSerializer(serializers.ModelSerializer):
 
 
 class SubdomainAvailabilityQuerySerializer(serializers.Serializer):
-    name = serializers.CharField(
-        required=True,
+    subdomain = serializers.CharField(
+        required=False,
         max_length=63,
         help_text="Subdomain label to check for availability."
     )
+    name = serializers.CharField(
+        required=False,
+        max_length=63,
+        help_text="Subdomain label to check for availability (alias for subdomain)."
+    )
+
+    def validate(self, attrs):
+        if not attrs.get('subdomain') and not attrs.get('name'):
+            raise serializers.ValidationError("Either 'subdomain' or 'name' parameter is required.")
+        return attrs
 
 
 class SubdomainClaimSerializer(serializers.Serializer):
@@ -222,24 +285,32 @@ class PortfolioInquirySerializer(serializers.ModelSerializer):
         return None
 
     def _check_is_locked(self, obj):
+        if hasattr(obj, '_is_locked_cached'):
+            return obj._is_locked_cached
         if hasattr(obj, '_is_locked'):
-            return bool(obj._is_locked)
+            val = bool(obj._is_locked)
+            obj._is_locked_cached = val
+            return val
         request = self.context.get('request')
         if not request or not getattr(request, 'user', None) or not request.user.is_authenticated:
+            obj._is_locked_cached = False
             return False
         if request.user.is_staff or request.user.is_superuser:
+            obj._is_locked_cached = False
             return False
         sub = getattr(request.user, 'subscription', None)
         plan = getattr(sub, 'plan', None) if sub else None
         if not plan:
+            obj._is_locked_cached = False
             return False
         if getattr(plan, 'has_full_inquiry_access', True):
+            obj._is_locked_cached = False
             return False
         index = getattr(obj, '_inquiry_index', None)
         max_inquiries = getattr(plan, 'max_inquiries', 10) or 10
-        if index is not None:
-            return index >= max_inquiries
-        return False
+        val = (index >= max_inquiries) if index is not None else False
+        obj._is_locked_cached = val
+        return val
 
     def get_is_locked(self, obj):
         return self._check_is_locked(obj)

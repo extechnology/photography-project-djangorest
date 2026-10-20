@@ -1,14 +1,10 @@
 from django.db import models
 from rest_framework import serializers
 from App.Storage.storage_models import (
-    SharedEvent,
-    EventPhoto,
     Gallery,
     GallerySection,
     GalleryAnalyticsEvent,
     Media,
-    GalleryClientSelection,
-    BulkDownloadJob,
 )
 from App.Storage.services.storage_service import get_storage_provider
 from gallery_favorites_api import GalleryDetailFavoritesMixin
@@ -18,186 +14,7 @@ from gallery_favorites_api import GalleryDetailFavoritesMixin
 # 1. Event Photo Sharing Serializers (Backward Compatibility)
 # =============================================================================
 
-class EventPhotoSerializer(serializers.ModelSerializer):
-    download_url = serializers.SerializerMethodField()
 
-    class Meta:
-        model = EventPhoto
-        fields = [
-            'id',
-            'event',
-            'image',
-            'original_filename',
-            'file_size',
-            'category_tag',
-            'caption',
-            'downloads_count',
-            'uploaded_at',
-            'download_url',
-        ]
-        read_only_fields = ['id', 'file_size', 'downloads_count', 'uploaded_at', 'download_url']
-
-    def get_download_url(self, obj):
-        request = self.context.get('request')
-        relative_url = f"/api/storage/photos/{obj.id}/download/"
-        if request:
-            return request.build_absolute_uri(relative_url)
-        return relative_url
-
-
-class SharedEventListSerializer(serializers.ModelSerializer):
-    photos_count = serializers.IntegerField(source='photos.count', read_only=True)
-    photographer_name = serializers.ReadOnlyField(source='photographer.name')
-    is_pin_protected = serializers.BooleanField(read_only=True)
-    share_url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = SharedEvent
-        fields = [
-            'id',
-            'title',
-            'event_type',
-            'event_date',
-            'venue',
-            'description',
-            'cover_image',
-            'access_code',
-            'is_pin_protected',
-            'is_public',
-            'allow_downloads',
-            'views_count',
-            'downloads_count',
-            'photos_count',
-            'photographer_name',
-            'share_url',
-            'created_at',
-            'updated_at',
-        ]
-        read_only_fields = [
-            'id',
-            'access_code',
-            'is_pin_protected',
-            'views_count',
-            'downloads_count',
-            'photos_count',
-            'photographer_name',
-            'share_url',
-            'created_at',
-            'updated_at',
-        ]
-
-    def get_share_url(self, obj):
-        request = self.context.get('request')
-        relative_url = f"/api/storage/share/{obj.access_code}/"
-        if request:
-            return request.build_absolute_uri(relative_url)
-        return relative_url
-
-
-class SharedEventDetailSerializer(serializers.ModelSerializer):
-    photos_count = serializers.IntegerField(source='photos.count', read_only=True)
-    photographer_name = serializers.ReadOnlyField(source='photographer.name')
-    is_pin_protected = serializers.BooleanField(read_only=True)
-    share_url = serializers.SerializerMethodField()
-    photos = EventPhotoSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = SharedEvent
-        fields = [
-            'id',
-            'photographer',
-            'photographer_name',
-            'title',
-            'event_type',
-            'event_date',
-            'venue',
-            'description',
-            'cover_image',
-            'access_code',
-            'pin_code',
-            'is_pin_protected',
-            'is_public',
-            'allow_downloads',
-            'views_count',
-            'downloads_count',
-            'photos_count',
-            'share_url',
-            'expiry_date',
-            'photos',
-            'created_at',
-            'updated_at',
-        ]
-        read_only_fields = [
-            'id',
-            'photographer',
-            'photographer_name',
-            'access_code',
-            'is_pin_protected',
-            'views_count',
-            'downloads_count',
-            'photos_count',
-            'share_url',
-            'photos',
-            'created_at',
-            'updated_at',
-        ]
-        extra_kwargs = {
-            'pin_code': {'write_only': True, 'required': False},
-        }
-
-    def get_share_url(self, obj):
-        request = self.context.get('request')
-        relative_url = f"/api/storage/share/{obj.access_code}/"
-        if request:
-            return request.build_absolute_uri(relative_url)
-        return relative_url
-
-
-class PublicSharedEventSerializer(serializers.ModelSerializer):
-    photos_count = serializers.IntegerField(source='photos.count', read_only=True)
-    photographer_name = serializers.ReadOnlyField(source='photographer.name')
-    is_pin_protected = serializers.BooleanField(read_only=True)
-    download_all_url = serializers.SerializerMethodField()
-    available_tags = serializers.SerializerMethodField()
-
-    class Meta:
-        model = SharedEvent
-        fields = [
-            'id',
-            'title',
-            'event_type',
-            'event_date',
-            'venue',
-            'description',
-            'cover_image',
-            'access_code',
-            'is_pin_protected',
-            'allow_downloads',
-            'photos_count',
-            'photographer_name',
-            'download_all_url',
-            'available_tags',
-            'created_at',
-        ]
-
-    def get_download_all_url(self, obj):
-        if not obj.allow_downloads:
-            return None
-        request = self.context.get('request')
-        relative_url = f"/api/storage/share/{obj.access_code}/download-all/"
-        if request:
-            return request.build_absolute_uri(relative_url)
-        return relative_url
-
-    def get_available_tags(self, obj):
-        return list(
-            obj.photos.exclude(category_tag='').values_list('category_tag', flat=True).distinct()
-        )
-
-
-# =============================================================================
-# 2. Enterprise Media, Gallery, and Quota Serializers (Version 2.0)
-# =============================================================================
 
 class MediaSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
@@ -1117,54 +934,6 @@ class PublicGallerySerializer(serializers.ModelSerializer):
             return MediaSerializer(qs, many=True, context=self.context).data
         return []
 
-
-class GalleryClientSelectionSerializer(serializers.ModelSerializer):
-    selected_media_items = serializers.SerializerMethodField()
-
-    class Meta:
-        model = GalleryClientSelection
-        fields = [
-            'id',
-            'gallery',
-            'client_name',
-            'client_email',
-            'selection_notes',
-            'status',
-            'selected_media',
-            'selected_media_items',
-            'submitted_at',
-            'reviewed_at',
-            'created_at',
-            'updated_at',
-        ]
-        read_only_fields = ['id', 'status', 'submitted_at', 'reviewed_at', 'created_at', 'updated_at']
-
-    def get_selected_media_items(self, obj):
-        return MediaSerializer(obj.selected_media.all(), many=True, context=self.context).data
-
-
-class DirectUploadInitItemSerializer(serializers.Serializer):
-    filename = serializers.CharField(max_length=255, required=False)
-    original_filename = serializers.CharField(max_length=255, required=False)
-    file_size = serializers.IntegerField(min_value=1)
-    mime_type = serializers.CharField(max_length=100, default='image/jpeg')
-    media_type = serializers.ChoiceField(choices=['photo', 'video'], default='photo')
-
-
-class DirectUploadConfirmSerializer(serializers.Serializer):
-    media_id = serializers.UUIDField(required=False)
-    reservation_id = serializers.UUIDField()
-    storage_key = serializers.CharField(max_length=512, required=False)
-    original_filename = serializers.CharField(max_length=255, required=False)
-    file_size = serializers.IntegerField(min_value=1, required=False)
-    mime_type = serializers.CharField(max_length=100, default='image/jpeg', required=False)
-    media_type = serializers.ChoiceField(choices=['photo', 'video'], default='photo', required=False)
-    aspect_ratio = serializers.FloatField(required=False)
-    width = serializers.IntegerField(required=False)
-    height = serializers.IntegerField(required=False)
-    duration = serializers.CharField(max_length=50, required=False)
-
-
 class GalleryDetailResponseSerializer(GalleryDetailFavoritesMixin, GallerySerializer):
     """
     Upgraded Gallery Serializer for Ex Share Atelier frontend.
@@ -1436,61 +1205,6 @@ class AnalyticsEventTrackSerializer(serializers.Serializer):
     device = serializers.CharField(max_length=30, required=False, default='desktop')
     traffic_source = serializers.CharField(max_length=30, required=False, default='direct_link')
     details = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-
-
-class BulkDownloadJobSerializer(serializers.ModelSerializer):
-    download_url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = BulkDownloadJob
-        fields = [
-            'id',
-            'gallery',
-            'download_type',
-            'status',
-            'selected_count',
-            'file_size',
-            'progress_percent',
-            'error_message',
-            'download_url',
-            'expires_at',
-            'created_at',
-        ]
-        read_only_fields = [
-            'id',
-            'status',
-            'selected_count',
-            'file_size',
-            'progress_percent',
-            'error_message',
-            'download_url',
-            'expires_at',
-            'created_at'
-        ]
-
-    def get_download_url(self, obj):
-        if obj.status == 'ready' and obj.archive_storage_key:
-            storage = get_storage_provider()
-            url = storage.generate_signed_download_url(
-                obj.archive_storage_key,
-                expires_in=86400,
-                filename=f"gallery_{obj.gallery_id}_photos.zip"
-            )
-            request = self.context.get('request')
-            if request and url and url.startswith('/'):
-                return request.build_absolute_uri(url)
-            return url
-        return None
-
-
-class StorageUsageSerializer(serializers.Serializer):
-    plan = serializers.CharField()
-    storage_used_bytes = serializers.IntegerField()
-    storage_reserved_bytes = serializers.IntegerField()
-    storage_limit_bytes = serializers.IntegerField()
-    storage_remaining_bytes = serializers.IntegerField()
-    usage_percentage = serializers.FloatField()
-
 
 # Explicit Aliases matching Frontend / Specification Naming
 GalleryListSerializer = GallerySerializer

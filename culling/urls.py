@@ -9,9 +9,6 @@ from .views import (
     MoveCullingToGalleryView,
     DiscardCullingSessionView,
     ExportCullingZipView,
-    CullingPricingTierListView,
-    CreateCullingPaymentOrderView,
-    VerifyCullingPaymentView,
 )
 
 urlpatterns = [
@@ -54,14 +51,5 @@ urlpatterns = [
     # 7. Keepers ZIP export
     path("sessions/<str:session_id>/export-zip/", ExportCullingZipView.as_view(), name="culling-export-zip"),
     path("sessions/<str:session_id>/export-zip", ExportCullingZipView.as_view(), name="culling-export-zip-noslash"),
-
-    # 8. Legacy Plan queries & Checkout (Maintained for backward compatibility)
-    path("plans/", CullingPricingTierListView.as_view(), name="culling-plans"),
-    path("pricing-tiers/", CullingPricingTierListView.as_view(), name="culling-pricing-tiers"),
-    path("checkout/order/", CreateCullingPaymentOrderView.as_view(), name="culling-checkout-order"),
-    path("checkout/order", CreateCullingPaymentOrderView.as_view(), name="culling-checkout-order-noslash"),
-    path("checkout/verify/", VerifyCullingPaymentView.as_view(), name="culling-checkout-verify"),
-    path("checkout/verify", VerifyCullingPaymentView.as_view(), name="culling-checkout-verify-noslash"),
-    path("verify/", VerifyCullingPaymentView.as_view(), name="culling-verify"),
-    path("verify", VerifyCullingPaymentView.as_view(), name="culling-verify-noslash"),
 ]
+

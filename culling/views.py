@@ -23,7 +23,6 @@ from .models import (
     CullingCluster,
 )
 from .serializers import (
-    CullingPricingTierSerializer,
     CullingPhotoSerializer,
     CullingClusterSerializer,
     ActiveCullingSessionSerializer,
@@ -673,54 +672,4 @@ class ExportCullingZipView(APIView):
         resp = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
         resp["Content-Disposition"] = f'attachment; filename="keepers_{session.id[:12]}.zip"'
         return resp
-
-
-# ─── 8. Backward Compatibility Endpoints ─────────────────────────────────────
-
-class CullingPricingTierListView(APIView):
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        tiers = CullingPricingTier.objects.filter(is_active=True).order_by("display_order", "price")
-        serializer = CullingPricingTierSerializer(tiers, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-class CreateCullingPaymentOrderView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        session_id = request.data.get("session_id") or f"cull_{uuid.uuid4().hex[:12]}"
-        session, _ = CullingSession.objects.get_or_create(
-            id=session_id,
-            defaults={"user": request.user, "title": "AI Smart Cull Session", "is_paid": True, "status": "staging"},
-        )
-        return Response(
-            {
-                "order_id": f"order_free_{uuid.uuid4().hex[:12]}",
-                "amount": 0,
-                "currency": "INR",
-                "key_id": getattr(settings, "RAZORPAY_KEY_ID", "rzp_test"),
-                "session_id": session.id,
-                "unlocked": True,
-                "message": "AI Smart Culling is included in your active subscription plan.",
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-class VerifyCullingPaymentView(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        session_id = request.data.get("session_id") or request.data.get("sessionId")
-        return Response(
-            {
-                "success": True,
-                "message": "AI Smart Culling is unlocked via your studio subscription plan.",
-                "is_paid": True,
-                "session_id": session_id,
-            },
-            status=status.HTTP_200_OK,
-        )
 

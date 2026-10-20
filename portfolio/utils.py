@@ -57,7 +57,7 @@ def get_or_create_starter_portfolio(user):
     )
 
     # 3. Seed starter projects if empty
-    if created or config.works.count() == 0:
+    if created or not config.works.exists():
         p1 = PortfolioWork.objects.create(
             portfolio=config,
             title='Royal Palace Udaipur Celebration',

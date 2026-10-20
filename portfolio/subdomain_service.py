@@ -18,10 +18,18 @@ DEFAULT_RESERVED_SUBDOMAINS = {
 SUBDOMAIN_REGEX = re.compile(r'^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$')
 
 
+import functools
+
+@functools.lru_cache(maxsize=16)
+def _get_reserved_subdomains_cached(configured_tuple: tuple) -> set[str]:
+    return DEFAULT_RESERVED_SUBDOMAINS.union(set(configured_tuple))
+
+
 def get_reserved_subdomains() -> set[str]:
     """Returns the set of all reserved infrastructure and service names."""
     configured = getattr(settings, 'RESERVED_SUBDOMAINS', []) or []
-    return DEFAULT_RESERVED_SUBDOMAINS.union(set(str(c).strip().lower() for c in configured if c))
+    cleaned_tuple = tuple(sorted(str(c).strip().lower() for c in configured if c))
+    return _get_reserved_subdomains_cached(cleaned_tuple)
 
 
 def normalize_subdomain(name: Optional[str]) -> str:

@@ -39,21 +39,38 @@ def get_user_portfolio_config(user) -> PortfolioConfig:
 
 class SubdomainAvailabilityView(APIView):
     """
-    GET /api/portfolio/subdomain/availability/?name={name}
+    GET  /api/portfolio/subdomain/availability/?subdomain={slug} (or ?name={name})
+    POST /api/portfolio/subdomain/availability/ {"subdomain": "{slug}"}
     Debounced endpoint to check if a subdomain name is available for registration.
     Note: An availability check does not reserve the name.
     """
     permission_classes = [permissions.IsAuthenticated]
 
+    def _extract_name(self, request) -> str:
+        name = (
+            request.query_params.get('subdomain')
+            or request.query_params.get('name')
+        )
+        if not name and hasattr(request, 'data') and isinstance(request.data, dict):
+            name = request.data.get('subdomain') or request.data.get('name')
+        return (name or '').strip().lower()
+
+    def post(self, request):
+        return self.get(request)
+
     def get(self, request):
-        name = request.query_params.get('name', '').strip().lower()
+        name = self._extract_name(request)
         if not name:
             return Response(
                 {
+                    "subdomain": "",
                     "name": "",
                     "available": False,
+                    "url": "",
+                    "message": "Subdomain name is required.",
                     "reason": "Subdomain name is required.",
-                    "code": "MISSING_NAME_PARAMETER"
+                    "code": "MISSING_NAME_PARAMETER",
+                    "error": "Subdomain name is required.",
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -66,8 +83,11 @@ class SubdomainAvailabilityView(APIView):
             is_reserved = 'reserved' in err_msg.lower()
             return Response(
                 {
+                    "subdomain": name,
                     "name": name,
                     "available": False,
+                    "url": build_subdomain_live_url(name, request=request),
+                    "message": err_msg,
                     "reason": "reserved" if is_reserved else "invalid_format",
                     "error": err_msg,
                     "is_current_owner": False,
@@ -75,27 +95,43 @@ class SubdomainAvailabilityView(APIView):
                 status=status.HTTP_200_OK
             )
 
-        # 2. Check ownership
-        current_profile = get_user_portfolio_config(request.user)
-        if current_profile.subdomain and current_profile.subdomain.lower() == name:
-            return Response(
-                {
-                    "name": name,
-                    "available": True,
-                    "reason": None,
-                    "is_current_owner": True,
-                    "status": current_profile.subdomain_status,
-                },
-                status=status.HTTP_200_OK
-            )
+        # 2. Check ownership (if authenticated user)
+        if request.user and request.user.is_authenticated:
+            current_profile = getattr(request.user, 'portfolio_config', None)
+            if not current_profile and hasattr(request.user, 'photographer_profile'):
+                current_profile = getattr(request.user.photographer_profile, 'portfolio_config', None)
+            if not current_profile:
+                current_profile = PortfolioConfig.objects.filter(user=request.user).first()
 
-        # 3. Check dynamic reserved table & static list
+            if current_profile and current_profile.subdomain and current_profile.subdomain.lower() == name:
+                full_domain = current_profile.get_full_domain(request=request)
+                live_url = current_profile.get_public_url(request=request)
+                return Response(
+                    {
+                        "subdomain": name,
+                        "name": name,
+                        "available": True,
+                        "url": live_url,
+                        "live_url": live_url,
+                        "domain": full_domain,
+                        "message": "Subdomain is currently assigned to your portfolio",
+                        "reason": None,
+                        "is_current_owner": True,
+                        "status": current_profile.subdomain_status,
+                    },
+                    status=status.HTTP_200_OK
+                )
+
+        # 3. Check static reserved infrastructure list
         reserved_set = get_reserved_subdomains()
-        if name in reserved_set or ReservedSubdomain.objects.filter(name=name).exists():
+        if name in reserved_set:
             return Response(
                 {
+                    "subdomain": name,
                     "name": name,
                     "available": False,
+                    "url": build_subdomain_live_url(name, request=request),
+                    "message": f"The name '{name}' is reserved for platform infrastructure.",
                     "reason": "reserved",
                     "error": "This name is reserved for platform infrastructure.",
                     "is_current_owner": False,
@@ -107,9 +143,13 @@ class SubdomainAvailabilityView(APIView):
         if PortfolioConfig.objects.filter(subdomain__iexact=name).exists():
             return Response(
                 {
+                    "subdomain": name,
                     "name": name,
                     "available": False,
+                    "url": build_subdomain_live_url(name, request=request),
+                    "message": f"Subdomain '{name}' is already taken",
                     "reason": "already_taken",
+                    "error": "This subdomain is already claimed.",
                     "is_current_owner": False,
                 },
                 status=status.HTTP_200_OK
@@ -119,13 +159,15 @@ class SubdomainAvailabilityView(APIView):
         live_url = build_subdomain_live_url(name, request=request)
         return Response(
             {
+                "subdomain": name,
                 "name": name,
                 "available": True,
-                "reason": None,
-                "is_current_owner": False,
-                "domain": full_domain,
                 "url": live_url,
                 "live_url": live_url,
+                "domain": full_domain,
+                "message": "Subdomain is available",
+                "reason": None,
+                "is_current_owner": False,
             },
             status=status.HTTP_200_OK
         )

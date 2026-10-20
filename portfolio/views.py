@@ -6,7 +6,8 @@ import logging
 from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction, IntegrityError
-from django.db.models import Q, Count, Case, When
+from django.db.models import Q, Count, Case, When, Prefetch
+from django.db.models.functions import TruncDate
 from django.shortcuts import get_object_or_404
 from django.core.files.storage import default_storage
 from django.contrib.auth import get_user_model
@@ -131,6 +132,17 @@ class PortfolioConfigView(APIView):
 
     def get(self, request):
         config = get_or_create_starter_portfolio(request.user)
+        config = (
+            PortfolioConfig.objects
+            .select_related('user')
+            .prefetch_related(
+                Prefetch(
+                    'works',
+                    queryset=PortfolioWork.objects.order_by('order', 'id').prefetch_related('photos')
+                )
+            )
+            .get(id=config.id)
+        )
         serializer = PortfolioConfigSerializer(config, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -213,55 +225,92 @@ class PortfolioConfigView(APIView):
 class PublicPortfolioDetailView(APIView):
     """
     GET /api/public/portfolio/{photographer_slug}/
-    Public endpoint with AllowAny permission. Retrieves portfolio details,
-    signature template, and featured works with expandable event photos.
+    GET /api/public/portfolios/{photographer_slug}/
+    Public endpoint with AllowAny permission. Resolves portfolio by subdomain,
+    username, or ID, enforcing that unpublished portfolios return 404.
+    Optimized with select_related('user') and prefetch_related('works__photos').
     """
     permission_classes = [AllowAny]
 
     def get(self, request, photographer_slug):
         slug = (photographer_slug or '').strip()
-        user = None
+        if not slug:
+            return Response(
+                {
+                    "error": "Photographer portfolio not found",
+                    "detail": "No portfolio identifier provided."
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # 1. Lookup by username
-        user = User.objects.filter(username__iexact=slug).first()
+        base_qs = (
+            PortfolioConfig.objects
+            .select_related('user')
+            .prefetch_related(
+                Prefetch(
+                    'works',
+                    queryset=PortfolioWork.objects.order_by('order', 'id').prefetch_related('photos')
+                )
+            )
+        )
 
-        # 2. Lookup by numeric ID
-        if not user and slug.isdigit():
-            user = User.objects.filter(pk=int(slug)).first()
+        # 1. Primary: Lookup by exact subdomain label (optimized single roundtrip for majority of visits)
+        config = base_qs.filter(subdomain__iexact=slug).first()
 
-        # 3. Lookup by unique_id (UUID)
-        if not user:
-            try:
-                uuid_obj = uuid.UUID(slug)
-                user = User.objects.filter(unique_id=uuid_obj).first()
-            except (ValueError, TypeError):
-                pass
+        # 2. Optimized fallback lookup across secondary identifiers
+        if not config:
+            fallback_filter = Q(user__username__iexact=slug) | Q(custom_domain__iexact=slug) | Q(studio_name__iexact=slug)
+            if slug.isdigit():
+                fallback_filter |= Q(user__pk=int(slug))
+            else:
+                try:
+                    uuid_obj = uuid.UUID(slug)
+                    fallback_filter |= Q(user__unique_id=uuid_obj)
+                except (ValueError, TypeError):
+                    pass
 
-        # 4. Lookup by subdomain in PortfolioConfig
-        if not user:
-            cfg = PortfolioConfig.objects.filter(subdomain__iexact=slug).first()
-            if cfg:
-                user = cfg.user
+            matched_id = PortfolioConfig.objects.filter(fallback_filter).values_list('id', flat=True).first()
+            if not matched_id:
+                try:
+                    from App.Photographers.photo_models import PhotographerProfile
+                    prof = PhotographerProfile.objects.filter(
+                        Q(studio_name__iexact=slug) | Q(name__iexact=slug)
+                    ).select_related('user').first()
+                    if prof and prof.user:
+                        matched_id = PortfolioConfig.objects.filter(user=prof.user).values_list('id', flat=True).first()
+                except Exception:
+                    pass
 
-        # 5. Lookup by studio_name in PortfolioConfig
-        if not user:
-            cfg = PortfolioConfig.objects.filter(studio_name__iexact=slug).first()
-            if cfg:
-                user = cfg.user
+            if not matched_id:
+                # 3. Check if slug matches an existing photographer user whose portfolio should be auto-created
+                target_user = User.objects.filter(username__iexact=slug).first()
+                if not target_user and slug.isdigit():
+                    target_user = User.objects.filter(pk=int(slug)).first()
+                if not target_user:
+                    try:
+                        uuid_obj = uuid.UUID(slug)
+                        target_user = User.objects.filter(unique_id=uuid_obj).first()
+                    except (ValueError, TypeError):
+                        pass
+                if not target_user:
+                    try:
+                        from App.Photographers.photo_models import PhotographerProfile
+                        prof = PhotographerProfile.objects.filter(
+                            Q(studio_name__iexact=slug) | Q(name__iexact=slug)
+                        ).select_related('user').first()
+                        if prof and prof.user:
+                            target_user = prof.user
+                    except Exception:
+                        pass
 
-        # 6. Lookup by PhotographerProfile studio_name or name
-        if not user:
-            try:
-                from App.Photographers.photo_models import PhotographerProfile
-                prof = PhotographerProfile.objects.filter(
-                    Q(studio_name__iexact=slug) | Q(name__iexact=slug)
-                ).first()
-                if prof and prof.user:
-                    user = prof.user
-            except Exception:
-                pass
+                if target_user:
+                    cfg = get_or_create_starter_portfolio(target_user)
+                    matched_id = cfg.id
 
-        if not user:
+            if matched_id:
+                config = base_qs.filter(id=matched_id).first()
+
+        if not config:
             return Response(
                 {
                     "error": "Photographer portfolio not found",
@@ -270,7 +319,16 @@ class PublicPortfolioDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        config = get_or_create_starter_portfolio(user)
+        # Enforce published state: unpublished portfolios are private and return 404
+        if not config.is_published:
+            return Response(
+                {
+                    "error": "Portfolio is unpublished",
+                    "detail": f"The portfolio for '{photographer_slug}' is currently private or unpublished."
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
         serializer = PortfolioConfigSerializer(config, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -358,7 +416,7 @@ class PortfolioWorkDetailView(APIView):
         return PortfolioWork.objects.filter(
             id=work_id,
             portfolio__user=request.user
-        ).first()
+        ).prefetch_related('photos').first()
 
     def get(self, request, work_id):
         work = self._get_work(request, work_id)
@@ -452,9 +510,20 @@ class PortfolioWorkPhotosView(APIView):
             )
 
         # 2. Check for URL list in JSON payload
-        urls = request.data.get('photos') or request.data.get('photo_urls') or []
-        if isinstance(urls, str):
-            urls = [urls]
+        urls = []
+        if not uploaded_files:
+            raw_urls = request.data.get('photos') or request.data.get('photo_urls') or []
+            if isinstance(raw_urls, str):
+                urls = [raw_urls]
+            elif isinstance(raw_urls, (list, tuple)):
+                urls = [u for u in raw_urls if isinstance(u, str)]
+        elif request.data.get('photo_urls'):
+            raw_urls = request.data.get('photo_urls')
+            if isinstance(raw_urls, str):
+                urls = [raw_urls]
+            elif isinstance(raw_urls, (list, tuple)):
+                urls = [u for u in raw_urls if isinstance(u, str)]
+
         for u in urls:
             if isinstance(u, str) and u.strip():
                 current_order += 1
@@ -1112,33 +1181,63 @@ class PortfolioAnalyticsView(APIView):
         else:
             views_by_device = {'desktop': 0, 'mobile': 0, 'tablet': 0}
 
-        # 7-day Traffic Curve
+        # 7-day Traffic Curve: single aggregated query instead of 7 sequential count queries
+        earliest_start = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+        daily_counts = dict(
+            visits.filter(created_at__gte=earliest_start)
+            .annotate(date=TruncDate('created_at'))
+            .values('date')
+            .annotate(count=Count('id'))
+            .values_list('date', 'count')
+        )
         chart_labels = []
         chart_points = []
         for i in range(6, -1, -1):
             day_start = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
-            day_end = day_start + timedelta(days=1)
             chart_labels.append(day_start.strftime('%a'))
-            day_views = visits.filter(created_at__range=(day_start, day_end)).count()
-            chart_points.append(day_views)
+            chart_points.append(daily_counts.get(day_start.date(), 0))
 
         # Top Viewed Projects
-        top_projects_qs = visits.exclude(project_id__isnull=True).exclude(project_id='').values(
-            'project_id', 'project_title'
-        ).annotate(views=Count('id')).order_by('-views')[:5]
+        top_projects_qs = list(
+            visits.exclude(project_id__isnull=True).exclude(project_id='').values(
+                'project_id', 'project_title'
+            ).annotate(views=Count('id')).order_by('-views')[:5]
+        )
 
         top_viewed_projects = []
         seen_pids = set()
+        int_pids = []
+        all_pids = []
         for p in top_projects_qs:
             pid = str(p['project_id'])
             seen_pids.add(pid)
+            all_pids.append(pid)
+            if pid.isdigit():
+                int_pids.append(int(pid))
+
+        # Batch-fetch works and inquiry counts in 2 single queries instead of 2*N in-loop queries
+        works_by_id = {}
+        if int_pids:
+            works_by_id = {
+                w.id: w for w in PortfolioWork.objects.filter(id__in=int_pids, portfolio__user=photographer)
+            }
+        inquiries_by_pid = {}
+        if all_pids:
+            inquiries_by_pid = dict(
+                inquiries.filter(project_id__in=all_pids)
+                .values('project_id')
+                .annotate(count=Count('id'))
+                .values_list('project_id', 'count')
+            )
+
+        for p in top_projects_qs:
+            pid = str(p['project_id'])
             title = p['project_title']
             category = "Weddings"
-            if pid.isdigit():
-                work = PortfolioWork.objects.filter(id=int(pid), portfolio__user=photographer).first()
-                if work:
-                    title = title or work.title
-                    category = work.category.title()
+            if pid.isdigit() and int(pid) in works_by_id:
+                work = works_by_id[int(pid)]
+                title = title or work.title
+                category = work.category.title()
             elif not title:
                 title = pid.replace('proj-', '').replace('-', ' ').title()
 
@@ -1147,22 +1246,30 @@ class PortfolioAnalyticsView(APIView):
                 "title": title or 'Showcase Project',
                 "category": category,
                 "views": p['views'],
-                "inquiries_generated": inquiries.filter(project_id=pid).count()
+                "inquiries_generated": inquiries_by_pid.get(pid, 0)
             })
 
         # Fill with existing portfolio works if fewer than 2
         if len(top_viewed_projects) < 2:
-            existing_works = PortfolioWork.objects.filter(portfolio__user=photographer).exclude(
+            existing_works = list(PortfolioWork.objects.filter(portfolio__user=photographer).exclude(
                 id__in=[int(i) for i in seen_pids if i.isdigit()]
-            )[:2 - len(top_viewed_projects)]
-            for ew in existing_works:
-                top_viewed_projects.append({
-                    'id': str(ew.id),
-                    'title': ew.title,
-                    'category': ew.category.title(),
-                    'views': 0,
-                    'inquiries_generated': inquiries.filter(project_id=str(ew.id)).count()
-                })
+            )[:2 - len(top_viewed_projects)])
+            if existing_works:
+                ew_pids = [str(ew.id) for ew in existing_works]
+                ew_inquiries = dict(
+                    inquiries.filter(project_id__in=ew_pids)
+                    .values('project_id')
+                    .annotate(count=Count('id'))
+                    .values_list('project_id', 'count')
+                )
+                for ew in existing_works:
+                    top_viewed_projects.append({
+                        'id': str(ew.id),
+                        'title': ew.title,
+                        'category': ew.category.title(),
+                        'views': 0,
+                        'inquiries_generated': ew_inquiries.get(str(ew.id), 0)
+                    })
 
         # Recent visitors (last 10 sessions)
         recent_visitors = []
@@ -1231,11 +1338,17 @@ class PublicPortfolioTrackView(APIView):
         # 1. Lookup photographer by username
         user = User.objects.filter(username__iexact=slug_clean).first()
 
-        # 2. Lookup by numeric ID
+        # 2. Optimized secondary lookups across subdomain, ID, UUID, and studio name
+        if not user:
+            cfg = PortfolioConfig.objects.select_related('user').filter(
+                Q(subdomain__iexact=slug_clean) | Q(studio_name__iexact=slug_clean)
+            ).first()
+            if cfg:
+                user = cfg.user
+
         if not user and slug_clean.isdigit():
             user = User.objects.filter(pk=int(slug_clean)).first()
 
-        # 3. Lookup by UUID
         if not user:
             try:
                 uuid_obj = uuid.UUID(slug_clean)
@@ -1243,17 +1356,10 @@ class PublicPortfolioTrackView(APIView):
             except (ValueError, TypeError):
                 pass
 
-        # 4. Lookup by studio_name in PortfolioConfig
-        if not user:
-            cfg = PortfolioConfig.objects.filter(studio_name__iexact=slug_clean).first()
-            if cfg:
-                user = cfg.user
-
-        # 5. Lookup by PhotographerProfile
         if not user:
             try:
                 from App.Photographers.photo_models import PhotographerProfile
-                prof = PhotographerProfile.objects.filter(
+                prof = PhotographerProfile.objects.select_related('user').filter(
                     Q(studio_name__iexact=slug_clean) | Q(name__iexact=slug_clean)
                 ).first()
                 if prof and prof.user:

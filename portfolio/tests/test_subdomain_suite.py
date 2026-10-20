@@ -381,3 +381,87 @@ class PublicTenantHostRoutingTests(APITestCase):
         data = res.json()
         self.assertEqual(data['subdomain'], 'elena')
         self.assertEqual(data['studio_name'], 'Elena Rostova Studio')
+
+    def test_subdomain_availability_with_subdomain_param(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get('/api/portfolio/subdomain/availability/?subdomain=mrudul')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['subdomain'], 'mrudul')
+        self.assertTrue(data['available'])
+        self.assertEqual(data['url'], 'https://mrudul.exshare.ai')
+        self.assertEqual(data['message'], 'Subdomain is available')
+
+    def test_subdomain_availability_post_method(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post('/api/portfolio/subdomain/availability/', data={'subdomain': 'mrudul'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['subdomain'], 'mrudul')
+        self.assertTrue(data['available'])
+
+    def test_subdomain_availability_case_insensitive_duplicate(self):
+        # When another user checks an existing subdomain in uppercase, it is reported as taken
+        self.client.force_authenticate(user=self.unpublished_user)
+        res = self.client.get('/api/portfolio/subdomain/availability/?subdomain=ELENA')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['subdomain'], 'elena')
+        self.assertFalse(data['available'])
+        self.assertEqual(data['reason'], 'already_taken')
+
+        # When the owner checks their own subdomain, it reports available with is_current_owner=True
+        self.client.force_authenticate(user=self.user)
+        owner_res = self.client.get('/api/portfolio/subdomain/availability/?subdomain=ELENA')
+        self.assertEqual(owner_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(owner_res.json()['available'])
+        self.assertTrue(owner_res.json()['is_current_owner'])
+
+    def test_subdomain_availability_reserved_rejection(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get('/api/portfolio/subdomain/availability/?subdomain=admin')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertFalse(data['available'])
+        self.assertEqual(data['reason'], 'reserved')
+
+    def test_subdomain_availability_invalid_format(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get('/api/portfolio/subdomain/availability/?subdomain=-bad-')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertFalse(data['available'])
+        self.assertEqual(data['reason'], 'invalid_format')
+
+    def test_public_portfolios_plural_route_published(self):
+        res = self.client.get('/api/public/portfolios/elena/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['subdomain'], 'elena')
+
+    def test_public_portfolios_plural_route_unpublished_404(self):
+        res = self.client.get('/api/public/portfolios/draft/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        data = res.json()
+        self.assertEqual(data['error'], 'Portfolio is unpublished')
+
+    def test_public_portfolio_nonexistent_slug_404(self):
+        res = self.client.get('/api/public/portfolios/unknownslug404/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_portfolio_config_subdomain_serializer_validation(self):
+        self.client.force_authenticate(user=self.unpublished_user)
+        # 1. Reject reserved
+        res = self.client.put('/api/portfolio/config/', data={'subdomain': 'admin'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 2. Reject duplicate taken by another user
+        res = self.client.put('/api/portfolio/config/', data={'subdomain': 'elena'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 3. Accept valid new subdomain
+        res = self.client.put('/api/portfolio/config/', data={'subdomain': 'validnewsub'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual(data['subdomain'], 'validnewsub')
+        self.assertEqual(data['subdomain_status'], 'active')

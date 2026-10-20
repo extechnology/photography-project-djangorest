@@ -17,7 +17,7 @@ class PublicTenantPortfolioView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        profile = get_tenant_profile(request)
+        profile = get_tenant_profile(request, prefetch_works=True)
         if not profile or not profile.is_published:
             return Response({
                 "detail": "Portfolio showcase not found for this domain.",
@@ -29,11 +29,9 @@ class PublicTenantPortfolioView(APIView):
         featured_works = []
         if hasattr(profile, 'works'):
             works_qs = profile.works.all()
-            if hasattr(works_qs.model, 'is_published'):
-                works_qs = works_qs.filter(is_published=True)
-
             for p in works_qs:
-                photos_qs = p.photos.all() if hasattr(p, 'photos') else []
+                photos_list = list(p.photos.all()) if hasattr(p, 'photos') else []
+                photos_urls = [ph.photo_url for ph in photos_list]
                 featured_works.append({
                     "id": str(p.id),
                     "title": p.title,
@@ -44,8 +42,8 @@ class PublicTenantPortfolioView(APIView):
                     "description": getattr(p, 'description', ''),
                     "clientName": getattr(p, 'client_name', '') or '',
                     "gallerySlug": getattr(p, 'gallery_slug', '') if hasattr(p, 'gallery_slug') else '',
-                    "mediaCount": photos_qs.count() if hasattr(photos_qs, 'count') else len(photos_qs),
-                    "highlightMedia": list(photos_qs.values_list('photo_url', flat=True)) if hasattr(photos_qs, 'values_list') else [],
+                    "mediaCount": len(photos_list),
+                    "highlightMedia": photos_urls,
                 })
 
         artist_display = (

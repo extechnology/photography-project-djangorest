@@ -1,29 +1,13 @@
 from django.urls import path
 from App.Storage.storage_views import (
-    # Backward compatible event views
-    SharedEventListCreateView,
-    SharedEventDetailView,
-    EventBulkPhotoUploadView,
-    EventZipPhotoUploadView,
-    EventPhotoDeleteView,
-    EventPhotoBulkDeleteView,
-    PublicEventGalleryView,
-    PublicEventVerifyPinView,
-    PublicPhotoDownloadView,
-    PublicEventDownloadAllZipView,
-    PublicEventQRView,
-
-    # Enterprise Photographer Gallery Views
+    # Gallery Management Views
     GalleryListCreateView,
     GalleryDetailView,
     GalleryRestoreView,
-    GalleryShareView,
     GalleryTemplateUpdateView,
     GalleryBannerUpdateView,
     GalleryMasonrySlotBannerView,
-    GallerySetCoverView,
     GalleryCoverUpdateView,
-    GalleryReorderMediaView,
     GalleryMediaReorderView,
     GalleryMoveMediaSectionView,
     GallerySectionListCreateView,
@@ -35,49 +19,20 @@ from App.Storage.storage_views import (
     GalleryAnalyticsEventTrackView,
     GalleryAnalyticsExportCsvView,
     GalleryShareDetailsView,
-    GalleryMediaListView,
 
-    # Enterprise Media Uploads & Management
-    DirectUploadInitView,
-    DirectUploadConfirmView,
+    # Media Uploads & Management
     StandardMediaUploadView,
     MediaDetailDeleteView,
     MediaBulkDeleteView,
-    MediaToggleFavoriteView,
-)
-from App.Storage.resumable_views import (
-    ResumableUploadInitView,
-    ResumableUploadChunkView,
-    ResumableUploadStatusView,
-    ResumableUploadCompleteView,
-    ResumableUploadCancelView,
-    DirectUploadExecuteView,
-    DirectMediaFileServeView,
-)
-from App.Storage.storage_views import (
-    # Enterprise Public & Client Access
+
+    # Public Client Access
     PublicGallerySlugOrIdView,
     PublicGalleryDownloadZipView,
-    download_gallery_zip,
     PublicGalleryVerifyPinView,
     PublicGalleryTrackView,
-    SharedGalleryView,
-    VerifyGalleryPasswordView,
 
-    # Client Proofing & Selections
-    ClientSelectionListCreateView,
-    ClientSelectionSubmitView,
-
-    # Enterprise Secure Downloads
-    MediaDownloadView,
-    GalleryBulkDownloadView,
-    BulkDownloadJobStatusView,
-
-    # Enterprise Face Discovery
+    # Face Discovery
     GalleryFaceSearchView,
-
-    # Enterprise Storage Usage
-    PhotographerStorageUsageView,
 )
 from galleries.views.bulk_favorite import BulkMediaFavoriteAPIView
 from galleries.views_upload import (
@@ -85,53 +40,36 @@ from galleries.views_upload import (
     GalleryUploadResumeStatusView,
 )
 
-
 urlpatterns = [
     # -------------------------------------------------------------------------
-    # Backward Compatible Photo Sharing Routes
-    # -------------------------------------------------------------------------
-    path('events/', SharedEventListCreateView.as_view(), name='shared-event-list-create'),
-    path('events/<int:pk>/', SharedEventDetailView.as_view(), name='shared-event-detail'),
-    path('events/<int:event_id>/upload/', EventBulkPhotoUploadView.as_view(), name='event-bulk-photo-upload'),
-    path('events/<int:event_id>/upload-zip/', EventZipPhotoUploadView.as_view(), name='event-zip-photo-upload'),
-    path('events/<int:event_id>/photos/bulk-delete/', EventPhotoBulkDeleteView.as_view(), name='event-photo-bulk-delete'),
-    path('photos/<int:pk>/delete/', EventPhotoDeleteView.as_view(), name='event-photo-delete'),
-    path('share/<str:access_code>/', PublicEventGalleryView.as_view(), name='public-event-gallery'),
-    path('share/<str:access_code>/verify-pin/', PublicEventVerifyPinView.as_view(), name='public-event-verify-pin'),
-    path('share/<str:access_code>/download-all/', PublicEventDownloadAllZipView.as_view(), name='public-event-download-all'),
-    path('share/<str:access_code>/qr/', PublicEventQRView.as_view(), name='public-event-qr'),
-    path('photos/<int:photo_id>/download/', PublicPhotoDownloadView.as_view(), name='public-photo-download'),
-
-    # -------------------------------------------------------------------------
-    # Enterprise Gallery Management APIs (Photographer Dashboard & Atelier Suite)
+    # Galleries Management (Frontend API Contract)
     # -------------------------------------------------------------------------
     path('galleries/', GalleryListCreateView.as_view(), name='gallery-list-create'),
 
-    # Custom Section Management
+    # Sections
     path('galleries/<str:gallery_id>/sections/', GallerySectionListCreateView.as_view(), name='gallery-sections-list-create'),
     path('galleries/<str:gallery_id>/sections/rename/', GallerySectionRenameView.as_view(), name='gallery-sections-rename'),
     path('galleries/<str:gallery_id>/sections/reorder/', GallerySectionReorderView.as_view(), name='gallery-sections-reorder'),
     path('galleries/<str:gallery_id>/sections/<str:section_title>/', GallerySectionDetailDeleteView.as_view(), name='gallery-section-delete'),
 
-    # Move Photos Between Sections
+    # Move Media Section
     path('galleries/<str:gallery_id>/media/move-section/', GalleryMoveMediaSectionView.as_view(), name='gallery-media-move-section'),
 
-    # Design & Layout Customization
+    # Layout, Cover & Template
     path('galleries/<str:gallery_id>/template/', GalleryTemplateUpdateView.as_view(), name='gallery-template-update'),
     path('galleries/<str:gallery_id>/banners/', GalleryBannerUpdateView.as_view(), name='gallery-banners-update'),
     path('galleries/<str:gallery_id>/masonry-slots/', GalleryMasonrySlotBannerView.as_view(), name='gallery-masonry-slots'),
     path('galleries/<str:gallery_id>/cover/', GalleryCoverUpdateView.as_view(), name='gallery-cover-update'),
-    path('galleries/<str:gallery_id>/set-cover/', GallerySetCoverView.as_view(), name='gallery-set-cover'),
 
     # Media Reordering & Favorites
     path('galleries/<str:gallery_id>/media/reorder/', GalleryMediaReorderView.as_view(), name='gallery-media-reorder'),
-    path('galleries/<str:gallery_id>/reorder-media/', GalleryReorderMediaView.as_view(), name='gallery-reorder-media'),
     path('galleries/<str:gallery_id>/media/<uuid:media_id>/favorite/', GalleryMediaFavoriteToggleView.as_view(), name='gallery-media-toggle-favorite'),
     path('galleries/<uuid:gallery_id>/media/bulk-favorite/', BulkMediaFavoriteAPIView.as_view(), name='storage-gallery-media-bulk-favorite'),
     path('galleries/<str:gallery_id>/media/bulk-favorite/', BulkMediaFavoriteAPIView.as_view(), name='storage-gallery-media-bulk-favorite-str'),
     path('galleries/media/bulk-favorite/', BulkMediaFavoriteAPIView.as_view(), name='storage-gallery-media-bulk-favorite-flat'),
 
-    # High-Performance Batch Chunked Uploads & Resume Status
+    # High-Performance Batch Chunked Uploads & Direct Media Ingestion
+    path('galleries/<str:gallery_id>/upload/', StandardMediaUploadView.as_view(), name='standard-media-upload'),
     path('galleries/<uuid:gallery_id>/media/bulk-upload/', BulkUploadGalleryMediaView.as_view(), name='storage-gallery-media-bulk-upload-uuid'),
     path('galleries/<str:gallery_id>/media/bulk-upload/', BulkUploadGalleryMediaView.as_view(), name='storage-gallery-media-bulk-upload'),
     path('galleries/<uuid:gallery_id>/upload-status/', GalleryUploadResumeStatusView.as_view(), name='storage-gallery-upload-status-uuid'),
@@ -142,100 +80,34 @@ urlpatterns = [
     path('galleries/<str:gallery_id>/analytics/event/', GalleryAnalyticsEventTrackView.as_view(), name='gallery-analytics-event-track'),
     path('galleries/<str:gallery_id>/analytics/export-csv/', GalleryAnalyticsExportCsvView.as_view(), name='gallery-analytics-export-csv'),
 
-    # Share & Client Access Controls
+    # Share Link & QR Metadata
     path('galleries/<str:gallery_id>/share-details/', GalleryShareDetailsView.as_view(), name='gallery-share-details'),
-    path('galleries/<str:gallery_id>/share/', GalleryShareView.as_view(), name='gallery-share'),
 
-    # Enterprise Media Uploads & Direct-to-Storage
-    path('galleries/upload/', StandardMediaUploadView.as_view(), name='gallery-upload-direct'),
-    path('galleries/<str:gallery_id>/upload-init/', DirectUploadInitView.as_view(), name='direct-upload-init'),
-    path('galleries/<str:gallery_id>/upload-confirm/', DirectUploadConfirmView.as_view(), name='direct-upload-confirm'),
-    path('galleries/<str:gallery_id>/upload/', StandardMediaUploadView.as_view(), name='standard-media-upload'),
-
-    # High-Performance Resumable Chunked Upload Engine
-    path('uploads/init/', ResumableUploadInitView.as_view(), name='resumable-upload-init'),
-    path('uploads/<str:upload_id>/chunk/', ResumableUploadChunkView.as_view(), name='resumable-upload-chunk'),
-    path('uploads/chunk/', ResumableUploadChunkView.as_view(), name='resumable-upload-chunk-body'),
-    path('uploads/<str:upload_id>/status/', ResumableUploadStatusView.as_view(), name='resumable-upload-status'),
-    path('uploads/status/', ResumableUploadStatusView.as_view(), name='resumable-upload-status-param'),
-    path('uploads/<str:upload_id>/complete/', ResumableUploadCompleteView.as_view(), name='resumable-upload-complete'),
-    path('uploads/complete/', ResumableUploadCompleteView.as_view(), name='resumable-upload-complete-body'),
-    path('uploads/<str:upload_id>/cancel/', ResumableUploadCancelView.as_view(), name='resumable-upload-cancel'),
-    path('uploads/cancel/', ResumableUploadCancelView.as_view(), name='resumable-upload-cancel-body'),
-
-    # Local Direct Upload Stream & Signed Media Delivery
-    path('direct-upload/', DirectUploadExecuteView.as_view(), name='storage-direct-upload-exec'),
-    path('media-file/', DirectMediaFileServeView.as_view(), name='storage-media-file-serve'),
-
-    # Public Gallery endpoints (No login required - locked when studio subscription expired)
-    path('galleries/<str:slug_or_id>/public/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-detail-direct'),
-    path('galleries/<str:slug_or_id>/verify-pin/', PublicGalleryVerifyPinView.as_view(), name='public-gallery-verify-pin-direct'),
-    path('galleries/<str:slug_or_id>/download-zip/', download_gallery_zip, name='public-gallery-download-zip-direct'),
-
-    # Bulk Delete Media (Global / Collection Routes - MUST come before <str:gallery_id> and <str:pk>)
+    # Bulk Delete Media
     path('galleries/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='media-bulk-delete'),
-    path('galleries/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-bulk-delete-alias'),
+    path('galleries/<str:gallery_id>/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-media-bulk-delete'),
 
-    # Gallery Detail & Settings (placed after sub-routes so <str:pk> matches clean gallery IDs or slugs)
+    # Restore Archived Gallery
     path('galleries/<str:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore'),
     path('galleries/<uuid:gallery_id>/restore/', GalleryRestoreView.as_view(), name='gallery-restore-uuid'),
 
-    # Gallery-specific Bulk Delete
-    path('galleries/<str:gallery_id>/media/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-media-bulk-delete'),
-    path('galleries/<str:gallery_id>/bulk-delete/', MediaBulkDeleteView.as_view(), name='gallery-id-bulk-delete-alias'),
-
-    # Gallery Media Items List
-    path('galleries/<str:gallery_id>/media/', GalleryMediaListView.as_view(), name='gallery-media-list'),
-
-    # Individual Photo / Media Deletion in Gallery
+    # Single Media Deletion
     path('galleries/<str:gallery_id>/media/<uuid:media_id>/', MediaDetailDeleteView.as_view(), name='gallery-media-delete'),
-    path('galleries/<str:gallery_id>/photos/<uuid:photo_id>/', MediaDetailDeleteView.as_view(), name='gallery-photo-delete'),
-    path('galleries/<str:gallery_id>/media/<uuid:media_id>/delete/', MediaDetailDeleteView.as_view(), name='gallery-media-delete-action'),
-    path('galleries/<str:gallery_id>/photos/<uuid:photo_id>/delete/', MediaDetailDeleteView.as_view(), name='gallery-photo-delete-action'),
 
-    # Gallery Detail View
+    # Gallery Detail (Retrieve, Update, Delete)
     path('galleries/<str:pk>/', GalleryDetailView.as_view(), name='gallery-detail'),
 
-    # Direct Media & Photo Deletion Routes
-    path('galleries/media/<uuid:media_id>/', MediaDetailDeleteView.as_view(), name='media-detail-delete'),
-    path('galleries/media/<uuid:media_id>/delete/', MediaDetailDeleteView.as_view(), name='media-detail-delete-action'),
-    path('galleries/photos/<uuid:photo_id>/', MediaDetailDeleteView.as_view(), name='gallery-photo-detail-delete'),
-    path('galleries/photos/<uuid:photo_id>/delete/', MediaDetailDeleteView.as_view(), name='gallery-photo-detail-delete-action'),
-    path('media/<uuid:media_id>/', MediaDetailDeleteView.as_view(), name='media-direct-delete'),
-    path('media/<uuid:media_id>/delete/', MediaDetailDeleteView.as_view(), name='media-direct-delete-action'),
-    path('photos/<uuid:photo_id>/', MediaDetailDeleteView.as_view(), name='photo-direct-delete'),
-    path('photos/<uuid:photo_id>/delete/', MediaDetailDeleteView.as_view(), name='photo-direct-delete-action'),
-
-    path('galleries/media/<uuid:media_id>/favorite/', MediaToggleFavoriteView.as_view(), name='media-toggle-favorite'),
-
     # -------------------------------------------------------------------------
-    # Enterprise Client / Public Gallery Access & Proofing
+    # Public Client Proofing Gallery Endpoints
     # -------------------------------------------------------------------------
     path('public/galleries/<str:slug_or_id>/track-view/', PublicGalleryTrackView.as_view(), name='public-gallery-track-view'),
     path('public/galleries/<str:slug_or_id>/download-zip/', PublicGalleryDownloadZipView.as_view(), name='public-gallery-download-zip'),
     path('public/galleries/<str:slug_or_id>/verify-pin/', PublicGalleryVerifyPinView.as_view(), name='public-gallery-verify-pin'),
     path('public/galleries/<str:slug_or_id>/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-detail'),
-    path('public/galleries/<str:slug_or_id>/', PublicGallerySlugOrIdView.as_view(), name='public-gallery-slug-or-id'),
-    path('shared-galleries/<str:share_token>/', SharedGalleryView.as_view(), name='shared-gallery-view'),
-    path('shared-galleries/<str:share_token>/verify-password/', VerifyGalleryPasswordView.as_view(), name='verify-gallery-password'),
-    path('galleries/<uuid:gallery_id>/client-selections/', ClientSelectionListCreateView.as_view(), name='client-selection-list-create'),
-    path('galleries/<uuid:gallery_id>/client-selections/<uuid:selection_id>/submit/', ClientSelectionSubmitView.as_view(), name='client-selection-submit'),
 
     # -------------------------------------------------------------------------
-    # Enterprise Secure Downloads (Single & Async Master / Selective Bulk)
-    # -------------------------------------------------------------------------
-    path('galleries/media/<uuid:media_id>/download/', MediaDownloadView.as_view(), name='media-download'),
-    path('galleries/<uuid:gallery_id>/bulk-download/', GalleryBulkDownloadView.as_view(), name='gallery-bulk-download'),
-    path('galleries/bulk-download-jobs/<uuid:job_id>/', BulkDownloadJobStatusView.as_view(), name='bulk-download-job-status'),
-
-    # -------------------------------------------------------------------------
-    # Enterprise Face-Based Discovery
+    # Face Search Biometric AI
     # -------------------------------------------------------------------------
     path('galleries/<str:gallery_id>/face-search/', GalleryFaceSearchView.as_view(), name='gallery-face-search'),
     path('public/galleries/<str:gallery_id>/face-search/', GalleryFaceSearchView.as_view(), name='public-gallery-face-search'),
-
-    # -------------------------------------------------------------------------
-    # Enterprise Storage Usage & Quota API
-    # -------------------------------------------------------------------------
-    path('account/storage/', PhotographerStorageUsageView.as_view(), name='photographer-storage-usage'),
 ]

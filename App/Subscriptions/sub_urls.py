@@ -20,7 +20,6 @@ UpgradeSubscriptionView = PlanUpgradeView
 urlpatterns = [
     # Studio Plans public catalog
     path('', StudioPlansListView.as_view(), name='plans-list'),
-    path('plans/', StudioPlansListView.as_view(), name='plans-list-alt'),
 
     # Current subscription & live quota metrics
     path('current/', CurrentSubscriptionView.as_view(), name='subscription-current'),

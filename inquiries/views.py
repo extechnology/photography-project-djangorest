@@ -241,17 +241,6 @@ class InquiryStatusUpdateView(generics.RetrieveUpdateDestroyAPIView):
         )
 
 
-class InquiryDeleteView(generics.DestroyAPIView):
-    """
-    Authenticated Endpoint: DELETE /api/inquiries/<pk>/delete/
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = InquiryDetailSerializer
-
-    def get_queryset(self):
-        return Inquiry.objects.filter(photographer=self.request.user)
-
-
 class InquiryAnalyticsView(APIView):
     """
     Authenticated Endpoint: GET /api/inquiries/analytics/

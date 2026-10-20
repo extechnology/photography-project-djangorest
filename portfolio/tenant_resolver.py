@@ -60,8 +60,9 @@ def resolve_tenant_subdomain(request: HttpRequest) -> Optional[str]:
     # Check if first label matches an active registered subdomain
     if '.' in host:
         candidate = host.split('.')[0].strip().lower()
-        if candidate and candidate not in reserved:
-            if PortfolioConfig.objects.filter(subdomain__iexact=candidate).exists():
+        if candidate and len(candidate) >= 3 and candidate not in reserved:
+            from .subdomain_service import SUBDOMAIN_REGEX
+            if SUBDOMAIN_REGEX.match(candidate) and PortfolioConfig.objects.filter(subdomain__iexact=candidate).exists():
                 return candidate
 
     # 3. Query parameter fallback
@@ -74,7 +75,7 @@ def resolve_tenant_subdomain(request: HttpRequest) -> Optional[str]:
     return None
 
 
-def get_tenant_profile(request: HttpRequest, only_active: bool = True) -> Optional[PortfolioConfig]:
+def get_tenant_profile(request: HttpRequest, only_active: bool = True, prefetch_works: bool = False) -> Optional[PortfolioConfig]:
     """
     Returns the portfolio configuration / photographer profile bound to the incoming tenant host.
     Ensures:
@@ -89,6 +90,15 @@ def get_tenant_profile(request: HttpRequest, only_active: bool = True) -> Option
         qs = qs.filter(
             is_published=True,
             subdomain_status=PortfolioConfig.SubdomainStatus.ACTIVE
+        )
+    if prefetch_works:
+        from .models import PortfolioWork
+        from django.db.models import Prefetch
+        qs = qs.prefetch_related(
+            Prefetch(
+                'works',
+                queryset=PortfolioWork.objects.filter(is_published=True).order_by('order', 'id').prefetch_related('photos')
+            )
         )
     return qs.first()
 
