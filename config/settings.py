@@ -783,6 +783,8 @@ CSRF_TRUSTED_ORIGINS = [
     "https://server.exshare.ai",
     "https://*.devtunnels.ms",
     "https://pv0smzkc-8000.inc1.devtunnels.ms",
+    "https://52.65.148.159"
+    "http://52.65.148.159"
 ]
 
 
