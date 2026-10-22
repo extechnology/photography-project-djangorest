@@ -794,7 +794,7 @@ CSRF_TRUSTED_ORIGINS = [
 SIMPLE_JWT_COOKIE_SECURE = True       # Must be True if SameSite='None'
 SIMPLE_JWT_COOKIE_SAMESITE = 'None'   # Set to 'None' in production with HTTPS if cross-site
 SIMPLE_JWT_COOKIE_HTTPONLY = True
-
+SECURE_SSL_REDIRECT = True
 
 
 
