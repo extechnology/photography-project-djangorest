@@ -784,7 +784,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://*.devtunnels.ms",
     "https://pv0smzkc-8000.inc1.devtunnels.ms",
     "https://52.65.148.159",
-    "http://52.65.148.159"
+    "http://52.65.148.159",
+    "https://15.134.157.163",
+    "http://15.134.157.163"
 ]
 
 
