@@ -760,10 +760,10 @@ CORS_ALLOW_CREDENTIALS = True
 # --- Cookie Settings ---
 # Session and CSRF cookie security settings (Lax/False for local development, Strict/True for production HTTPS)
 SESSION_COOKIE_SAMESITE = 'None'
-SESSION_COOKIE_SECURE = False  # Set to True in production (HTTPS)
+SESSION_COOKIE_SECURE = True  # Set to True in production (HTTPS)
 
 CSRF_COOKIE_SAMESITE = 'None'
-CSRF_COOKIE_SECURE = False  # Set to True in production (HTTPS)
+CSRF_COOKIE_SECURE = True  # Set to True in production (HTTPS)
 
 
 # --- CSRF Trusted Origins ---
