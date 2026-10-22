@@ -7,7 +7,8 @@ from .auth_views import (
     PasswordlessSendOTPView,
     PasswordlessVerifyOTPView,
     PasswordlessResendOTPView,
-    PasswordlessLoginSendOTPView
+    PasswordlessLoginSendOTPView,
+    LoginView
 )
 
 urlpatterns = [
@@ -27,5 +28,7 @@ urlpatterns = [
     path('passwordless/login/send-otp/', PasswordlessLoginSendOTPView.as_view(), name='passwordless-login-send-otp'),
     path('passwordless/login/verify-otp/', PasswordlessVerifyOTPView.as_view(), name='passwordless-login-verify-otp'),
     path('passwordless/login/resend-otp/', PasswordlessResendOTPView.as_view(), name='passwordless-login-resend-otp'),
+
+    path('login/', LoginView.as_view(), name='login'),
 ]
 

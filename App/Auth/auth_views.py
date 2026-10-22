@@ -488,3 +488,39 @@ class PasswordlessLoginSendOTPView(APIView):
             status=status.HTTP_200_OK
         )
 
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    def post(self, request):
+        identifier = request.data.get("identifier")
+        password = request.data.get("password")
+
+
+        if not identifier or not password:
+            return Response(
+                {"message": "Identifier and password are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = User.objects.filter(
+            Q(username=identifier) | Q(email=identifier) | Q(phone=identifier)
+        ).first()
+
+        if not user or not user.check_password(password):
+            return Response(
+                {"message": "Invalid credentials"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        print(user.username)
+
+        response = Response({
+            "message": "Login successful",
+        }, status=status.HTTP_200_OK)
+
+        # Set cookies
+        set_auth_cookies(response, refresh)
+        return response
