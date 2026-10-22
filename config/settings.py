@@ -783,7 +783,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://server.exshare.ai",
     "https://*.devtunnels.ms",
     "https://pv0smzkc-8000.inc1.devtunnels.ms",
-    "https://52.65.148.159"
+    "https://52.65.148.159",
     "http://52.65.148.159"
 ]
 
@@ -792,6 +792,8 @@ CSRF_TRUSTED_ORIGINS = [
 SIMPLE_JWT_COOKIE_SECURE = True       # Must be True if SameSite='None'
 SIMPLE_JWT_COOKIE_SAMESITE = 'None'   # Set to 'None' in production with HTTPS if cross-site
 SIMPLE_JWT_COOKIE_HTTPONLY = True
+
+
 
 
 
