@@ -64,3 +64,5 @@ ehthumbs.db
 Desktop.ini
 photography-project-djangorest-new.zip
 photography-project-djangorest.zip
+celerybeat-schedule.bak
+celerybeat-schedule.dir
