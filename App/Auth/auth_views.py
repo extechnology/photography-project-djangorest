@@ -488,14 +488,13 @@ class PasswordlessLoginSendOTPView(APIView):
             status=status.HTTP_200_OK
         )
 
-
 class LoginView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+
     def post(self, request):
         identifier = request.data.get("identifier")
         password = request.data.get("password")
-
 
         if not identifier or not password:
             return Response(
@@ -515,10 +514,16 @@ class LoginView(APIView):
 
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
-        print(user.username)
 
         response = Response({
             "message": "Login successful",
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+            }
         }, status=status.HTTP_200_OK)
 
         # Set cookies
