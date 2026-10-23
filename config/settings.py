@@ -759,11 +759,11 @@ CORS_ALLOW_CREDENTIALS = True
 
 # --- Cookie Settings ---
 # Session and CSRF cookie security settings (Lax/False for local development, Strict/True for production HTTPS)
-SESSION_COOKIE_SAMESITE = 'Lax'
-SESSION_COOKIE_SECURE = False  # Set to True in production (HTTPS)
+SESSION_COOKIE_SAMESITE = 'None'
+SESSION_COOKIE_SECURE = True  # Set to True in production (HTTPS)
 
-CSRF_COOKIE_SAMESITE = 'Lax'
-CSRF_COOKIE_SECURE = False  # Set to True in production (HTT
+CSRF_COOKIE_SAMESITE = 'None'
+CSRF_COOKIE_SECURE = True  # Set to True in production (HTT
 
 # --- CSRF Trusted Origins ---
 # Django 4.0+ requires trusted origins to be explicitly listed for cross-origin POST requests
