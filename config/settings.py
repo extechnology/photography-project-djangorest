@@ -763,8 +763,7 @@ SESSION_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SECURE = False  # Set to True in production (HTTPS)
 
 CSRF_COOKIE_SAMESITE = 'Lax'
-CSRF_COOKIE_SECURE = False  # Set to True in production (HTTPS)
-
+CSRF_COOKIE_SECURE = False  # Set to True in production (HTT
 
 # --- CSRF Trusted Origins ---
 # Django 4.0+ requires trusted origins to be explicitly listed for cross-origin POST requests
@@ -781,6 +780,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://exshare.ai",
     "http://server.exshare.ai",
     "https://server.exshare.ai",
+    "http://api.exshare.ai",
+    "https://api.exshare.ai",
     "https://*.devtunnels.ms",
     "https://pv0smzkc-8000.inc1.devtunnels.ms",
     "https://52.65.148.159",
